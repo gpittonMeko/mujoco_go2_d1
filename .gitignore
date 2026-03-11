@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# mujoco_menagerie (clonato da build_go2_arm.py, non versionare)
+mujoco_menagerie/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Log / temp
+*.log
+*.tmp
+MUJOCO_LOG.TXT
+
+# CycloneDDS build (opzionale, se compilato in-place)
+cyclonedds/build/
