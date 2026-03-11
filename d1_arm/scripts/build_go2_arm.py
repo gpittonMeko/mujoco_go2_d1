@@ -3,9 +3,14 @@
 Genera il modello MuJoCo Go2 + braccio Z1 (placeholder per D1).
 
 Clona mujoco_menagerie se manca, copia asset, crea go2_d1/scene.xml.
+
+Opzioni:
+  --light       Peso braccio al 10%
+  --weightless  Peso e inerzie braccio azzerati (mass/diaginertia ~0)
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -14,6 +19,20 @@ MENAGERIE_DIR = os.path.join(PROJECT_ROOT, "mujoco_menagerie")
 Z1_DIR = os.path.join(MENAGERIE_DIR, "unitree_z1")
 GO2_DIR = os.path.join(PROJECT_ROOT, "unitree_mujoco", "unitree_robots", "go2")
 GO2_D1_DIR = os.path.join(PROJECT_ROOT, "unitree_mujoco", "unitree_robots", "go2_d1")
+
+
+def scale_arm_masses(xml: str, scale: float) -> str:
+    """Scala mass e diaginertia nel braccio (es. 0.1 = 10%, 0 = weightless)."""
+    eps = 1e-6  # MuJoCo richiede valori > 0
+    def repl_mass(m):
+        v = float(m.group(1)) * scale
+        return f'mass="{max(v, eps)}"'
+    def repl_inertia(m):
+        vals = [max(float(x) * scale, eps) for x in m.group(1).split()]
+        return f'diaginertia="{" ".join(str(v) for v in vals)}"'
+    xml = re.sub(r'mass="([\d.e+-]+)"', repl_mass, xml)
+    xml = re.sub(r'diaginertia="([\d.e+\s-]+)"', repl_inertia, xml)
+    return xml
 
 
 # Snippet XML del braccio Z1 da inserire in base_link (posizione payload Go2)
@@ -28,7 +47,7 @@ ARM_BODY_XML = '''
           <inertial pos="2.47e-06 -0.00025198 0.0231717" quat="0.708578 0.705633 0.000281462 -0.000355927" mass="0.673326"
             diaginertia="0.00128328 0.000839362 0.000719308"/>
           <joint name="arm_joint1" axis="0 0 1" range="-2.61799 2.61799"/>
-          <geom class="visual" mesh="z1_Link01"/>
+          <geom class="z1_visual" mesh="z1_Link01"/>
           <body name="arm_link02" pos="0 0 0.045">
             <inertial pos="-0.110126 0.00240029 0.00158266" quat="0.00748058 0.707092 -0.0114473 0.70699" mass="1.19132"
               diaginertia="0.0246612 0.0243113 0.00100468"/>
@@ -41,9 +60,9 @@ ARM_BODY_XML = '''
               <inertial pos="0.106092 -0.00541815 0.0347638" quat="0.540557 0.443575 0.426319 0.573839" mass="0.839409"
                 diaginertia="0.00954365 0.00938711 0.000558432"/>
               <joint name="arm_joint3" axis="0 1 0" range="-2.87979 0"/>
-              <geom class="visual" mesh="z1_Link03"/>
-              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="collision"/>
-              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="collision"/>
+              <geom class="z1_visual" mesh="z1_Link03"/>
+              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="z1_collision"/>
+              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="z1_collision"/>
               <body name="arm_link04" pos="0.218 0 0.057">
                 <inertial pos="0.0436668 0.00364738 -0.00170192" quat="0.0390835 0.726445 -0.0526787 0.684087"
                   mass="0.564046" diaginertia="0.000981656 0.00094053 0.000302655"/>
@@ -54,7 +73,7 @@ ARM_BODY_XML = '''
                   <inertial pos="0.0312153 0 0.00646316" quat="0.462205 0.535209 0.53785 0.45895" mass="0.389385"
                     diaginertia="0.000558961 0.000547317 0.000167332"/>
                   <joint name="arm_joint5" axis="0 0 1" range="-1.3439 1.3439"/>
-                  <geom class="visual" mesh="z1_Link05"/>
+                  <geom class="z1_visual" mesh="z1_Link05"/>
                   <body name="arm_link06" pos="0.0492 0 0">
                     <inertial pos="0.0241569 -0.00017355 -0.00143876" quat="0.998779 0.0457735 -0.00663717 0.0173548"
                       mass="0.288758" diaginertia="0.00018333 0.000147464 0.000146786"/>
@@ -72,7 +91,23 @@ ARM_BODY_XML = '''
 
 
 def main():
-    print("Build Go2 + braccio Z1 (placeholder D1)")
+    import argparse
+    parser = argparse.ArgumentParser(description="Build Go2 + braccio Z1 (placeholder D1)")
+    parser.add_argument("--light", action="store_true", help="Peso braccio al 10%%")
+    parser.add_argument("--weightless", action="store_true", help="Peso e inerzie braccio azzerati")
+    args = parser.parse_args()
+
+    if args.weightless:
+        mass_scale = 0.0
+    elif args.light:
+        mass_scale = 0.1
+    else:
+        mass_scale = 1.0
+
+    arm_xml = scale_arm_masses(ARM_BODY_XML, mass_scale) if mass_scale != 1.0 else ARM_BODY_XML
+
+    mode = " [WEIGHTLESS]" if args.weightless else (" [LIGHT - 10%]" if args.light else "")
+    print("Build Go2 + braccio Z1 (placeholder D1)" + mode)
     print("=" * 50)
 
     # 1. Clone mujoco_menagerie
@@ -123,14 +158,14 @@ def main():
         marker = "      </body>\n    </body>"
     if marker in go2_content:
         # Inserisci arm dopo il primo </body> del marker
-        replacement = "      </body>" + ARM_BODY_XML + "\n    </body>\n  </worldbody>"
+        replacement = "      </body>" + arm_xml + "\n    </body>\n  </worldbody>"
         go2_content = go2_content.replace(marker, replacement)
     else:
         try:
             # Fallback: inserimento prima di </body> di base_link
             idx = go2_content.rfind("    </body>\n  </worldbody>")
             if idx >= 0:
-                insertion = ARM_BODY_XML + "\n    "
+                insertion = arm_xml + "\n    "
                 go2_content = go2_content[:idx] + insertion + go2_content[idx:]
             else:
                 raise ValueError("Pattern non trovato")
@@ -177,6 +212,68 @@ def main():
     <general class="z1" name="arm_motor6" joint="arm_joint6" ctrlrange="-2.79253 2.79253"/>
 """
     go2_content = go2_content.replace("  </actuator>", arm_actuators + "  </actuator>")
+
+    # Aggiungi sensori braccio (necessari per bridge: sensordata[12-53] = arm pos/vel/torque)
+    arm_sensors_pos = """
+    <jointpos name="arm_joint1_pos" joint="arm_joint1" />
+    <jointpos name="arm_joint2_pos" joint="arm_joint2" />
+    <jointpos name="arm_joint3_pos" joint="arm_joint3" />
+    <jointpos name="arm_joint4_pos" joint="arm_joint4" />
+    <jointpos name="arm_joint5_pos" joint="arm_joint5" />
+    <jointpos name="arm_joint6_pos" joint="arm_joint6" />
+"""
+    arm_sensors_vel = """
+    <jointvel name="arm_joint1_vel" joint="arm_joint1" />
+    <jointvel name="arm_joint2_vel" joint="arm_joint2" />
+    <jointvel name="arm_joint3_vel" joint="arm_joint3" />
+    <jointvel name="arm_joint4_vel" joint="arm_joint4" />
+    <jointvel name="arm_joint5_vel" joint="arm_joint5" />
+    <jointvel name="arm_joint6_vel" joint="arm_joint6" />
+"""
+    arm_sensors_torque = """
+    <jointactuatorfrc name="arm_joint1_torque" joint="arm_joint1" noise="0.01" />
+    <jointactuatorfrc name="arm_joint2_torque" joint="arm_joint2" noise="0.01" />
+    <jointactuatorfrc name="arm_joint3_torque" joint="arm_joint3" noise="0.01" />
+    <jointactuatorfrc name="arm_joint4_torque" joint="arm_joint4" noise="0.01" />
+    <jointactuatorfrc name="arm_joint5_torque" joint="arm_joint5" noise="0.01" />
+    <jointactuatorfrc name="arm_joint6_torque" joint="arm_joint6" noise="0.01" />
+"""
+    if 'arm_joint1_pos' not in go2_content:
+        go2_content = go2_content.replace(
+            '<jointpos name="RL_calf_pos" joint="RL_calf_joint" />\n\n    <jointvel',
+            '<jointpos name="RL_calf_pos" joint="RL_calf_joint" />' + arm_sensors_pos + '\n    <jointvel'
+        )
+        go2_content = go2_content.replace(
+            'jointvel name="RL_calf_vel" joint="RL_calf_joint" />\n\n    <jointactuatorfrc',
+            'jointvel name="RL_calf_vel" joint="RL_calf_joint" />' + arm_sensors_vel + '    <jointactuatorfrc'
+        )
+        go2_content = go2_content.replace(
+            '<jointactuatorfrc name="RL_calf_torque" joint="RL_calf_joint" noise="0.01" />\n\n    <framequat',
+            '<jointactuatorfrc name="RL_calf_torque" joint="RL_calf_joint" noise="0.01" />' + arm_sensors_torque + '\n    <framequat'
+        )
+
+    # Keyframe = stessa pose di arm_hold (braccio chiuso, posteriori estese)
+    if '0 0.76 -1.44' not in go2_content:
+        legs_qpos = "0 0.76 -1.44 0 0.76 -1.44 0 1.08 -1.82 0 1.08 -1.82"
+        arm_qpos = " 0 0.2 -0.4 -0.2 0 0"
+        go2_content = go2_content.replace(
+            'qpos="0 0 0.27 1 0 0 0 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"',
+            'qpos="0 0 0.27 1 0 0 0 ' + legs_qpos + arm_qpos + '"'
+        )
+        go2_content = go2_content.replace(
+            'ctrl="0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"',
+            'ctrl="' + legs_qpos + arm_qpos + '"'
+        )
+
+    # Stabilità: integrator implicitfast, impratio ridotto, damping/armature più alti
+    go2_content = go2_content.replace(
+        '<option cone="elliptic" impratio="100" />',
+        '<option cone="elliptic" impratio="10" integrator="implicitfast" timestep="0.002" />'
+    )
+    go2_content = go2_content.replace(
+        'damping="0.1" armature="0.01"',
+        'damping="2" armature="0.05"'
+    )
 
     # Aggiorna modello e meshdir
     go2_content = go2_content.replace('model="go2"', 'model="go2_d1"')

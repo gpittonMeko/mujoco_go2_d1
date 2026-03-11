@@ -7,8 +7,9 @@ Usa oscillazioni sinusoidali sulle articolazioni per generare il passo.
 
 Uso:
   1. Avvia il simulatore: cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
-  2. Esegui: python3 scripts/trot_gait.py [vx] [vy] [vyaw]
+  2. Esegui: python3 scripts/trot_gait.py [vx] [vy] [vyaw] [--arm-hold]
      - vx, vy, vyaw: velocità desiderate (default 0.2, 0, 0)
+     - --arm-hold: per go2_d1, tiene il braccio ripiegato
      - Ctrl+C per fermare
 """
 
@@ -32,12 +33,22 @@ STAND_POSE = np.array([
     0.006, 0.61, -1.22, -0.006, 0.61, -1.22
 ], dtype=float)
 
+# go2_d1: compensa peso braccio (CoM avanti) → anteriori piegate, posteriori ben estese
+STAND_POSE_ARM = np.array([
+    0.0, 0.74, -1.42,  0.0, 0.74, -1.42,   # FR, FL: anteriori più piegate
+    0.0, 1.08, -1.82,  0.0, 1.08, -1.82    # RR, RL: posteriori molto estese
+], dtype=float)
+
 DT = 0.002
 KP = 40.0
 KD = 3.0
 FREQ = 1.2  # Hz - frequenza del trot
+ARM_HOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]  # go2_d1: braccio chiuso (tau=q_des, kp=kd=0)
 SWING_AMP = 0.15   # ampiezza oscillazione thigh (rad)
 STANCE_AMP = 0.08  # ampiezza oscillazione calf (rad)
+# go2_d1: oscillazioni ridotte per stabilità con braccio
+SWING_AMP_ARM = 0.10
+STANCE_AMP_ARM = 0.05
 
 
 def init_cmd():
@@ -56,61 +67,56 @@ def init_cmd():
     return cmd
 
 
-def trot_pose(t, vx, vy, vyaw):
+def trot_pose(t, vx, vy, vyaw, arm_hold=False):
     """
     Calcola posizioni articolari per trot.
     FR(0-2), FL(3-5), RR(6-8), RL(9-11)
     Trot: FR+RL in fase, FL+RR in fase opposta.
+    arm_hold: usa pose compensata e oscillazioni ridotte per go2_d1.
     """
     phase = 2 * math.pi * FREQ * t
-    q = STAND_POSE.copy()
+    base = STAND_POSE_ARM if arm_hold else STAND_POSE
+    swing = SWING_AMP_ARM if arm_hold else SWING_AMP
+    stance = STANCE_AMP_ARM if arm_hold else STANCE_AMP
+    q = base.copy()
 
     # Coppie diagonali: FR+RL (phase), FL+RR (phase+pi)
     for leg_offset, phase_off in [(0, 0), (3, math.pi), (6, math.pi), (9, 0)]:
         p = phase + phase_off
-        # thigh (indice 1, 4, 7, 10): oscillazione principale
-        q[leg_offset + 1] += SWING_AMP * math.sin(p)
-        # calf (indice 2, 5, 8, 11): segue thigh
-        q[leg_offset + 2] += STANCE_AMP * math.sin(p)
+        q[leg_offset + 1] += swing * math.sin(p)
+        q[leg_offset + 2] += stance * math.sin(p)
 
     return q
 
 
 def main():
-    # Parse args: trot_gait.py [vx [vy [vyaw]]] oppure trot_gait.py INTERFACCIA vx vy vyaw
-    def is_float(s):
-        try:
-            float(s)
-            return True
-        except (ValueError, TypeError):
-            return False
+    import argparse
+    parser = argparse.ArgumentParser(description="Trot gait per Go2")
+    parser.add_argument("vx", type=float, nargs="?", default=0.2)
+    parser.add_argument("vy", type=float, nargs="?", default=0.0)
+    parser.add_argument("vyaw", type=float, nargs="?", default=0.0)
+    parser.add_argument("--arm-hold", action="store_true", help="go2_d1: braccio ripiegato")
+    parser.add_argument("--interface", type=str, default=None)
+    args = parser.parse_args()
+    vx, vy, vyaw = args.vx, args.vy, args.vyaw
+    arm_hold = args.arm_hold
 
-    if len(sys.argv) >= 2 and not is_float(sys.argv[1]):
-        # Prima arg = interfaccia (robot reale), es: trot_gait.py enp3s0 0.2
-        interface = sys.argv[1]
-        vx = float(sys.argv[2]) if len(sys.argv) > 2 else 0.2
-        vy = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-        vyaw = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
-        ChannelFactoryInitialize(0, interface)
-        print("Robot reale (interface=%s)" % interface)
-    else:
-        vx = float(sys.argv[1]) if len(sys.argv) > 1 else 0.2
-        vy = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
-        vyaw = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+    iface = args.interface
+    if iface is None:
         try:
             sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_mujoco", "simulate_python"))
             import config as sim_config
-            interface = sim_config.INTERFACE
+            iface = sim_config.INTERFACE
         except ImportError:
-            interface = "lo"
-        ChannelFactoryInitialize(1, interface)
+            iface = "lo"
+    ChannelFactoryInitialize(1, iface)
 
     pub = ChannelPublisher("rt/lowcmd", LowCmd_)
     pub.Init()
     crc = CRC()
     cmd = init_cmd()
 
-    print("Trot gait - vx=%.2f vy=%.2f vyaw=%.2f" % (vx, vy, vyaw))
+    print("Trot gait - vx=%.2f vy=%.2f vyaw=%.2f%s" % (vx, vy, vyaw, " [arm-hold]" if arm_hold else ""))
     print("Assicurati che il simulatore sia avviato. Ctrl+C per fermare.")
     input("Premi Invio per iniziare...")
 
@@ -118,14 +124,27 @@ def main():
     try:
         while True:
             step_start = time.perf_counter()
-            q = trot_pose(t, vx, vy, vyaw)
+            q = trot_pose(t, vx, vy, vyaw, arm_hold=arm_hold)
 
             for i in range(12):
                 cmd.motor_cmd[i].q = float(q[i])
-                cmd.motor_cmd[i].kp = KP
+                if arm_hold:
+                    # Gambe posteriori (RR, RL) più potenti per compensare peso braccio
+                    kp, kd = (200.0,2.0) if i >= 6 else (45.0, 6.0)
+                else:
+                    kp, kd = KP, KD
+                cmd.motor_cmd[i].kp = kp
                 cmd.motor_cmd[i].dq = 0.0
-                cmd.motor_cmd[i].kd = KD
+                cmd.motor_cmd[i].kd = kd
                 cmd.motor_cmd[i].tau = 0.0
+
+            if arm_hold:
+                for i in range(6):
+                    cmd.motor_cmd[12 + i].q = 0.0
+                    cmd.motor_cmd[12 + i].kp = 0.0
+                    cmd.motor_cmd[12 + i].dq = 0.0
+                    cmd.motor_cmd[12 + i].kd = 0.0
+                    cmd.motor_cmd[12 + i].tau = ARM_HOLD[i]
 
             cmd.crc = crc.Crc(cmd)
             pub.Write(cmd)

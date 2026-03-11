@@ -1,12 +1,12 @@
 <mujoco model="go2_d1">
   <compiler angle="radian" meshdir="assets" autolimits="true" />
 
-  <option cone="elliptic" impratio="100" />
+  <option cone="elliptic" impratio="10" integrator="implicitfast" timestep="0.002" />
 
   <default>
     <default class="go2">
       <geom friction="0.4" margin="0.001" condim="1"/>
-      <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
+      <joint axis="0 1 0" damping="2" armature="0.05" frictionloss="0.2"/>
       <motor ctrlrange="-23.7 23.7"/>
       <default class="abduction">
         <joint axis="1 0 0" range="-1.0472 1.0472"/>
@@ -247,7 +247,7 @@
           <inertial pos="2.47e-06 -0.00025198 0.0231717" quat="0.708578 0.705633 0.000281462 -0.000355927" mass="0.673326"
             diaginertia="0.00128328 0.000839362 0.000719308"/>
           <joint name="arm_joint1" axis="0 0 1" range="-2.61799 2.61799"/>
-          <geom class="visual" mesh="z1_Link01"/>
+          <geom class="z1_visual" mesh="z1_Link01"/>
           <body name="arm_link02" pos="0 0 0.045">
             <inertial pos="-0.110126 0.00240029 0.00158266" quat="0.00748058 0.707092 -0.0114473 0.70699" mass="1.19132"
               diaginertia="0.0246612 0.0243113 0.00100468"/>
@@ -260,9 +260,9 @@
               <inertial pos="0.106092 -0.00541815 0.0347638" quat="0.540557 0.443575 0.426319 0.573839" mass="0.839409"
                 diaginertia="0.00954365 0.00938711 0.000558432"/>
               <joint name="arm_joint3" axis="0 1 0" range="-2.87979 0"/>
-              <geom class="visual" mesh="z1_Link03"/>
-              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="collision"/>
-              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="collision"/>
+              <geom class="z1_visual" mesh="z1_Link03"/>
+              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="z1_collision"/>
+              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="z1_collision"/>
               <body name="arm_link04" pos="0.218 0 0.057">
                 <inertial pos="0.0436668 0.00364738 -0.00170192" quat="0.0390835 0.726445 -0.0526787 0.684087"
                   mass="0.564046" diaginertia="0.000981656 0.00094053 0.000302655"/>
@@ -273,7 +273,7 @@
                   <inertial pos="0.0312153 0 0.00646316" quat="0.462205 0.535209 0.53785 0.45895" mass="0.389385"
                     diaginertia="0.000558961 0.000547317 0.000167332"/>
                   <joint name="arm_joint5" axis="0 0 1" range="-1.3439 1.3439"/>
-                  <geom class="visual" mesh="z1_Link05"/>
+                  <geom class="z1_visual" mesh="z1_Link05"/>
                   <body name="arm_link06" pos="0.0492 0 0">
                     <inertial pos="0.0241569 -0.00017355 -0.00143876" quat="0.998779 0.0457735 -0.00663717 0.0173548"
                       mass="0.288758" diaginertia="0.00018333 0.000147464 0.000146786"/>
@@ -326,6 +326,12 @@
     <jointpos name="RL_hip_pos" joint="RL_hip_joint" />
     <jointpos name="RL_thigh_pos" joint="RL_thigh_joint" />
     <jointpos name="RL_calf_pos" joint="RL_calf_joint" />
+    <jointpos name="arm_joint1_pos" joint="arm_joint1" />
+    <jointpos name="arm_joint2_pos" joint="arm_joint2" />
+    <jointpos name="arm_joint3_pos" joint="arm_joint3" />
+    <jointpos name="arm_joint4_pos" joint="arm_joint4" />
+    <jointpos name="arm_joint5_pos" joint="arm_joint5" />
+    <jointpos name="arm_joint6_pos" joint="arm_joint6" />
 
     <jointvel name="FR_hip_vel" joint="FR_hip_joint" />
     <jointvel name="FR_thigh_vel" joint="FR_thigh_joint" />
@@ -339,7 +345,12 @@
     <jointvel name="RL_hip_vel" joint="RL_hip_joint" />
     <jointvel name="RL_thigh_vel" joint="RL_thigh_joint" />
     <jointvel name="RL_calf_vel" joint="RL_calf_joint" />
-
+    <jointvel name="arm_joint1_vel" joint="arm_joint1" />
+    <jointvel name="arm_joint2_vel" joint="arm_joint2" />
+    <jointvel name="arm_joint3_vel" joint="arm_joint3" />
+    <jointvel name="arm_joint4_vel" joint="arm_joint4" />
+    <jointvel name="arm_joint5_vel" joint="arm_joint5" />
+    <jointvel name="arm_joint6_vel" joint="arm_joint6" />
     <jointactuatorfrc name="FR_hip_torque" joint="FR_hip_joint" noise="0.01" />
     <jointactuatorfrc name="FR_thigh_torque" joint="FR_thigh_joint" noise="0.01" />
     <jointactuatorfrc name="FR_calf_torque" joint="FR_calf_joint" noise="0.01" />
@@ -352,6 +363,12 @@
     <jointactuatorfrc name="RL_hip_torque" joint="RL_hip_joint" noise="0.01" />
     <jointactuatorfrc name="RL_thigh_torque" joint="RL_thigh_joint" noise="0.01" />
     <jointactuatorfrc name="RL_calf_torque" joint="RL_calf_joint" noise="0.01" />
+    <jointactuatorfrc name="arm_joint1_torque" joint="arm_joint1" noise="0.01" />
+    <jointactuatorfrc name="arm_joint2_torque" joint="arm_joint2" noise="0.01" />
+    <jointactuatorfrc name="arm_joint3_torque" joint="arm_joint3" noise="0.01" />
+    <jointactuatorfrc name="arm_joint4_torque" joint="arm_joint4" noise="0.01" />
+    <jointactuatorfrc name="arm_joint5_torque" joint="arm_joint5" noise="0.01" />
+    <jointactuatorfrc name="arm_joint6_torque" joint="arm_joint6" noise="0.01" />
 
     <framequat name="imu_quat" objtype="site" objname="imu" />
     <gyro name="imu_gyro" site="imu" />
@@ -362,7 +379,7 @@
   </sensor>
 
   <keyframe>
-    <key name="home" qpos="0 0 0.27 1 0 0 0 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"
-      ctrl="0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8" />
+    <key name="home" qpos="0 0 0.27 1 0 0 0 0 0.76 -1.44 0 0.76 -1.44 0 1.08 -1.82 0 1.08 -1.82 0 0.2 -0.4 -0.2 0 0"
+      ctrl="0 0.76 -1.44 0 0.76 -1.44 0 1.08 -1.82 0 1.08 -1.82 0 0.2 -0.4 -0.2 0 0" />
   </keyframe>
 </mujoco>

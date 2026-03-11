@@ -6,7 +6,9 @@ Legge rt/lowstate, costruisce osservazione, inferisce la rete, pubblica rt/lowcm
 
 Uso:
   1. Avvia il simulatore: cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
-  2. python3 scripts/deploy_policy.py [--model ts|wtw] [--vx 0.5] [--vy 0] [--vyaw 0]
+  2. Go2 plain:  python3 scripts/deploy_policy.py --model ts --vx 0.5
+  3. go2_d1+Z1: python3 scripts/deploy_policy.py --model ts --vx 0.5 --arm-hold
+     (braccio Z1 ripiegato + offset gambe per compensare forward lean)
 """
 
 import time
@@ -39,8 +41,23 @@ def get_gravity_orientation(quat):
     return np.array([gx, gy, gz], dtype=np.float32)
 
 
+# --- go2_d1 con braccio Z1 (--arm-hold) ---
+# Pose braccio Z1 ripiegato (rad) - position servo: tau=q_des, kp=kd=0
+ARM_HOLD_POSE = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
+ARM_HOLD_KP = 0.0
+ARM_HOLD_KD = 0.0
+
+# Offset gambe per go2_d1: compensa forward lean da peso Z1 (solo con --arm-hold)
+# Go2 plain: nessun offset. go2_d1+Z1: anteriori estese, posteriori piegate → corpo più dritto
+# Ordine: FR(0-2), FL(3-5), RR(6-8), RL(9-11) - [hip, thigh, calf] per gamba
+LEG_OFFSET_GO2_Z1 = np.array([
+    0.0, 0.04, -0.03,  0.0, 0.04, -0.03,   # FR, FL: anteriori leggermente estese
+    0.0, -0.04, 0.03,  0.0, -0.04, 0.03    # RR, RL: posteriori leggermente piegate
+], dtype=np.float32)
+
+
 class PolicyRunner:
-    def __init__(self, config_path, model_path, vx=0.5, vy=0.0, vyaw=0.0):
+    def __init__(self, config_path, model_path, vx=0.5, vy=0.0, vyaw=0.0, arm_hold=False):
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
 
@@ -85,6 +102,7 @@ class PolicyRunner:
             self.history.append(np.zeros(self.num_single_obs, dtype=np.float32))
 
         self.counter = 0
+        self.arm_hold = arm_hold
 
         self.low_state = None
         self.crc = CRC()
@@ -193,6 +211,9 @@ class PolicyRunner:
         return target_pos
 
     def make_cmd(self, target_pos):
+        # go2_d1+Z1: applica offset gambe per compensare forward lean (Go2 plain: nessun offset)
+        pos = target_pos + LEG_OFFSET_GO2_Z1 if self.arm_hold else target_pos
+
         cmd = unitree_go_msg_dds__LowCmd_()
         cmd.head[0] = 0xFE
         cmd.head[1] = 0xEF
@@ -206,11 +227,18 @@ class PolicyRunner:
             cmd.motor_cmd[i].kd = 0.0
             cmd.motor_cmd[i].tau = 0.0
         for i in range(12):
-            cmd.motor_cmd[i].q = float(target_pos[i])
+            cmd.motor_cmd[i].q = float(pos[i])
             cmd.motor_cmd[i].kp = self.ctrl_kp
             cmd.motor_cmd[i].dq = 0.0
             cmd.motor_cmd[i].kd = self.ctrl_kd
             cmd.motor_cmd[i].tau = 0.0
+        if self.arm_hold:
+            for i in range(6):
+                cmd.motor_cmd[12 + i].q = 0.0
+                cmd.motor_cmd[12 + i].kp = 0.0
+                cmd.motor_cmd[12 + i].dq = 0.0
+                cmd.motor_cmd[12 + i].kd = 0.0
+                cmd.motor_cmd[12 + i].tau = ARM_HOLD_POSE[i]
         cmd.crc = self.crc.Crc(cmd)
         return cmd
 
@@ -221,7 +249,8 @@ def main():
     parser.add_argument("--vx", type=float, default=0.5)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
-    parser.add_argument("--interface", type=str, default=None)
+    parser.add_argument("--arm-hold", action="store_true", help="go2_d1+Z1: braccio ripiegato + offset gambe anti-lean (Go2 plain: omettere)")
+    parser.add_argument("--interface", type=str, default=None, help="Override interfaccia DDS (es. lo, lan2)")
     args = parser.parse_args()
 
     models_dir = os.path.join(PROJECT_ROOT, "go2_deploy", "models")
@@ -234,18 +263,17 @@ def main():
         config_path = os.path.join(params_dir, "wtw_config.yaml")
         model_path = os.path.join(models_dir, "wtw_model.pt")
 
-    if args.interface:
-        ChannelFactoryInitialize(0, args.interface)
-    else:
-        try:
-            sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_mujoco", "simulate_python"))
-            import config as sim_config
-            ChannelFactoryInitialize(1, sim_config.INTERFACE)
-            print(f"Simulazione (domain_id=1, interface={sim_config.INTERFACE})")
-        except ImportError:
-            ChannelFactoryInitialize(1, "lo")
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_mujoco", "simulate_python"))
+        import config as sim_config
+        iface = args.interface if args.interface else sim_config.INTERFACE
+        ChannelFactoryInitialize(1, iface)
+        print(f"Simulazione (domain_id=1, interface={iface})")
+    except ImportError:
+        iface = args.interface or "lo"
+        ChannelFactoryInitialize(1, iface)
 
-    runner = PolicyRunner(config_path, model_path, args.vx, args.vy, args.vyaw)
+    runner = PolicyRunner(config_path, model_path, args.vx, args.vy, args.vyaw, arm_hold=args.arm_hold)
 
     sub = ChannelSubscriber("rt/lowstate", LowState_)
     sub.Init(runner.state_callback, 10)
@@ -253,7 +281,7 @@ def main():
     pub = ChannelPublisher("rt/lowcmd", LowCmd_)
     pub.Init()
 
-    print(f"Policy: {args.model} | vx={args.vx} vy={args.vy} vyaw={args.vyaw}")
+    print(f"Policy: {args.model} | vx={args.vx} vy={args.vy} vyaw={args.vyaw}" + (" | go2_d1+Z1 (arm_hold)" if args.arm_hold else " | Go2 plain"))
     print("In attesa di lowstate dal simulatore...")
 
     while runner.low_state is None:
