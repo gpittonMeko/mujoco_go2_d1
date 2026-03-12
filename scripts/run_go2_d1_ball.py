@@ -3,11 +3,14 @@
 Autonomous ball approach: Go2 d1+Z1 detects red ball, walks toward it,
 reaches with the arm using active searching, and grabs it magnetically.
 
+Cinematica braccio: arm_kinematics (FK/IK ricostruita da zero).
 States: STAND → WALK (bypass search) → REACH → GRABBED
 """
 
 import time, sys, os, math, threading, json, socket, argparse, signal, select
 import numpy as np
+
+from arm_kinematics import ik_reach, smooth, J_LIMITS, ARM_BASE_Z
 
 _stop_requested = False
 def _on_stop_signal(signum, frame):
@@ -15,7 +18,9 @@ def _on_stop_signal(signum, frame):
     _stop_requested = True
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_sdk2_python"))
+sys.path.insert(0, SCRIPTS_DIR)
 sys.path.insert(0, PROJECT_ROOT)
 
 import importlib.util
@@ -30,22 +35,9 @@ from unitree_sdk2py.core.channel import (ChannelPublisher, ChannelSubscriber,
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 
-# ── Arm geometry (Z1 on Go2) ─────────────────────────────────────────
-ARM_BASE_X = 0.15
-ARM_J2_Z   = 0.06 + 0.0585 + 0.045
-L_UPPER    = 0.35
-L_FORE_X   = 0.218
-L_FORE_Z   = 0.057
-L_WRIST    = 0.1447
-
+# ── Arm (cinematica in arm_kinematics) ─────────────────────────────────
 ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
-
-J1_LIM = (-2.61799, 2.61799)
-J2_LIM = (0.0, 2.96706)
-J3_LIM = (-2.87979, 0.0)
-J4_LIM = (-1.51844, 1.51844)
-J5_LIM = (-1.3439, 1.3439)
-J6_LIM = (-2.79253, 2.79253)
+ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]  # proteso avanti, polso -45°
 
 # ── Arm search: braccio piegato, solo polso (J5/J6) guarda intorno ──
 SEARCH_POSES = [
@@ -70,11 +62,10 @@ REACH_CROUCH_OFFSETS = {1: 0.22, 4: 0.22, 7: 0.22, 10: 0.22,
                         2: -0.35, 5: -0.35, 8: -0.35, 11: -0.35}
 MAX_ARM_REACH_FWD = 0.45
 REACH_SETTLE_TIME = 2.5
-REACH_ALPHA = 0.0002
-MAX_JOINT_STEP = 0.0005
-REACH_DIST_LO = 0.77
-REACH_DIST_HI = 0.90
-REACH_SLOW_ZONE = 0.83
+REACH_DIST_LO = 0.52   # troppo vicino (senza wrist): indietreggia
+REACH_DIST_HI = 0.65   # entra in REACH (braccio esteso)
+REACH_SLOW_ZONE = 0.58 # rallenta in avvicinamento
+TOUCH_DIST = 0.15      # quando wrist vede palla: avvicina fino a toccare
 VX_COMPENSATE_BACK = -0.085
 
 # ── States ────────────────────────────────────────────────────────────
@@ -94,83 +85,11 @@ def clamp(v, lo, hi):
 
 
 def apply_wrist_centering(arm_target, w_center_delta):
-    """Applica la correzione J5/J6 calcolata dalla visione nel simulatore.
-    w_center_delta viene dal simulatore: render camera → OpenCV detect → delta per centrare."""
+    """Correzione J5/J6 dalla visione (wrist camera) per centrare la palla."""
     if len(arm_target) < 6 or len(w_center_delta) < 2:
         return
-    arm_target[4] = clamp(arm_target[4] + w_center_delta[0], *J5_LIM)
-    arm_target[5] = clamp(arm_target[5] + w_center_delta[1], *J6_LIM)
-
-
-def fk_plane(j2, j3, j4):
-    s23 = j2 + j3
-    s234 = s23 + j4
-    x = (-L_UPPER * math.cos(j2)
-         + L_FORE_X * math.cos(s23) + L_FORE_Z * math.sin(s23)
-         + L_WRIST * math.cos(s234))
-    z = (L_UPPER * math.sin(j2)
-         - L_FORE_X * math.sin(s23) + L_FORE_Z * math.cos(s23)
-         - L_WRIST * math.sin(s234))
-    return x, z
-
-
-def ik_arm(target_x, target_y, target_z):
-    """Numerical IK. target_x/y/z are in robot base_link frame."""
-    dx = target_x - ARM_BASE_X
-    dy = target_y
-    j1 = clamp(math.atan2(dy, max(dx, 0.05)), *J1_LIM)
-    r_t = math.sqrt(dx**2 + dy**2)
-    z_t = target_z - ARM_J2_Z
-
-    best, best_err = None, 1e9
-    for j2i in [1.5, 2.0, 2.5, 2.9]:
-        for j3i in [-0.5, -1.0, -1.5, -2.0]:
-            for j4i in [-0.5, 0.0, 0.5, 1.0]:
-                j2, j3, j4 = j2i, j3i, j4i
-                lr = 0.8
-                for _ in range(120):
-                    x, z = fk_plane(j2, j3, j4)
-                    ex, ez = x - r_t, z - z_t
-                    err = ex*ex + ez*ez
-                    if err < 0.0002: break
-                    eps = 1e-4
-                    dx2 = (fk_plane(j2+eps, j3, j4)[0] - x)/eps
-                    dz2 = (fk_plane(j2+eps, j3, j4)[1] - z)/eps
-                    dx3 = (fk_plane(j2, j3+eps, j4)[0] - x)/eps
-                    dz3 = (fk_plane(j2, j3+eps, j4)[1] - z)/eps
-                    dx4 = (fk_plane(j2, j3, j4+eps)[0] - x)/eps
-                    dz4 = (fk_plane(j2, j3, j4+eps)[1] - z)/eps
-                    j2 -= lr*(ex*dx2 + ez*dz2)
-                    j3 -= lr*(ex*dx3 + ez*dz3)
-                    j4 -= lr*(ex*dx4 + ez*dz4)
-                    j2 = clamp(j2, *J2_LIM)
-                    j3 = clamp(j3, *J3_LIM)
-                    j4 = clamp(j4, *J4_LIM)
-                    lr *= 0.995
-                x, z = fk_plane(j2, j3, j4)
-                e = (x-r_t)**2 + (z-z_t)**2
-                if e < best_err:
-                    best_err = e; best = (j2, j3, j4)
-
-    if best is None or best_err > 0.01:
-        return None
-    j2, j3, j4 = best[0], best[1], best[2]
-    j2 = clamp(j2, 0.0, 2.35)
-    return [j1, j2, j3, j4, 0.0, 0.0]
-
-
-def smooth(cur, tgt, alpha=0.05):
-    return [c + alpha*(t - c) for c, t in zip(cur, tgt)]
-
-
-def step_toward(current, target, max_step):
-    """Limita lo spostamento per step (traiettoria multi-step)."""
-    out = []
-    for c, t in zip(current, target):
-        diff = t - c
-        step = clamp(diff, -max_step, max_step)
-        out.append(c + step)
-    return out
+    arm_target[4] = clamp(arm_target[4] + w_center_delta[0], *J_LIMITS[4])
+    arm_target[5] = clamp(arm_target[5] + w_center_delta[1], *J_LIMITS[5])
 
 
 # ── UDP receiver ──────────────────────────────────────────────────────
@@ -379,7 +298,7 @@ def main():
                         t_enter = now
                         crouch = False
                         print(f"[REACH] Wrist vede palla centrata! dist={dist:.2f}m")
-                elif detected and dist > 0.90:
+                elif detected and dist > REACH_DIST_HI:
                     state = WALK
                     t_enter = now
                     crouch = False
@@ -431,7 +350,7 @@ def main():
             elif state == WALK:
                 crouch = False
                 walking = True
-                arm_target = list(ARM_FOLD)
+                arm_target = list(ARM_REACH_FWD)  # braccio avanti prima della lettura wrist
 
                 if not detected:
                     vyaw = 0.25
@@ -453,9 +372,21 @@ def main():
                         print(f"[REACH] Vicino ({dist:.2f}m)! Estendo braccio...")
 
             elif state == REACH:
-                crouch = True
+                crouch = False
 
-                if dist > REACH_DIST_HI:
+                # Wrist vede palla: avvicina fino a toccarla (TOUCH_DIST)
+                if w_det:
+                    if dist > TOUCH_DIST:
+                        vx = clamp(0.12 * (dist - TOUCH_DIST), 0.02, 0.12)
+                        vyaw = clamp(0.08 * angle, -0.08, 0.08)
+                        walking = True
+                        if do_print:
+                            print(f"[REACH] Wrist vede palla, avvicino (d={dist:.2f}m -> {TOUCH_DIST}m)")
+                            t_print = now
+                    else:
+                        vx = vyaw = 0.0
+                        walking = False
+                elif dist > REACH_DIST_HI:
                     vx = 0.02
                     vyaw = clamp(0.08 * angle, -0.08, 0.08)
                     walking = True
@@ -471,41 +402,60 @@ def main():
                     vx = vyaw = 0.0
                     walking = False
 
-                if walking:
-                    arm_target = list(ARM_FOLD)
+                # Wrist vede palla: braccio va verso la palla (IK) anche mentre cammina
+                tx, ty, tz = bx, by, bz
+                if dist > MAX_ARM_REACH_FWD and dist > 0.01:
+                    scale = MAX_ARM_REACH_FWD / dist
+                    tx, ty = bx * scale, by * scale
+                    tz = bz * 0.97 + 0.01
+                tz = min(tz, ARM_BASE_Z + 0.22)
+                tz = max(tz, 0.08)
+                ik_res = ik_reach(tx, ty, tz)
+
+                if w_det and ik_res is not None:
+                    # Wrist vede: braccio si avvicina alla palla (anche quando robot cammina)
+                    arm_target = list(ik_res)
+                    if w_depth > 0:
+                        px, py = w_pix
+                        arm_target[0] += 0.04 * px
+                        arm_target[2] -= 0.03 * py
+                        arm_target[0] = clamp(arm_target[0], *J_LIMITS[0])
+                        arm_target[2] = clamp(arm_target[2], *J_LIMITS[2])
+                    apply_wrist_centering(arm_target, w_center_delta)
+                    if do_print:
+                        js = " ".join(f"{j:+.2f}" for j in arm_target[:4])
+                        print(f"[REACH] Wrist vede palla, braccio verso [{js}]")
+                        t_print = now
+                elif walking:
+                    arm_target = list(ARM_REACH_FWD)
                 elif (now - t_enter) < REACH_SETTLE_TIME:
-                    arm_target = list(ARM_FOLD)
+                    arm_target = list(ARM_REACH_FWD)
                     if do_print:
                         print(f"[REACH] Stabilizzazione {now - t_enter:.1f}s...")
                         t_print = now
+                elif ik_res is not None:
+                    arm_target = list(ik_res)
+                    if w_det and w_depth > 0:
+                        px, py = w_pix
+                        arm_target[0] += 0.04 * px
+                        arm_target[2] -= 0.03 * py
+                        arm_target[0] = clamp(arm_target[0], *J_LIMITS[0])
+                        arm_target[2] = clamp(arm_target[2], *J_LIMITS[2])
+                    apply_wrist_centering(arm_target, w_center_delta)
+                    if do_print:
+                        js = " ".join(f"{j:+.2f}" for j in arm_target[:4])
+                        print(f"[REACH] d={dist:.2f} fermo, braccio verso palla [{js}]")
+                        t_print = now
                 else:
-                    tx, ty, tz = bx, by, bz
-                    if dist > MAX_ARM_REACH_FWD and dist > 0.01:
-                        scale = MAX_ARM_REACH_FWD / dist
-                        tx, ty = bx * scale, by * scale
-                        tz = bz * 0.97 + 0.01
-                    ik_res = ik_arm(tx, ty, tz)
-                    if ik_res is not None:
-                        arm_target = step_toward(arm_cmd, ik_res, MAX_JOINT_STEP)
-                        if w_det and w_depth > 0:
-                            px, py = w_pix
-                            arm_target[0] += 0.04 * px
-                            arm_target[2] -= 0.03 * py
-                            arm_target[0] = clamp(arm_target[0], *J1_LIM)
-                            arm_target[2] = clamp(arm_target[2], *J3_LIM)
-                            apply_wrist_centering(arm_target, w_center_delta)
-                        if do_print:
-                            js = " ".join(f"{j:+.2f}" for j in arm_target[:4])
-                            print(f"[REACH] d={dist:.2f} fermo, braccio lento verso palla [{js}]")
-                            t_print = now
+                    if dist > REACH_DIST_LO:
+                        vx = 0.03
+                        walking = True
+                        arm_target = list(ARM_FOLD)
                     else:
-                        if dist > REACH_DIST_LO:
-                            vx = 0.03
-                            walking = True
-                            arm_target = list(ARM_FOLD)
-                        if do_print:
-                            print(f"[REACH] d={dist:.2f} fuori portata, avvicino")
-                            t_print = now
+                        arm_target = list(ARM_REACH_FWD)
+                    if do_print:
+                        print(f"[REACH] d={dist:.2f} fuori portata, avvicino")
+                        t_print = now
 
                 if not detected and not w_det:
                     if body_lost_t is None:
@@ -527,13 +477,11 @@ def main():
                     print("[GRABBED] Palla presa! Mantengo posizione.")
                     t_print = now
 
-            # ── Smooth arm (più lento in REACH per non sbilanciare) ──
+            # ── Smooth arm ──
             if state == FALLEN:
                 a = 0.15
             elif walking:
                 a = 0.02
-            elif state == REACH and not walking:
-                a = REACH_ALPHA
             elif state == ARM_SEARCH:
                 a = 0.025
             elif crouch:
@@ -548,10 +496,9 @@ def main():
             runner.cmd[2] = vyaw
             target_pos = runner.step()
 
-            if crouch:
+            if crouch and state != REACH:
                 tp = list(target_pos) if not isinstance(target_pos, list) else target_pos
-                offs = REACH_CROUCH_OFFSETS if state == REACH else CROUCH_OFFSETS
-                for idx, off in offs.items():
+                for idx, off in CROUCH_OFFSETS.items():
                     if idx < len(tp):
                         tp[idx] += off
                 target_pos = tp

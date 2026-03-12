@@ -56,6 +56,7 @@ def run_policy_loop(runner, pub, stop_event):
 def main():
     parser = argparse.ArgumentParser(description="Joystick virtuale per Go2")
     parser.add_argument("--model", default="ts", choices=["ts", "wtw"])
+    parser.add_argument("--arm-hold", action="store_true", help="Go2_d1: braccio fisso in pose 0")
     parser.add_argument("--interface", type=str, default=None)
     args = parser.parse_args()
 
@@ -80,7 +81,7 @@ def main():
         except ImportError:
             ChannelFactoryInitialize(1, "lo")
 
-    runner = PolicyRunner(config_path, model_path, 0.0, 0.0, 0.0)
+    runner = PolicyRunner(config_path, model_path, 0.0, 0.0, 0.0, arm_hold=args.arm_hold)
 
     sub = ChannelSubscriber("rt/lowstate", LowState_)
     sub.Init(runner.state_callback, 10)

@@ -47,8 +47,11 @@ cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
 # Terminale 2: policy Teacher-Student, avanti a 0.5 m/s
 python3 scripts/deploy_policy.py --model ts --vx 0.5
 
-# Walk-These-Ways con curva
-python3 scripts/deploy_policy.py --model wtw --vx 0.3 --vyaw 0.2
+# Go2_d1: braccio fisso in pose 0 (non influenza movimento)
+python3 scripts/deploy_policy.py --model ts --vx 0.5 --arm-hold
+
+# Joystick virtuale con braccio fisso
+python3 virtual_joystick/main.py --arm-hold
 ```
 
 **Parametri script:**
@@ -92,7 +95,8 @@ Integrazione depth camera + OpenCV per rendering in tempo reale e uso SLAM.
 
 | Problema | Soluzione |
 |----------|-----------|
-| `interface 'lo' not multicast-capable` | `sudo ip link set lo multicast on` oppure `INTERFACE = "lan2"` |
+| `interface 'lo' not multicast-capable` | `sudo ip link set lo multicast on` |
+| Policy resta "In attesa lowstate" | 1) Avvia prima il simulatore 2) `sudo ip link set lo multicast on` 3) In config: `INTERFACE = "lo"` oppure prova `--interface lan2` |
 | Simulatore non risponde | Stesso DOMAIN_ID (1), avviare prima sim poi script |
 | `keyframe index cannot be negative` | Verificare ROBOT_SCENE in config |
 
@@ -108,6 +112,6 @@ Unitree_Simulator/
 ├── go2_deploy/         # Modelli RL pre-addestrati (wtw, ts)
 ├── scripts/            # deploy_policy.py, test_movimento.py
 ├── virtual_joystick/   # Joystick virtuale (tastiera) per controllo movimento
-├── d1_arm/             # Braccio D1 per Go2: guida, montaggio, modello MuJoCo (Z1 placeholder)
+├── d1_arm/             # Braccio D1/Z1: guida, build (--light=10% peso), arm_control.py
 └── docs/
 ```

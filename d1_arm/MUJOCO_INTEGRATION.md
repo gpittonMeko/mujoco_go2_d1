@@ -75,7 +75,8 @@ Sulla piastra payload del Go2, il braccio è tipicamente sopra il dorso, leggerm
 
 ```bash
 cd d1_arm
-python3 scripts/build_go2_arm.py
+python3 scripts/build_go2_arm.py          # peso normale
+python3 scripts/build_go2_arm.py --light  # peso braccio 10%
 ```
 
 Lo script:

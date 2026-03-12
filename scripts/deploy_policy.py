@@ -8,7 +8,8 @@ Uso:
   1. Avvia il simulatore: cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
   2. Go2 plain:  python3 scripts/deploy_policy.py --model ts --vx 0.5
   3. go2_d1+Z1: python3 scripts/deploy_policy.py --model ts --vx 0.5 --arm-hold
-     (braccio Z1 ripiegato + offset gambe per compensare forward lean)
+  4. Con joystick: python3 scripts/deploy_policy.py --model ts --arm-hold --joystick
+     (W/S vx, A/D vy, Q/E vyaw, Spazio stop)
 """
 
 import time
@@ -16,8 +17,14 @@ import sys
 import os
 import argparse
 import math
+import threading
 import numpy as np
 from collections import deque
+
+try:
+    import tkinter as tk
+except ImportError:
+    tk = None
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_sdk2_python"))
@@ -250,6 +257,7 @@ def main():
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
     parser.add_argument("--arm-hold", action="store_true", help="go2_d1+Z1: braccio ripiegato + offset gambe anti-lean (Go2 plain: omettere)")
+    parser.add_argument("--joystick", action="store_true", help="Joystick virtuale: WASD+QE per vx,vy,vyaw")
     parser.add_argument("--interface", type=str, default=None, help="Override interfaccia DDS (es. lo, lan2)")
     args = parser.parse_args()
 
@@ -281,7 +289,7 @@ def main():
     pub = ChannelPublisher("rt/lowcmd", LowCmd_)
     pub.Init()
 
-    print(f"Policy: {args.model} | vx={args.vx} vy={args.vy} vyaw={args.vyaw}" + (" | go2_d1+Z1 (arm_hold)" if args.arm_hold else " | Go2 plain"))
+    print(f"Policy: {args.model}" + (" | go2_d1+Z1 (arm_hold)" if args.arm_hold else " | Go2 plain") + (" | joystick" if args.joystick else f" | vx={args.vx} vy={args.vy} vyaw={args.vyaw}"))
     print("In attesa di lowstate dal simulatore...")
 
     while runner.low_state is None:
@@ -289,19 +297,68 @@ def main():
     print("Stato ricevuto. Avvio policy in 2s...")
     time.sleep(2.0)
 
-    print("Policy attiva! Ctrl+C per fermare.")
-    try:
-        while True:
+    VX_MAX, VY_MAX, VYAW_MAX = 0.8, 0.5, 1.0
+    STEP = 0.15
+    stop_event = threading.Event()
+
+    def policy_loop():
+        while not stop_event.is_set():
             step_start = time.perf_counter()
             target_pos = runner.step()
-            cmd = runner.make_cmd(target_pos)
-            pub.Write(cmd)
+            c = runner.make_cmd(target_pos)
+            pub.Write(c)
             elapsed = time.perf_counter() - step_start
-            sleep_time = runner.dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-    except KeyboardInterrupt:
-        print("\nFermato.")
+            if runner.dt - elapsed > 0:
+                time.sleep(runner.dt - elapsed)
+
+    if args.joystick and tk is not None:
+        policy_thread = threading.Thread(target=policy_loop, daemon=True)
+        policy_thread.start()
+
+        def clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        def on_key(event):
+            vx, vy, vyaw = runner.cmd[0], runner.cmd[1], runner.cmd[2]
+            key = event.keysym.lower()
+            if key == "w":
+                vx = clamp(vx + STEP, -VX_MAX, VX_MAX)
+            elif key == "s":
+                vx = clamp(vx - STEP, -VX_MAX, VX_MAX)
+            elif key == "a":
+                vy = clamp(vy + STEP, -VY_MAX, VY_MAX)
+            elif key == "d":
+                vy = clamp(vy - STEP, -VY_MAX, VY_MAX)
+            elif key == "q":
+                vyaw = clamp(vyaw + STEP, -VYAW_MAX, VYAW_MAX)
+            elif key == "e":
+                vyaw = clamp(vyaw - STEP, -VYAW_MAX, VYAW_MAX)
+            elif key == "space":
+                vx, vy, vyaw = 0.0, 0.0, 0.0
+            runner.cmd[0], runner.cmd[1], runner.cmd[2] = vx, vy, vyaw
+            lbl["text"] = f"vx: {vx:+.2f}  vy: {vy:+.2f}  vyaw: {vyaw:+.2f}"
+
+        root = tk.Tk()
+        root.title("Joystick - Go2")
+        root.geometry("420x100")
+        lbl = tk.Label(root, text="vx: +0.00  vy: +0.00  vyaw: +0.00", font=("", 14))
+        lbl.pack(pady=15, padx=20)
+        tk.Label(root, text="W/S vx | A/D vy | Q/E vyaw | Spazio stop | Esc chiudi", fg="gray").pack()
+        root.bind("<KeyPress>", on_key)
+        root.bind("<Escape>", lambda e: (stop_event.set(), root.destroy()))
+        root.protocol("WM_DELETE_WINDOW", lambda: (stop_event.set(), root.destroy()))
+        root.focus_set()
+        lbl["text"] = f"vx: {runner.cmd[0]:+.2f}  vy: {runner.cmd[1]:+.2f}  vyaw: {runner.cmd[2]:+.2f}"
+        root.mainloop()
+        stop_event.set()
+    else:
+        if args.joystick and tk is None:
+            print("Joystick richiesto ma tkinter non disponibile. Uso vx/vy/vyaw fissi.")
+        print("Policy attiva! Ctrl+C per fermare.")
+        try:
+            policy_loop()
+        except KeyboardInterrupt:
+            print("\nFermato.")
 
 
 if __name__ == "__main__":

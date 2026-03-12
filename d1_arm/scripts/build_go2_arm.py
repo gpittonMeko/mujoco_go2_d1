@@ -252,9 +252,9 @@ def main():
             '<jointactuatorfrc name="RL_calf_torque" joint="RL_calf_joint" noise="0.01" />' + arm_sensors_torque + '\n    <framequat'
         )
 
-    # Keyframe = stessa pose di arm_hold (braccio chiuso, posteriori estese)
-    if '0 0.76 -1.44' not in go2_content:
-        legs_qpos = "0 0.76 -1.44 0 0.76 -1.44 0 1.08 -1.82 0 1.08 -1.82"
+    # Keyframe = stessa pose di arm_hold (anteriori estese, hip offset)
+    if '0.006 0.82 -1.50' not in go2_content:
+        legs_qpos = "0.006 0.82 -1.50 -0.006 0.82 -1.50 0.006 1.08 -1.82 -0.006 1.08 -1.82"
         arm_qpos = " 0 0.2 -0.4 -0.2 0 0"
         go2_content = go2_content.replace(
             'qpos="0 0 0.27 1 0 0 0 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"',

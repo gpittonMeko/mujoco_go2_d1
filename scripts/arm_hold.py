@@ -20,18 +20,16 @@ from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_
 from unitree_sdk2py.utils.crc import CRC
 
-# Gambe: inclinazione avanti (posteriori ben estese, anteriori piegate) → CoM bilanciato
+# Gambe: anteriori estese (testa su), posteriori estese, hip offset anti-drift
 STAND_LEGS = np.array([
-    0.0, 0.76, -1.44,  0.0, 0.76, -1.44,   # FL, FR: anteriori più piegate
-    0.0, 1.08, -1.82,  0.0, 1.08, -1.82    # RL, RR: posteriori molto estese
+    0.006, 0.82, -1.50,  -0.006, 0.82, -1.50,   # FR, FL: anteriori estese
+    0.006, 1.08, -1.82,  -0.006, 1.08, -1.82    # RR, RL: posteriori + hip simmetrici
 ], dtype=float)
 
 # Braccio Z1 (rad) - molto chiuso su sé stesso
 ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
 
 DT = 0.002
-KP_LEGS = 40.0
-KD_LEGS = 8.0
 
 
 def main():
@@ -67,9 +65,9 @@ def main():
 
             for i in range(12):
                 cmd.motor_cmd[i].q = float(STAND_LEGS[i])
-                # Gambe posteriori (RR, RL) più potenti per compensare peso braccio
-                kp = 50.0 if i >= 6 else KP_LEGS
-                kd = 9.0 if i >= 6 else KD_LEGS
+                # go2_d1+Z1: anteriori più potenti (evita lean), limiti modello hip ±23.7 knee ±45.4 Nm
+                kp = 55.0 if i >= 6 else 60.0  # anteriori KP più alto
+                kd = 7.0 if i >= 6 else 8.0
                 cmd.motor_cmd[i].kp = kp
                 cmd.motor_cmd[i].dq = 0.0
                 cmd.motor_cmd[i].kd = kd

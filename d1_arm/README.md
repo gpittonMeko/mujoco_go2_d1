@@ -78,7 +78,9 @@ Per dettagli sul controllo del D1, contattare Unitree o consultare la documentaz
 **Setup:**
 ```bash
 cd d1_arm
-python3 scripts/build_go2_arm.py
+python3 scripts/build_go2_arm.py           # peso normale
+python3 scripts/build_go2_arm.py --light  # peso braccio 10%
+python3 scripts/build_go2_arm.py --weightless  # peso e inerzie braccio azzerati
 ```
 
 Lo script clona [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie), copia gli asset Z1 e genera `unitree_mujoco/unitree_robots/go2_d1/`.
@@ -89,7 +91,17 @@ Lo script clona [mujoco_menagerie](https://github.com/google-deepmind/mujoco_men
 cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
 ```
 
-**Nota:** Il bridge DDS attuale gestisce solo i 12 motori delle gambe. Per controllare il braccio servono estensioni al bridge (6 attuatori aggiuntivi).
+**Interfaccia virtuale controllo braccio:**
+```bash
+python3 d1_arm/arm_control.py
+```
+GUI con 6 slider (J1–J6) e preset Home/Fold. Usa gli stessi comandi LowCmd di D1/Z1 reale ([D1Arm services](https://support.unitree.com/home/en/developer/D1Arm_services)); D1 e Z1 condividono il protocollo low-level motor.
+
+**Muovere Go2 senza che il braccio destabilizzi:** usa `--arm-hold` per tenere il braccio fisso in pose 0:
+```bash
+python3 scripts/deploy_policy.py --model ts --vx 0.5 --arm-hold
+python3 virtual_joystick/main.py --arm-hold
+```
 
 Vedi **MUJOCO_INTEGRATION.md** per dettagli e modifiche al modello.
 

@@ -18,6 +18,7 @@ import os
 import sys
 import time
 import threading
+import math
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "unitree_sdk2_python"))
@@ -105,21 +106,35 @@ def main():
     root.title("D1/Z1 Arm Control")
     root.geometry("420x320")
 
+    lbl_deg = [None] * 6
+
+    def on_slider(val_deg, idx):
+        arm_pos[idx] = math.radians(float(val_deg))
+        if lbl_deg[idx]:
+            lbl_deg[idx]["text"] = f"{int(float(val_deg))}°"
+
     sliders = []
     for i in range(6):
         f = tk.Frame(root)
         f.pack(fill=tk.X, padx=8, pady=2)
         tk.Label(f, text=f"J{i+1}", width=3).pack(side=tk.LEFT)
-        s = tk.Scale(f, from_=-3.15, to=3.15, resolution=0.05, orient=tk.HORIZONTAL,
-                    length=280, command=lambda v, idx=i: arm_pos.__setitem__(idx, float(v)))
-        s.set(arm_pos[i])
+        s = tk.Scale(f, from_=-360, to=360, resolution=5, orient=tk.HORIZONTAL,
+                    length=280, command=lambda v, idx=i: on_slider(v, idx),
+                    showvalue=False)
+        s.set(int(math.degrees(arm_pos[i])))
         s.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        lbl = tk.Label(f, text=f"{int(math.degrees(arm_pos[i]))}°", width=5, font=("", 10))
+        lbl.pack(side=tk.LEFT)
+        lbl_deg[i] = lbl
         sliders.append(s)
 
     def set_pose(pose):
         for i, v in enumerate(pose):
             arm_pos[i] = v
-            sliders[i].set(v)
+            d = int(math.degrees(v))
+            sliders[i].set(d)
+            if lbl_deg[i]:
+                lbl_deg[i]["text"] = f"{d}°"
 
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=8)
@@ -128,7 +143,6 @@ def main():
 
     def test_oscillate():
         """Oscilla J1 per 3s - verifica che il braccio risponda."""
-        import math
         orig = arm_pos[0]
         t0 = [time.perf_counter()]
 
@@ -136,11 +150,15 @@ def main():
             elapsed = time.perf_counter() - t0[0]
             if elapsed < 3.0:
                 arm_pos[0] = orig + 0.3 * math.sin(2 * math.pi * 0.5 * elapsed)
-                sliders[0].set(arm_pos[0])
+                sliders[0].set(int(math.degrees(arm_pos[0])))
+                if lbl_deg[0]:
+                    lbl_deg[0]["text"] = f"{int(math.degrees(arm_pos[0]))}°"
                 root.after(20, _tick)
             else:
                 arm_pos[0] = orig
-                sliders[0].set(orig)
+                sliders[0].set(int(math.degrees(orig)))
+                if lbl_deg[0]:
+                    lbl_deg[0]["text"] = f"{int(math.degrees(orig))}°"
         _tick()
     tk.Button(btn_frame, text="Test J1", command=test_oscillate).pack(side=tk.LEFT, padx=4)
 

@@ -53,6 +53,10 @@ except Exception:
 
 ball_grabbed = False
 
+# Arm Motors manual override (slider values -> ctrl, solo braccio)
+arm_manual_ctrl = None
+arm_trackbars_created = False
+
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
     if config.ROBOT == "h1" or config.ROBOT == "g1":
@@ -138,6 +142,9 @@ def SimulationThread():
                 mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
                     mj_data.qpos[:3], mj_data.qvel[:3]
                 )
+        if arm_manual_ctrl is not None and mj_model.nu >= 18:
+            for i in range(6):
+                mj_data.ctrl[12 + i] = arm_manual_ctrl[i]
         mujoco.mj_step(mj_model, mj_data)
         apply_magnetic_grab()
 
@@ -227,6 +234,154 @@ def annotate(bgr, det, fovy, w, h, prefix=""):
     cv.putText(bgr, f"{prefix}SEARCHING", (8, 20),
                cv.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
     return False
+
+
+# Geometria braccio Z1 per vista 2D
+_L_UPPER = 0.35
+_L_FORE_X = 0.218
+_L_FORE_Z = 0.057
+_L_WRIST = 0.1447
+_ARM_J_LIMITS = [
+    (-2.61799, 2.61799), (0.0, 2.96706), (-2.87979, 0.0),
+    (-1.51844, 1.51844), (-1.3439, 1.3439), (-2.79253, 2.79253),
+]
+# Limiti in gradi per UI: -360° a +360° per tutti i giunti
+_ARM_J_LIMITS_DEG = [(-360.0, 360.0)] * 6
+_ARM_J_NAMES = ["J1", "J2", "J3", "J4", "J5", "J6"]
+
+
+def _arm_fk_points(j2, j3, j4):
+    s23 = j2 + j3
+    s234 = s23 + j4
+    p0 = (0.0, 0.0)
+    p1 = (-_L_UPPER * np.cos(j2), _L_UPPER * np.sin(j2))
+    p2 = (
+        p1[0] + _L_FORE_X * np.cos(s23) + _L_FORE_Z * np.sin(s23),
+        p1[1] - _L_FORE_X * np.sin(s23) + _L_FORE_Z * np.cos(s23),
+    )
+    p3 = (
+        p2[0] + _L_WRIST * np.cos(s234),
+        p2[1] - _L_WRIST * np.sin(s234),
+    )
+    return [p0, p1, p2, p3]
+
+
+def _arm_trackbar_to_rad(pos, i):
+    """Trackbar mostra gradi (-360..+360) direttamente -> radianti."""
+    return np.radians(float(pos))
+
+
+def _arm_rad_to_trackbar(rad, i):
+    """Radianti -> valore trackbar in gradi (-360..+360)."""
+    deg = int(np.clip(np.degrees(rad), -360, 360))
+    return deg
+
+
+def _arm_trackbar_pos_to_deg(pos, i):
+    """Posizione trackbar = gradi (per visualizzazione)."""
+    return float(pos)
+
+
+def _on_arm_trackbar(_):
+    global arm_manual_ctrl
+    try:
+        manual = cv.getTrackbarPos("Manual", "Arm Motors")
+        if manual <= 0:
+            arm_manual_ctrl = None
+            return
+        vals = []
+        for i in range(6):
+            p = cv.getTrackbarPos(_ARM_J_NAMES[i], "Arm Motors")
+            vals.append(_arm_trackbar_to_rad(p, i))
+        arm_manual_ctrl = vals
+    except Exception:
+        pass
+
+
+def _create_arm_trackbars(sensordata):
+    global arm_trackbars_created
+    if arm_trackbars_created:
+        return
+    arm_trackbars_created = True
+    cv.namedWindow("Arm Motors")
+    cv.createTrackbar("Manual", "Arm Motors", 0, 1, _on_arm_trackbar)
+    for i in range(6):
+        curr = float(sensordata[12 + i])
+        init_deg = _arm_rad_to_trackbar(curr, i)
+        cv.createTrackbar(_ARM_J_NAMES[i], "Arm Motors", init_deg, 720, _on_arm_trackbar)
+        try:
+            cv.setTrackbarMin(_ARM_J_NAMES[i], "Arm Motors", -360)
+            cv.setTrackbarMax(_ARM_J_NAMES[i], "Arm Motors", 360)
+            cv.setTrackbarPos(_ARM_J_NAMES[i], "Arm Motors", init_deg)
+        except Exception:
+            pass
+    _on_arm_trackbar(0)
+
+
+def render_arm_motors(sensordata):
+    """Ritorna immagine BGR per la scheda Arm Motors (stile Body/Wrist Camera)."""
+    joints = [float(sensordata[12 + i]) for i in range(6)]
+    w, h = 340, 260
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:] = (26, 26, 46)
+
+    # Leggi target da trackbar se in manuale (per mostrare valore impostato)
+    manual = 0
+    try:
+        manual = cv.getTrackbarPos("Manual", "Arm Motors")
+    except Exception:
+        pass
+
+    # Barre giunti (range -360°..+360°)
+    bar_h, bar_w = 14, 200
+    lo_deg, hi_deg = -360.0, 360.0
+    for i in range(6):
+        deg_actual = np.degrees(joints[i])
+        deg_display = deg_actual
+        if manual > 0:
+            try:
+                p = cv.getTrackbarPos(_ARM_J_NAMES[i], "Arm Motors")
+                deg_display = _arm_trackbar_pos_to_deg(p, i)  # mostra target (valore slider)
+            except Exception:
+                pass
+        pct = (deg_actual - lo_deg) / (hi_deg - lo_deg) if hi_deg > lo_deg else 0.5
+        pct = np.clip(pct, 0, 1)
+        y = 28 + i * 36
+        cv.rectangle(img, (90, y), (90 + bar_w, y + bar_h), (40, 40, 60), -1)
+        cv.rectangle(img, (90, y), (90 + int(bar_w * pct), y + bar_h), (74, 158, 255), -1)
+        cv.putText(img, _ARM_J_NAMES[i], (8, y + 12), cv.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        cv.putText(img, f"{deg_display:+.0f}°", (295, y + 12), cv.FONT_HERSHEY_SIMPLEX, 0.4, (100, 220, 255) if manual > 0 else (180, 180, 180), 1)
+
+    # Vista 2D braccio
+    j2, j3, j4 = joints[1], joints[2], joints[3]
+    pts = _arm_fk_points(j2, j3, j4)
+    scale = 120
+    cx, cy = 50, h - 55
+    px = [int(cx + p[0] * scale) for p in pts]
+    pz = [int(cy - p[1] * scale) for p in pts]
+    for k in range(len(px) - 1):
+        cv.line(img, (px[k], pz[k]), (px[k + 1], pz[k + 1]), (74, 158, 255), 2)
+    for k in range(len(px)):
+        r = 5 if k < 3 else 6
+        cv.circle(img, (px[k], pz[k]), r, (107, 179, 255), -1)
+        cv.circle(img, (px[k], pz[k]), r, (255, 255, 255), 1)
+
+    mode_txt = "MANUAL" if manual > 0 else "AUTO"
+    cv.putText(img, f"Arm Motors [{mode_txt}]", (8, 18), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    # In modalità manuale: mostra target in gradi (trackbar già mostra -154/360)
+    if manual > 0:
+        try:
+            targets = []
+            for i in range(6):
+                p = cv.getTrackbarPos(_ARM_J_NAMES[i], "Arm Motors")
+                deg = _arm_trackbar_pos_to_deg(p, i)
+                targets.append(f"{_ARM_J_NAMES[i]}:{deg:+.0f}°")
+            cv.putText(img, "Target: " + "  ".join(targets), (8, h - 8),
+                      cv.FONT_HERSHEY_SIMPLEX, 0.4, (100, 220, 255), 1)
+        except Exception:
+            pass
+    return img
 
 
 def PhysicsViewerThread():
@@ -319,6 +474,16 @@ def PhysicsViewerThread():
                     cv.imshow("Wrist Camera", wbgr)
             except Exception as e:
                 print("Wrist cam err:", e)
+
+        # Arm Motors: scheda modificabile (trackbar) + vista real-time
+        if config.ENABLE_DEPTH_CAMERA and num_motor_ >= 18:
+            try:
+                _create_arm_trackbars(mj_data.sensordata)
+                arm_img = render_arm_motors(mj_data.sensordata)
+                if arm_img is not None:
+                    cv.imshow("Arm Motors", arm_img)
+            except Exception as e:
+                pass
 
         cv.waitKey(1)
 
