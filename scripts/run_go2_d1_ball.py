@@ -12,6 +12,18 @@ import numpy as np
 
 from arm_kinematics import ik_reach, smooth, J_LIMITS, ARM_BASE_Z
 
+_arm = __import__("arm_kinematics")
+if hasattr(_arm, "ARM_FOLD_POSE"):
+    ARM_FOLD = list(_arm.ARM_FOLD_POSE)
+    ARM_REACH_FWD = list(_arm.ARM_REACH_FWD_POSE)
+    SEARCH_POSES = list(_arm.SEARCH_POSES_D1)
+    ARM_POSITION_MODE = True
+else:
+    ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
+    ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]
+    SEARCH_POSES = None  # set below
+    ARM_POSITION_MODE = False
+
 _stop_requested = False
 def _on_stop_signal(signum, frame):
     global _stop_requested
@@ -35,25 +47,25 @@ from unitree_sdk2py.core.channel import (ChannelPublisher, ChannelSubscriber,
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 
-# ── Arm (cinematica in arm_kinematics) ─────────────────────────────────
-ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
-ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]  # proteso avanti, polso -45°
+# ── Arm (cinematica in arm_kinematics; pose default Z1 se non D1 template) ──
+if not ARM_POSITION_MODE:
+    ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
+    ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]
+    SEARCH_POSES = [
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.25],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.25],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.9, -0.35],
+        [0.0, 0.2, -0.4, -0.2, -0.9, -0.35],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+    ]
 
-# ── Arm search: braccio piegato, solo polso (J5/J6) guarda intorno ──
-SEARCH_POSES = [
-    [ 0.0,  0.2, -0.4, -0.2,  0.0,  0.0],   # centro
-    [ 0.0,  0.2, -0.4, -0.2,  1.2,  0.0],   # destra
-    [ 0.0,  0.2, -0.4, -0.2,  1.2,  0.25],  # destra-basso
-    [ 0.0,  0.2, -0.4, -0.2,  1.2,  0.0],   # destra
-    [ 0.0,  0.2, -0.4, -0.2,  0.0,  0.0],   # centro
-    [ 0.0,  0.2, -0.4, -0.2, -1.2,  0.0],   # sinistra
-    [ 0.0,  0.2, -0.4, -0.2, -1.2,  0.25],  # sinistra-basso
-    [ 0.0,  0.2, -0.4, -0.2, -1.2,  0.0],   # sinistra
-    [ 0.0,  0.2, -0.4, -0.2,  0.0,  0.0],   # centro
-    [ 0.0,  0.2, -0.4, -0.2,  0.9, -0.35],  # destra-alto
-    [ 0.0,  0.2, -0.4, -0.2, -0.9, -0.35],  # sinistra-alto
-    [ 0.0,  0.2, -0.4, -0.2,  0.0,  0.0],   # centro
-]
 SEARCH_POSE_TIME = 2.5
 
 CROUCH_OFFSETS = {1: 0.15, 4: 0.15, 7: 0.15, 10: 0.15,
@@ -505,11 +517,19 @@ def main():
 
             cmd = runner.make_cmd(target_pos)
             for i in range(6):
-                cmd.motor_cmd[12 + i].q = 0.0
-                cmd.motor_cmd[12 + i].kp = 0.0
-                cmd.motor_cmd[12 + i].dq = 0.0
-                cmd.motor_cmd[12 + i].kd = 0.0
-                cmd.motor_cmd[12 + i].tau = float(arm_cmd[i])
+                if ARM_POSITION_MODE:
+                    # Sim D1: PD su q (il bridge MuJoCo usa kp*(q_ref-q) + kd*(dq_ref-dq) + tau).
+                    cmd.motor_cmd[12 + i].q = float(arm_cmd[i])
+                    cmd.motor_cmd[12 + i].kp = 18.0
+                    cmd.motor_cmd[12 + i].dq = 0.0
+                    cmd.motor_cmd[12 + i].kd = 0.9
+                    cmd.motor_cmd[12 + i].tau = 0.0
+                else:
+                    cmd.motor_cmd[12 + i].q = 0.0
+                    cmd.motor_cmd[12 + i].kp = 0.0
+                    cmd.motor_cmd[12 + i].dq = 0.0
+                    cmd.motor_cmd[12 + i].kd = 0.0
+                    cmd.motor_cmd[12 + i].tau = float(arm_cmd[i])
             cmd.crc = crc.Crc(cmd)
             pub.Write(cmd)
 

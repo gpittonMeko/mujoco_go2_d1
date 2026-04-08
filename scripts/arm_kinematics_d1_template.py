@@ -26,12 +26,34 @@ L_WRIST = 0.13
 
 # Limiti giunti (rad) D1-like conservativi
 J_LIMITS = [
-    (-2.5, 2.5),    # J1
-    (-0.2, 2.5),    # J2
-    (-2.6, 0.3),    # J3
-    (-2.0, 2.0),    # J4
-    (-2.2, 2.2),    # J5
-    (-3.0, 3.0),    # J6
+    (-2.61, 2.61),  # J1 (come range MuJoCo arm_joint1)
+    (0.0, 2.55),    # J2 (allineato a range MuJoCo shoulder pitch >= 0)
+    (-2.75, 0.0),   # J3
+    (-1.50, 1.50),  # J4 (come range MuJoCo)
+    (-1.34, 1.34),  # J5
+    (-2.79, 2.79),  # J6
+]
+
+# Pose nel modello MuJoCo go2_d1_d1mesh.xml (range giunti Z1/D1 chain).
+# Raccolto: compatto, base J1 ~ opposta a “verso la palla” (riposo lontano dal target).
+ARM_FOLD_POSE = [-2.55, 1.38, -2.42, 0.82, 0.0, 0.0]
+# Verso la palla: J1 ~ 0 così REACH/WALK puntano davanti al cane.
+ARM_REACH_FWD_POSE = [0.0, 1.48, -2.05, 0.42, 0.0, -0.45]
+
+_b = ARM_FOLD_POSE
+SEARCH_POSES_D1 = [
+    list(_b),
+    list(_b[:4]) + [1.15, 0.0],
+    list(_b[:4]) + [1.15, 0.22],
+    list(_b[:4]) + [1.15, 0.0],
+    list(_b),
+    list(_b[:4]) + [-1.15, 0.0],
+    list(_b[:4]) + [-1.15, 0.22],
+    list(_b[:4]) + [-1.15, 0.0],
+    list(_b),
+    list(_b[:4]) + [0.85, -0.32],
+    list(_b[:4]) + [-0.85, -0.32],
+    list(_b),
 ]
 
 
