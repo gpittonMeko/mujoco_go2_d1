@@ -31,6 +31,11 @@ try:
     khome = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_KEY, "home")
     if khome >= 0:
         mujoco.mj_resetDataKeyframe(mj_model, mj_data, khome)
+        # Il keyframe "home" ha solo 25 valori (robot). I corpi free (red_ball, ecc.)
+        # vengono azzerati. Ripristiniamo le posizioni dal modello (XML).
+        n_robot = 25  # 7 free + 12 gambe + 6 braccio
+        if mj_model.nq > n_robot and hasattr(mj_model, "qpos0"):
+            mj_data.qpos[n_robot:] = mj_model.qpos0[n_robot:]
 except Exception:
     pass
 
