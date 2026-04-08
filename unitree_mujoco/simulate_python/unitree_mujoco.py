@@ -74,6 +74,16 @@ if config.ENABLE_ELASTIC_BAND:
 else:
     viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 
+# Viewer camera: keep fixed on robot with larger distance.
+try:
+    base_id = mj_model.body("base_link").id
+    viewer.cam.trackbodyid = base_id
+    viewer.cam.distance = 2.2
+    viewer.cam.azimuth = 140
+    viewer.cam.elevation = -20
+except Exception:
+    pass
+
 if config.ENABLE_DEPTH_CAMERA:
     depth_image = np.zeros(
         (config.CAMERA_DOWNSAMPLED_HEIGHT, config.CAMERA_DOWNSAMPLED_WIDTH),

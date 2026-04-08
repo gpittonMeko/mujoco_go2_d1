@@ -103,25 +103,44 @@ def main():
     def clamp(v, lo, hi):
         return max(lo, min(hi, v))
 
-    def on_key(event):
-        vx, vy, vyaw = runner.cmd[0], runner.cmd[1], runner.cmd[2]
-        key = event.keysym.lower()
-        if key == "w":
-            vx = clamp(vx + STEP, -VX_MAX, VX_MAX)
-        elif key == "s":
-            vx = clamp(vx - STEP, -VX_MAX, VX_MAX)
-        elif key == "a":
-            vy = clamp(vy + STEP, -VY_MAX, VY_MAX)
-        elif key == "d":
-            vy = clamp(vy - STEP, -VY_MAX, VY_MAX)
-        elif key == "q":
-            vyaw = clamp(vyaw + STEP, -VYAW_MAX, VYAW_MAX)
-        elif key == "e":
-            vyaw = clamp(vyaw - STEP, -VYAW_MAX, VYAW_MAX)
-        elif key == "space":
-            vx, vy, vyaw = 0.0, 0.0, 0.0
-        runner.cmd[0], runner.cmd[1], runner.cmd[2] = vx, vy, vyaw
+    key_state = {"w": False, "s": False, "a": False, "d": False, "q": False, "e": False}
+
+    def update_cmd_from_keys():
+        vx = 0.0
+        vy = 0.0
+        vyaw = 0.0
+        if key_state["w"] and not key_state["s"]:
+            vx = VX_MAX
+        elif key_state["s"] and not key_state["w"]:
+            vx = -VX_MAX
+        if key_state["a"] and not key_state["d"]:
+            vy = VY_MAX
+        elif key_state["d"] and not key_state["a"]:
+            vy = -VY_MAX
+        if key_state["q"] and not key_state["e"]:
+            vyaw = VYAW_MAX
+        elif key_state["e"] and not key_state["q"]:
+            vyaw = -VYAW_MAX
+        runner.cmd[0] = clamp(vx, -VX_MAX, VX_MAX)
+        runner.cmd[1] = clamp(vy, -VY_MAX, VY_MAX)
+        runner.cmd[2] = clamp(vyaw, -VYAW_MAX, VYAW_MAX)
         update_label()
+
+    def on_key_press(event):
+        key = event.keysym.lower()
+        if key in key_state:
+            key_state[key] = True
+            update_cmd_from_keys()
+        elif key == "space":
+            for k in key_state:
+                key_state[k] = False
+            update_cmd_from_keys()
+
+    def on_key_release(event):
+        key = event.keysym.lower()
+        if key in key_state:
+            key_state[key] = False
+            update_cmd_from_keys()
 
     def update_label():
         vx, vy, vyaw = runner.cmd[0], runner.cmd[1], runner.cmd[2]
@@ -146,13 +165,14 @@ def main():
 
         hint = tk.Label(
             frame,
-            text="W/S vx | A/D vy | Q/E vyaw | Spazio stop | Esc chiudi",
+            text="Tieni premuto: W/S vx | A/D vy | Q/E vyaw | Spazio stop | Esc chiudi",
             font=("", 10),
             fg="gray",
         )
         hint.pack()
 
-        root.bind("<KeyPress>", on_key)
+        root.bind("<KeyPress>", on_key_press)
+        root.bind("<KeyRelease>", on_key_release)
         root.bind("<Escape>", lambda e: on_closing())
         root.protocol("WM_DELETE_WINDOW", on_closing)
         root.focus_set()
