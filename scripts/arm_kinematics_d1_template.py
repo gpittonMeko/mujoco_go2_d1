@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Copia base della cinematica Z1, preparata come template D1 "deploy-friendly".
+Cinematica / pose per il MJCF **go2_d1_d1mesh.xml** (Unitree D1, mesh d1_550).
 
-Obiettivo:
-- mantenere intatta la pipeline attuale (arm_kinematics.py)
-- usare qui parametri/limiti più conservativi per una prova reale
+**Non** sostituisce `arm_kinematics.py` (braccio Z1 in `go2_d1.xml`). Caricato solo da
+`run_go2_d1_ball_d1kin.py` (alias `sys.modules["arm_kinematics"]`).
 
-Nota:
-I valori sono una stima prudente D1-like (reach più compatto dello Z1).
-Vanno rifiniti appena disponibili i limiti ufficiali del D1 usato in campo.
+Limiti giunti allineati al datasheet D1 (arm_joint1..6 ↔ giunti 0..5; pinza non è DoF MJCF).
 """
 
 import math
@@ -24,35 +21,35 @@ L_FORE_X = 0.20
 L_FORE_Z = 0.04
 L_WRIST = 0.13
 
-# Limiti giunti (rad) D1-like conservativi
+# Limiti (rad) = datasheet D1: J0 ±135°, J1–J2–J4 ±90°, J3–J5 ±135° → arm_joint1..6
 J_LIMITS = [
-    (-2.61, 2.61),  # J1 (come range MuJoCo arm_joint1)
-    (0.0, 2.55),    # J2 (allineato a range MuJoCo shoulder pitch >= 0)
-    (-2.75, 0.0),   # J3
-    (-1.50, 1.50),  # J4 (come range MuJoCo)
-    (-1.34, 1.34),  # J5
-    (-2.79, 2.79),  # J6
+    (-2.35619, 2.35619),
+    (-1.5708, 1.5708),
+    (-1.5708, 1.5708),
+    (-2.35619, 2.35619),
+    (-1.5708, 1.5708),
+    (-2.35619, 2.35619),
 ]
 
-# Pose nel modello MuJoCo go2_d1_d1mesh.xml (range giunti Z1/D1 chain).
-# Raccolto: compatto, base J1 ~ opposta a “verso la palla” (riposo lontano dal target).
-ARM_FOLD_POSE = [-2.55, 1.38, -2.42, 0.82, 0.0, 0.0]
-# Verso la palla: J1 ~ 0 così REACH/WALK puntano davanti al cane.
-ARM_REACH_FWD_POSE = [0.0, 1.48, -2.05, 0.42, 0.0, -0.45]
+# Allineate al keyframe home in go2_d1_d1mesh.xml (ultimi 6 valori qpos braccio).
+ARM_FOLD_POSE = [0.0, -1.5, 1.0, 0.22, 0.0, 0.0]
+
+# ARM_REACH_FWD_POSE: assegnata dopo ik_reach (stessi L_*, J_LIMITS) — braccio più avanti per wrist cam in WALK.
 
 _b = ARM_FOLD_POSE
+# Ricerca: fissi j2–j4 come home; variano j5/j6 e leggermente j1 per la wrist cam.
 SEARCH_POSES_D1 = [
     list(_b),
-    list(_b[:4]) + [1.15, 0.0],
-    list(_b[:4]) + [1.15, 0.22],
-    list(_b[:4]) + [1.15, 0.0],
+    list(_b[:4]) + [1.0, 0.0],
+    list(_b[:4]) + [1.0, 0.25],
+    list(_b[:4]) + [1.0, 0.0],
     list(_b),
-    list(_b[:4]) + [-1.15, 0.0],
-    list(_b[:4]) + [-1.15, 0.22],
-    list(_b[:4]) + [-1.15, 0.0],
+    list(_b[:4]) + [-1.0, 0.0],
+    list(_b[:4]) + [-1.0, 0.25],
+    list(_b[:4]) + [-1.0, 0.0],
     list(_b),
-    list(_b[:4]) + [0.85, -0.32],
-    list(_b[:4]) + [-0.85, -0.32],
+    [0.55, _b[1], _b[2], _b[3], 0.5, 0.0],
+    [-0.55, _b[1], _b[2], _b[3], -0.5, 0.0],
     list(_b),
 ]
 
@@ -132,8 +129,8 @@ def ik_reach(target_x, target_y, target_z):
     z_rel = target_z - ARM_BASE_Z
 
     best, best_err = None, 1e9
-    for j2i in [0.2, 0.5, 0.9, 1.3, 1.8, 2.2]:
-        for j3i in [-0.2, -0.6, -1.1, -1.6, -2.1]:
+    for j2i in [0.2, 0.5, 0.9, 1.2, 1.5]:
+        for j3i in [-1.2, -0.8, -0.4, 0.0, 0.4, 0.8, 1.2]:
             for j4i in [-1.2, -0.6, 0.0, 0.6, 1.2]:
                 j2, j3, j4 = j2i, j3i, j4i
                 lr = 0.6
@@ -181,4 +178,12 @@ def step_toward(current, target, max_step):
 
 def smooth(current, target, alpha=0.05):
     return [c + alpha * (t - c) for c, t in zip(current, target)]
+
+
+_rfp = ik_reach(0.42, 0.0, 0.12)
+ARM_REACH_FWD_POSE = (
+    list(_rfp)
+    if _rfp is not None
+    else [0.0, -1.2, 0.85, 0.25, 0.0, -0.5]
+)
 

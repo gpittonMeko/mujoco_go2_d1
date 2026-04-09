@@ -1,28 +1,44 @@
 #!/usr/bin/env python3
 """
-Autonomous ball approach: Go2 d1+Z1 detects red ball, walks toward it,
-reaches with the arm using active searching, and grabs it magnetically.
+Go2 + braccio Z1 (MJCF `go2_d1.xml`): palla rossa, cammino, reach, presa magnetica.
 
-Cinematica braccio: arm_kinematics (FK/IK ricostruita da zero).
-States: STAND → WALK (bypass search) → REACH → GRABBED
+Cinematica: `arm_kinematics.py`. Sim: `unitree_mujoco.py` + `config.py`.
+
+Per la variante mesh D1 (`go2_d1_d1mesh.xml`) usare **solo** l’altro entry point
+`run_go2_d1_ball_d1kin.py` (non modificare questo file per il D1).
+
+States: STAND → WALK → REACH → GRABBED
 """
 
 import time, sys, os, math, threading, json, socket, argparse, signal, select
 import numpy as np
 
+# Impostato unicamente da `run_go2_d1_ball_d1kin.py` prima di eseguire questo script.
+_GO2_BALL_D1_PROFILE = sys.modules.get("go2_ball_d1_profile")
+
 from arm_kinematics import ik_reach, smooth, J_LIMITS, ARM_BASE_Z
 
-_arm = __import__("arm_kinematics")
-if hasattr(_arm, "ARM_FOLD_POSE"):
-    ARM_FOLD = list(_arm.ARM_FOLD_POSE)
-    ARM_REACH_FWD = list(_arm.ARM_REACH_FWD_POSE)
-    SEARCH_POSES = list(_arm.SEARCH_POSES_D1)
-    ARM_POSITION_MODE = True
+if _GO2_BALL_D1_PROFILE is not None:
+    ARM_FOLD = list(_GO2_BALL_D1_PROFILE.ARM_FOLD)
+    ARM_REACH_FWD = list(_GO2_BALL_D1_PROFILE.ARM_REACH_FWD)
+    SEARCH_POSES = list(_GO2_BALL_D1_PROFILE.SEARCH_POSES)
 else:
     ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
     ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]
-    SEARCH_POSES = None  # set below
-    ARM_POSITION_MODE = False
+    SEARCH_POSES = [
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.25],
+        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.25],
+        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+        [0.0, 0.2, -0.4, -0.2, 0.9, -0.35],
+        [0.0, 0.2, -0.4, -0.2, -0.9, -0.35],
+        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
+    ]
 
 _stop_requested = False
 def _on_stop_signal(signum, frame):
@@ -41,30 +57,12 @@ _spec = importlib.util.spec_from_file_location(
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 PolicyRunner = _mod.PolicyRunner
+LEG_TRIM_GO2_D1 = getattr(_mod, "LEG_TRIM_GO2_D1", None)
 
 from unitree_sdk2py.core.channel import (ChannelPublisher, ChannelSubscriber,
                                           ChannelFactoryInitialize)
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
-
-# ── Arm (cinematica in arm_kinematics; pose default Z1 se non D1 template) ──
-if not ARM_POSITION_MODE:
-    ARM_FOLD = [0.0, 0.2, -0.4, -0.2, 0.0, 0.0]
-    ARM_REACH_FWD = [0.0, 0.42, -0.7, 0.1, 0.0, -0.785]
-    SEARCH_POSES = [
-        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
-        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
-        [0.0, 0.2, -0.4, -0.2, 1.2, 0.25],
-        [0.0, 0.2, -0.4, -0.2, 1.2, 0.0],
-        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
-        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
-        [0.0, 0.2, -0.4, -0.2, -1.2, 0.25],
-        [0.0, 0.2, -0.4, -0.2, -1.2, 0.0],
-        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
-        [0.0, 0.2, -0.4, -0.2, 0.9, -0.35],
-        [0.0, 0.2, -0.4, -0.2, -0.9, -0.35],
-        [0.0, 0.2, -0.4, -0.2, 0.0, 0.0],
-    ]
 
 SEARCH_POSE_TIME = 2.5
 
@@ -191,7 +189,24 @@ def main():
         iface = args.interface or "lo"
     ChannelFactoryInitialize(1, iface)
 
-    runner = PolicyRunner(cfg_path, mdl_path, 0.0, 0.0, 0.0, arm_hold=True)
+    # arm_hold=True applica LEG_OFFSET_GO2_Z1 in deploy_policy (solo per Z1). Con profilo D1 il braccio
+    # è comandato qui sotto in tau e l'offset Z1 falserebbe la stance → instabilità / cadute.
+    _z1_leg_trim = _GO2_BALL_D1_PROFILE is None
+    runner = PolicyRunner(
+        cfg_path,
+        mdl_path,
+        0.0,
+        0.0,
+        0.0,
+        arm_hold=_z1_leg_trim,
+        leg_ctrl_kp=26.0 if _GO2_BALL_D1_PROFILE is not None else None,
+        leg_ctrl_kd=0.62 if _GO2_BALL_D1_PROFILE is not None else None,
+        leg_trim=(
+            LEG_TRIM_GO2_D1
+            if _GO2_BALL_D1_PROFILE is not None and LEG_TRIM_GO2_D1 is not None
+            else None
+        ),
+    )
     sub = ChannelSubscriber("rt/lowstate", LowState_)
     sub.Init(runner.state_callback, 10)
     pub = ChannelPublisher("rt/lowcmd", LowCmd_)
@@ -203,7 +218,10 @@ def main():
 
     signal.signal(signal.SIGUSR1, _on_stop_signal)
     signal.signal(signal.SIGUSR2, _on_stop_signal)
-    print("=== Go2 d1+Z1 — Autonomous Ball Approach ===")
+    print(
+        "=== Go2 + braccio — Autonomous Ball Approach ==="
+        + (" (D1 mesh, PD gambe rinforzate)" if _GO2_BALL_D1_PROFILE is not None else " (Z1, offset gambe)")
+    )
     print("  Per uscire: premi 'q'+Invio, Ctrl+C, oppure: kill -USR1 $(pgrep -f run_go2_d1_ball)")
     print("Waiting for lowstate...")
     while runner.low_state is None:
@@ -212,8 +230,16 @@ def main():
     time.sleep(2.0)
 
     state = STAND
-    arm_cmd = list(ARM_FOLD)
-    arm_target = list(ARM_FOLD)
+    if (
+        _GO2_BALL_D1_PROFILE is not None
+        and getattr(_GO2_BALL_D1_PROFILE, "SYNC_ARM_FROM_LOWSTATE", False)
+    ):
+        ls0 = runner.low_state
+        arm_cmd = [float(ls0.motor_state[12 + i].q) for i in range(6)]
+        arm_target = list(arm_cmd)
+    else:
+        arm_cmd = list(ARM_FOLD)
+        arm_target = list(ARM_FOLD)
     t_enter = time.time()
     t_print = 0.0
     search_idx = 0
@@ -362,7 +388,7 @@ def main():
             elif state == WALK:
                 crouch = False
                 walking = True
-                arm_target = list(ARM_REACH_FWD)  # braccio avanti prima della lettura wrist
+                arm_target = list(ARM_REACH_FWD)
 
                 if not detected:
                     vyaw = 0.25
@@ -489,7 +515,7 @@ def main():
                     print("[GRABBED] Palla presa! Mantengo posizione.")
                     t_print = now
 
-            # ── Smooth arm ──
+            # ── Smooth arm (come af140dc: transizioni graduali anche con profilo D1) ──
             if state == FALLEN:
                 a = 0.15
             elif walking:
@@ -516,20 +542,14 @@ def main():
                 target_pos = tp
 
             cmd = runner.make_cmd(target_pos)
+            # Braccio (go2_d1.xml Z1 o go2_d1_d1mesh D1): attuatori <general>, ctrl = tau (setpoint q, rad)
+            # come in d1_arm/arm_control.py — non usare kp/kd su q qui.
             for i in range(6):
-                if ARM_POSITION_MODE:
-                    # Sim D1: PD su q (il bridge MuJoCo usa kp*(q_ref-q) + kd*(dq_ref-dq) + tau).
-                    cmd.motor_cmd[12 + i].q = float(arm_cmd[i])
-                    cmd.motor_cmd[12 + i].kp = 18.0
-                    cmd.motor_cmd[12 + i].dq = 0.0
-                    cmd.motor_cmd[12 + i].kd = 0.9
-                    cmd.motor_cmd[12 + i].tau = 0.0
-                else:
-                    cmd.motor_cmd[12 + i].q = 0.0
-                    cmd.motor_cmd[12 + i].kp = 0.0
-                    cmd.motor_cmd[12 + i].dq = 0.0
-                    cmd.motor_cmd[12 + i].kd = 0.0
-                    cmd.motor_cmd[12 + i].tau = float(arm_cmd[i])
+                cmd.motor_cmd[12 + i].q = 0.0
+                cmd.motor_cmd[12 + i].kp = 0.0
+                cmd.motor_cmd[12 + i].dq = 0.0
+                cmd.motor_cmd[12 + i].kd = 0.0
+                cmd.motor_cmd[12 + i].tau = float(arm_cmd[i])
             cmd.crc = crc.Crc(cmd)
             pub.Write(cmd)
 
