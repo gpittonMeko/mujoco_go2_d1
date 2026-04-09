@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Wrapper copy for D1 mesh visualization experiments.
+Simulatore con scena **go2_d1_d1mesh** (mesh braccio D1), non il placeholder Z1 di `go2_d1.xml`.
 
-Behavior:
-- Loads config_d1viz (copy config)
-- Runs original unitree_mujoco.py unchanged
+Carica `config_d1viz.py` (eredita `config.py` ma imposta `ROBOT_SCENE` → `scene_d1_mesh.xml`)
+ed esegue `unitree_mujoco.py` senza fork del codice viewer/thread.
 
-This launcher intentionally avoids viewer monkey-patching to keep shutdown
-and Qt threading behavior identical to the base simulator.
+Per Go2+Z1 standard usare `unitree_mujoco.py` + `config.py`.
 """
 
 import os

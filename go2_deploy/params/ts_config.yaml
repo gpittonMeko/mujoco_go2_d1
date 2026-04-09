@@ -1,6 +1,7 @@
 policy_name: "policy_ts_gs.pt"
 use_genesis: True
 dt: 0.02
+# stand_* caricati da PolicyRunner ma non usati in make_cmd (solo ctrl_kp/ctrl_kd sulle gambe).
 stand_kp: 60.0
 stand_kd: 5.0
 ctrl_kp: 20

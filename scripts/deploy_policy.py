@@ -62,9 +62,28 @@ LEG_OFFSET_GO2_Z1 = np.array([
     0.0, -0.04, 0.03,  0.0, -0.04, 0.03    # RR, RL: posteriori leggermente piegate
 ], dtype=np.float32)
 
+# go2_d1 + D1 mesh: braccio sul dorso tende a pitch in avanti → carico sulle zampe anteriori.
+# Trim simmetrico: anteriori leggermente meno “in avanti”, posteriori un po’ più carichi (tuning grossolano).
+# Ordine: FR, FL, RR, RL × [hip, thigh, calf]
+LEG_TRIM_GO2_D1 = np.array([
+    0.0, -0.035, 0.03, 0.0, -0.035, 0.03,
+    0.0, 0.05, -0.04, 0.0, 0.05, -0.04,
+], dtype=np.float32)
+
 
 class PolicyRunner:
-    def __init__(self, config_path, model_path, vx=0.5, vy=0.0, vyaw=0.0, arm_hold=False):
+    def __init__(
+        self,
+        config_path,
+        model_path,
+        vx=0.5,
+        vy=0.0,
+        vyaw=0.0,
+        arm_hold=False,
+        leg_ctrl_kp=None,
+        leg_ctrl_kd=None,
+        leg_trim=None,
+    ):
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
 
@@ -72,8 +91,8 @@ class PolicyRunner:
         self.model.eval()
 
         self.dt = cfg["dt"]
-        self.ctrl_kp = cfg["ctrl_kp"]
-        self.ctrl_kd = cfg["ctrl_kd"]
+        self.ctrl_kp = float(leg_ctrl_kp) if leg_ctrl_kp is not None else float(cfg["ctrl_kp"])
+        self.ctrl_kd = float(leg_ctrl_kd) if leg_ctrl_kd is not None else float(cfg["ctrl_kd"])
         self.stand_kp = cfg["stand_kp"]
         self.stand_kd = cfg["stand_kd"]
         self.action_scale = cfg["action_scale"]
@@ -110,6 +129,11 @@ class PolicyRunner:
 
         self.counter = 0
         self.arm_hold = arm_hold
+        self.leg_trim = (
+            np.zeros(12, dtype=np.float32)
+            if leg_trim is None
+            else np.asarray(leg_trim, dtype=np.float32).reshape(12)
+        )
 
         self.low_state = None
         self.crc = CRC()
@@ -218,8 +242,10 @@ class PolicyRunner:
         return target_pos
 
     def make_cmd(self, target_pos):
-        # go2_d1+Z1: applica offset gambe per compensare forward lean (Go2 plain: nessun offset)
-        pos = target_pos + LEG_OFFSET_GO2_Z1 if self.arm_hold else target_pos
+        # leg_trim: compensazione statica (es. D1). arm_hold: ulteriore offset solo Z1.
+        pos = np.asarray(target_pos, dtype=np.float32) + self.leg_trim
+        if self.arm_hold:
+            pos = pos + LEG_OFFSET_GO2_Z1
 
         cmd = unitree_go_msg_dds__LowCmd_()
         cmd.head[0] = 0xFE

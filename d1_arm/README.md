@@ -73,9 +73,11 @@ Per dettagli sul controllo del D1, contattare Unitree o consultare la documentaz
 
 ## 5. Simulazione (MuJoCo)
 
-**Modello disponibile:** Go2 + braccio Z1 (placeholder per D1) tramite script di build.
+**Modelli MuJoCo:**
+- **`go2_d1.xml`:** braccio Z1 (menagerie), generato da `scripts/build_go2_arm.py`.
+- **`go2_d1_d1mesh.xml`:** mesh Unitree D1 (`d1_550_description`), limiti giunti da datasheet (J0–J5 su `arm_joint1`–`arm_joint6`; la pinza datasheet non è un DoF separato nel MJCF).
 
-**Setup:**
+**Setup (Z1 / build):**
 ```bash
 cd d1_arm
 python3 scripts/build_go2_arm.py           # peso normale
@@ -85,10 +87,13 @@ python3 scripts/build_go2_arm.py --weightless  # peso e inerzie braccio azzerati
 
 Lo script clona [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie), copia gli asset Z1 e genera `unitree_mujoco/unitree_robots/go2_d1/`.
 
-**Avvio simulatore con braccio:**
+**Avvio simulatore:**
 ```bash
-# In config.py: ROBOT = "go2_d1"
+# Go2 + Z1 (config.py, ROBOT = "go2_d1")
 cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
+
+# Go2 + mesh D1
+cd unitree_mujoco/simulate_python && python3 unitree_mujoco_d1viz.py
 ```
 
 **Interfaccia virtuale controllo braccio:**

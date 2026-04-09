@@ -115,3 +115,9 @@ Unitree_Simulator/
 ├── d1_arm/             # Braccio D1/Z1: guida, build (--light=10% peso), arm_control.py
 └── docs/
 ```
+
+---
+
+## 7. Materiale didattico
+
+- **[Comandare il robot (per studenti)](comandare_il_robot_per_studenti.md)** – flusso LowCmd/LowState, ordine di avvio, policy, joystick, braccio `go2_d1`, checklist laboratorio.

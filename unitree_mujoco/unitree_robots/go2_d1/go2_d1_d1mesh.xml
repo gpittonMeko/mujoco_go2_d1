@@ -30,18 +30,19 @@
         <geom group="3"/>
         <default class="foot">
           <geom size="0.022" pos="-0.002 0 -0.213" priority="1" condim="6"
-            friction="0.4 0.02 0.01"/>
+            friction="0.55 0.025 0.012"/>
         </default>
       </default>
     </default>
 
-    <default class="z1">
+    <!-- Braccio D1: attuatori <general> (ctrl = q_des via bridge). forcerange = tetto coppia (Nm): troppo basso = giunto che “non arriva” al target sotto carico. -->
+    <default class="d1">
       <joint damping="1" frictionloss="1"/>
       <general biastype="affine" gainprm="1000" biasprm="0 -1000 -100" forcerange="-30 30"/>
-      <default class="z1_visual">
+      <default class="d1_visual">
         <geom type="mesh" group="2" contype="0" conaffinity="0"/>
       </default>
-      <default class="z1_collision">
+      <default class="d1_collision">
         <geom type="cylinder" group="3" mass="0" density="0"/>
       </default>
     </default>
@@ -237,50 +238,57 @@
           </body>
         </body>
       </body>
-      <!-- Braccio Z1 (placeholder D1) montato su piastra payload -->
-      <body name="arm_link00" pos="0.15 0 0.06" childclass="z1">
-        <inertial pos="-0.00334984 -0.00013615 0.0249584" quat="-0.00692194 0.682592 0.00133293 0.730766" mass="0.1069"
-          diaginertia="0.0001202 0.0000939 0.0000857"/>
-        <geom class="z1_visual" mesh="d1_base_link"/>
-        <geom size="0.0325 0.0255" pos="0 0 0.0255" class="z1_collision"/>
+      <!-- Braccio Unitree D1 (mesh d1_550); limiti giunti 0–5 da datasheet (°→rad). Pinza (joint 6 datasheet) non è DoF separato qui. -->
+      <!-- Inerzie/masse D1 allineate a d1_550_description/urdf/d1_550_description.urdf (link base + Empty_Link*) -->
+      <body name="arm_link00" pos="0.15 0 0.06" childclass="d1">
+        <inertial pos="-0.00334984 -0.00013615 0.0249584" quat="-0.00692194 0.682592 0.00133293 0.730766" mass="0.16964"
+          diaginertia="0.0001908 0.0001490 0.0001360"/>
+        <geom class="d1_visual" mesh="d1_base_link"/>
+        <geom size="0.0325 0.0255" pos="0 0 0.0255" class="d1_collision"/>
         <body name="arm_link01" pos="0 0 0.0738">
-          <inertial pos="2.47e-06 -0.00025198 0.0231717" quat="0.708578 0.705633 0.000281462 -0.000355927" mass="0.673326"
-            diaginertia="0.00128328 0.000839362 0.000719308"/>
-          <joint name="arm_joint1" axis="0 0 -1" range="-2.61799 2.61799"/>
-          <geom class="z1_visual" mesh="d1_Empty_Link1"/>
+          <inertial pos="2.47e-06 -0.00025198 0.0231717" quat="0.708578 0.705633 0.000281462 -0.000355927" mass="0.14706"
+            diaginertia="0.0002804 0.0001833 0.0001571"/>
+          <!-- J0 ±135° -->
+          <joint name="arm_joint1" axis="0 0 -1" range="-2.35619 2.35619"/>
+          <geom class="d1_visual" mesh="d1_Empty_Link1"/>
           <body name="arm_link02" pos="0 -0.0276 0.0578">
-            <inertial pos="-0.110126 0.00240029 0.00158266" quat="0.00748058 0.707092 -0.0114473 0.70699" mass="0.2696"
-              diaginertia="0.00558 0.00550 0.000227"/>
-            <joint name="arm_joint2" axis="0 1 0" range="0 2.96706" damping="2"/>
-            <geom class="z1_visual" mesh="d1_Empty_Link2"/>
-            <geom size="0.0325 0.051" quat="1 1 0 0" class="z1_collision"/>
-            <geom size="0.0225 0.1175" pos="-0.1625 0 0" quat="1 0 1 0" class="z1_collision"/>
-            <geom size="0.0325 0.0255" pos="-0.35 0 0" quat="1 1 0 0" class="z1_collision"/>
+            <inertial pos="-0.110126 0.00240029 0.00158266" quat="0.00748058 0.707092 -0.0114473 0.70699" mass="0.20987"
+              diaginertia="0.004343 0.004282 0.0001768"/>
+            <!-- J1 ±90° -->
+            <joint name="arm_joint2" axis="0 1 0" range="-1.5708 1.5708" damping="2"/>
+            <geom class="d1_visual" mesh="d1_Empty_Link2"/>
+            <geom size="0.0325 0.051" quat="1 1 0 0" class="d1_collision"/>
+            <geom size="0.0225 0.1175" pos="-0.1625 0 0" quat="1 0 1 0" class="d1_collision"/>
+            <geom size="0.0325 0.0255" pos="-0.35 0 0" quat="1 1 0 0" class="d1_collision"/>
             <body name="arm_link03" pos="0 -0.0004 0.27">
-              <inertial pos="0.106092 -0.00541815 0.0347638" quat="0.540557 0.443575 0.426319 0.573839" mass="0.839409"
-                diaginertia="0.00954365 0.00938711 0.000558432"/>
-              <joint name="arm_joint3" axis="0 1 0" range="-2.87979 0"/>
-              <geom class="z1_visual" mesh="d1_Empty_Link3"/>
-              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="z1_collision"/>
-              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="z1_collision"/>
+              <inertial pos="0.106092 -0.00541815 0.0347638" quat="0.540557 0.443575 0.426319 0.573839" mass="0.064921"
+                diaginertia="0.0007380 0.0007259 0.0000432"/>
+              <!-- J2 ±90° -->
+              <joint name="arm_joint3" axis="0 1 0" range="-1.5708 1.5708"/>
+              <geom class="d1_visual" mesh="d1_Empty_Link3"/>
+              <geom size="0.02 0.058" pos="0.128 0 0.055" quat="1 0 1 0" class="d1_collision"/>
+              <geom size="0.0325 0.0295" pos="0.2205 0 0.055" quat="0.5 -0.5 0.5 0.5" class="d1_collision"/>
               <body name="arm_link04" pos="0.05 0.0275 0.041325">
                 <inertial pos="0.0436668 0.00364738 -0.00170192" quat="0.0390835 0.726445 -0.0526787 0.684087"
-                  mass="0.1276" diaginertia="0.000222 0.000213 0.0000685"/>
-                <joint name="arm_joint4" axis="1 0 0" range="-1.51844 1.51844"/>
-                <geom class="z1_visual" mesh="d1_Empty_Link4"/>
-                <geom size="0.0325 0.0335" pos="0.072 0 0" class="z1_collision"/>
+                  mass="0.081362" diaginertia="0.0001416 0.0001358 0.0000437"/>
+                <!-- J3 ±135° -->
+                <joint name="arm_joint4" axis="1 0 0" range="-2.35619 2.35619"/>
+                <geom class="d1_visual" mesh="d1_Empty_Link4"/>
+                <geom size="0.0325 0.0335" pos="0.072 0 0" class="d1_collision"/>
                 <body name="arm_link05" pos="0.15468 -0.0258 0.0001">
-                  <inertial pos="0.0312153 0 0.00646316" quat="0.462205 0.535209 0.53785 0.45895" mass="0.389385"
-                    diaginertia="0.000558961 0.000547317 0.000167332"/>
-                  <joint name="arm_joint5" axis="0 1 0" range="-1.3439 1.3439"/>
-                  <geom class="z1_visual" mesh="d1_Empty_Link5"/>
+                  <inertial pos="0.0312153 0 0.00646316" quat="0.462205 0.535209 0.53785 0.45895" mass="0.059846"
+                    diaginertia="0.0000859 0.0000842 0.0000257"/>
+                  <!-- J4 ±90° -->
+                  <joint name="arm_joint5" axis="0 1 0" range="-1.5708 1.5708"/>
+                  <geom class="d1_visual" mesh="d1_Empty_Link5"/>
                   <body name="arm_link06" pos="0.0777 0.025822 -0.0010718">
                     <inertial pos="0.0241569 -0.00017355 -0.00143876" quat="0.998779 0.0457735 -0.00663717 0.0173548"
-                      mass="0.0653" diaginertia="0.0000415 0.0000334 0.0000332"/>
-                    <joint name="arm_joint6" axis="1 0 0" range="-2.79253 2.79253"/>
-                    <geom class="z1_visual" mesh="d1_Empty_Link6"/>
-                    <geom size="0.0325 0.0255" pos="0.0255 0 0" quat="1 0 1 0" class="z1_collision"/>
-                    <camera name="wrist_camera" pos="0.05 0 0" euler="0 -1.5708 -1.5708" fovy="70" mode="fixed"/>
+                      mass="0.12117" diaginertia="0.0000770 0.0000620 0.0000616"/>
+                    <!-- J5 ±135° (ultimo DoF cinematico prima pinza; pinza datasheet non modellata) -->
+                    <joint name="arm_joint6" axis="1 0 0" range="-2.35619 2.35619"/>
+                    <geom class="d1_visual" mesh="d1_Empty_Link6"/>
+                    <geom size="0.0325 0.0255" pos="0.0255 0 0" quat="1 0 1 0" class="d1_collision"/>
+                    <camera name="wrist_camera" pos="0.1 0 0" euler="0 -1.5708 -1.5708" fovy="70" mode="fixed"/>
                   </body>
                 </body>
               </body>
@@ -306,12 +314,12 @@
     <motor class="hip" name="RL_thigh" joint="RL_thigh_joint" />
     <motor class="knee" name="RL_calf" joint="RL_calf_joint" />
 
-    <general class="z1" name="arm_motor1" joint="arm_joint1" ctrlrange="-2.61799 2.61799"/>
-    <general class="z1" name="arm_motor2" joint="arm_joint2" ctrlrange="0 2.96706" forcerange="-60 60" gainprm="1500" biasprm="0 -1500 -150"/>
-    <general class="z1" name="arm_motor3" joint="arm_joint3" ctrlrange="-2.87979 0"/>
-    <general class="z1" name="arm_motor4" joint="arm_joint4" ctrlrange="-1.51844 1.51844"/>
-    <general class="z1" name="arm_motor5" joint="arm_joint5" ctrlrange="-1.3439 1.3439"/>
-    <general class="z1" name="arm_motor6" joint="arm_joint6" ctrlrange="-2.79253 2.79253"/>
+    <general class="d1" name="arm_motor1" joint="arm_joint1" ctrlrange="-2.35619 2.35619"/>
+   <general class="d1" name="arm_motor2" joint="arm_joint2" ctrlrange="-1.5708 1.5708" />
+    <general class="d1" name="arm_motor3" joint="arm_joint3" ctrlrange="-1.5708 1.5708"/>
+    <general class="d1" name="arm_motor4" joint="arm_joint4" ctrlrange="-2.35619 2.35619"/>
+    <general class="d1" name="arm_motor5" joint="arm_joint5" ctrlrange="-1.5708 1.5708"/>
+    <general class="d1" name="arm_motor6" joint="arm_joint6" ctrlrange="-2.35619 2.35619"/>
   </actuator>
 
   <sensor>
@@ -380,7 +388,18 @@
   </sensor>
 
   <keyframe>
-    <key name="home" qpos="0 0 0.27 1 0 0 0 0.006 0.82 -1.50 -0.006 0.82 -1.50 0.006 1.08 -1.82 -0.006 1.08 -1.82 -2.55 1.38 -2.42 0.82 0 0"
-      ctrl="0.006 0.82 -1.50 -0.006 0.82 -1.50 0.006 1.08 -1.82 -0.006 1.08 -1.82 -2.55 1.38 -2.42 0.82 0 0" />
+    <!-- home: qpos = base freejoint(7) | Go2 gambe(12) | D1 braccio(6); ctrl = 12+6 attuatori -->
+    <key
+      name="home"
+      qpos="
+        0 0 0.27 1 0 0 0
+        0.006 0.82 -1.50 -0.006 0.82 -1.50 0.006 1.08 -1.82 -0.006 1.08 -1.82
+        -0.0 -1.5 1.0 0.22 0 0
+      "
+      ctrl="
+        0.006 0.82 -1.50 -0.006 0.82 -1.50 0.006 1.08 -1.82 -0.006 1.08 -1.82
+        -0.0 -1.5 1.0 0.22 0 0
+      "
+    />
   </keyframe>
 </mujoco>

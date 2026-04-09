@@ -490,15 +490,16 @@ def PhysicsViewerThread():
             except Exception as e:
                 print("Wrist cam err:", e)
 
-        # Arm Motors: scheda modificabile (trackbar) + vista real-time
-        if config.ENABLE_DEPTH_CAMERA and num_motor_ >= 18:
-            try:
-                _create_arm_trackbars(mj_data.sensordata)
-                arm_img = render_arm_motors(mj_data.sensordata)
-                if arm_img is not None:
-                    cv.imshow("Arm Motors", arm_img)
-            except Exception as e:
-                pass
+        # Visualizzazione motori braccio (OpenCV): finestra "Arm Motors" con barre giunti / trackbar
+        # manuali e anteprima posizioni. Disattivata sotto.
+        # if config.ENABLE_DEPTH_CAMERA and num_motor_ >= 18:
+        #     try:
+        #         _create_arm_trackbars(mj_data.sensordata)
+        #         arm_img = render_arm_motors(mj_data.sensordata)
+        #         if arm_img is not None:
+        #             cv.imshow("Arm Motors", arm_img)
+        #     except Exception as e:
+        #         pass
 
         cv.waitKey(1)
 
