@@ -1,7 +1,7 @@
 ROBOT = "go2_d1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1", "go2_d1" (Go2+braccio Z1)
 ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
 DOMAIN_ID = 1 # Domain id
-INTERFACE = "lan2"  # "lo" per sim locale (sudo ip link set lo multicast on). "lan2" se lo non funziona 
+INTERFACE = "lo"  # "lo" per sim locale (sudo ip link set lo multicast on). Usa "lan2" solo se UP e collegata
 
 USE_JOYSTICK = 0 # Simulate Unitree WirelessController using a gamepad
 JOYSTICK_TYPE = "xbox" # support "xbox" and "switch" gamepad layout
