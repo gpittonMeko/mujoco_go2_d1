@@ -60,6 +60,31 @@ try:
 except Exception:
     pass
 
+# Geom lattina: in presa si disattivano contatti così non influenza gambe/base (niente attrito col suolo o coi link).
+_ball_geom_id = -1
+_ball_contype_save = 1
+_ball_conaffinity_save = 1
+try:
+    _gball = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, "ball")
+    if _gball >= 0:
+        _ball_geom_id = _gball
+        _ball_contype_save = int(mj_model.geom_contype[_gball])
+        _ball_conaffinity_save = int(mj_model.geom_conaffinity[_gball])
+except Exception:
+    pass
+
+
+def _set_ball_collision(enabled: bool):
+    if _ball_geom_id < 0:
+        return
+    if enabled:
+        mj_model.geom_contype[_ball_geom_id] = _ball_contype_save
+        mj_model.geom_conaffinity[_ball_geom_id] = _ball_conaffinity_save
+    else:
+        mj_model.geom_contype[_ball_geom_id] = 0
+        mj_model.geom_conaffinity[_ball_geom_id] = 0
+
+
 # Wrist camera: quat base da MJCF (ogni avvio sim = come nel progetto); in presa si applica +45° locale.
 _wrist_cam_mj_id = -1
 _wrist_cam_quat_base = _wrist_cam_quat_grasp = None
@@ -192,6 +217,9 @@ def apply_magnetic_grab():
         mj_data.qpos[_ball_qadr:_ball_qadr+3] = tip_pos
         if _ball_qvel_adr >= 0:
             mj_data.qvel[_ball_qvel_adr:_ball_qvel_adr+6] = 0
+
+    # Presa saldata: nessun contatto lattina ↔ mondo/robot → non altera stance né dinamica delle gambe.
+    _set_ball_collision(not ball_grabbed)
 
     return dist
 
