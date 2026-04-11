@@ -15,17 +15,16 @@
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
     <material name="red" rgba="0.9 0.1 0.1 1" reflectance="0.3"/>
+    <!-- lattina.obj da VOLUME: coordinate ~cm → scale 0.01 -->
+    <mesh name="crushed_can_mesh" file="lattina.obj" scale="0.01 0.01 0.01"/>
   </asset>
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-    <body name="table" pos="1.0 0 0.15">
-      <geom name="table_top" type="box" size="0.12 0.12 0.15" rgba="0.55 0.35 0.2 1" condim="3"/>
-    </body>
-    <body name="red_ball" pos="1.0 0 0.355">
+    <body name="red_ball" pos="1.0 0.2 0.045">
       <freejoint/>
-      <geom name="ball" type="sphere" size="0.05" mass="0.05" material="red"
+      <geom name="ball" type="mesh" mesh="crushed_can_mesh" mass="0.05" material="red"
         friction="1.0 0.02 0.01" condim="3"/>
     </body>
   </worldbody>

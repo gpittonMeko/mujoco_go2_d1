@@ -37,7 +37,7 @@ I programmi che “comandano” il robot sono **processi separati** che:
 
 Nel file `unitree_mujoco/simulate_python/config.py` conviene sapere cosa toccare:
 
-- **`ROBOT`** – `"go2"` solo quadrupede; `"go2_d1"` quadrupede + braccio (modello Z1 come placeholder D1).
+- **`ROBOT`** – `"go2"` solo quadrupede; `"go2_d1"` quadrupede + **braccio Z1** (MJCF `go2_d1.xml`, scena `scene.xml`). Il braccio **D1** con mesh `go2_d1_d1mesh.xml` è una variante separata: sim `unitree_mujoco_d1viz.py` + script `run_go2_d1_ball_d1kin.py`, non questo flusso.
 - **`DOMAIN_ID`** – per la sim è tipicamente **1** (allineato a come inizializzano gli script Python del progetto).
 - **`INTERFACE`** – interfaccia di rete per il multicast DDS. Su molte macchine Linux si usa `"lo"` per sim locale; a volte serve `"lan2"` o altra interfaccia se `lo` dà errori multicast.
 
@@ -53,7 +53,9 @@ Nel file `unitree_mujoco/simulate_python/config.py` conviene sapere cosa toccare
    cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
    ```
 
-   Si apre la finestra MuJoCo; se attiva la depth camera, anche una finestra OpenCV.
+   Si apre la finestra MuJoCo; se attiva la depth camera, anche una finestra OpenCV. Con `ROBOT = "go2_d1"` questo è il modello **Z1** sul dorso.
+
+   **Palla / reach autonomo (braccio Z1):** dopo il sim, in un altro terminale: `python3 scripts/run_go2_d1_ball.py --interface lo` (stessa interfaccia DDS del `config.py`). Per il **D1 mesh** non usare questo comando: servono `unitree_mujoco_d1viz.py` e `run_go2_d1_ball_d1kin.py`.
 
 2. **Terminale 2 – Chi comanda le gambe (scegliere UNA modalità)**
 

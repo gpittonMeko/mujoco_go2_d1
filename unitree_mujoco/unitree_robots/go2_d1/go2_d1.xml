@@ -81,7 +81,8 @@
 
   <worldbody>
     <body name="base_link" pos="0 0 0.445" childclass="go2">
-      <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719"
+      <!-- COM torso: ~15 mm indietro (−x) rispetto al modello stock -->
+      <inertial pos="0.006112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719"
         mass="6.921"
         diaginertia="0.107027 0.0980771 0.0244531" />
       <freejoint />
@@ -95,7 +96,7 @@
       <geom size="0.047" pos="0.293 0 -0.06" class="collision" />
       <site name="imu" pos="-0.02557 0 0.04232" />
       <!-- Camera per depth/SLAM (da fork lupinjia/unitree_mujoco) -->
-      <camera name="depth_camera" pos="0.315 0 0.09" euler="0 -1.57 -1.57" mode="fixed" fovy="62"/>
+      <camera name="depth_camera" pos="0.315 0 0.09" euler="0 -0.78539816339 0" mode="fixed" fovy="72"/>
       <body name="FL_hip" pos="0.1934 0.0465 0">
         <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237"
           mass="0.678"
@@ -280,7 +281,7 @@
                     <joint name="arm_joint6" axis="1 0 0" range="-2.79253 2.79253"/>
                     <geom class="z1_visual" mesh="z1_Link06"/>
                     <geom size="0.0325 0.0255" pos="0.0255 0 0" quat="1 0 1 0" class="z1_collision"/>
-                    <camera name="wrist_camera" pos="0.05 0 0" euler="0 -1.5708 -1.5708" fovy="70" mode="fixed"/>
+                    <camera name="wrist_camera" pos="0.05 0 0" euler="0 -0.78539816339 -1.5708" fovy="90" mode="fixed"/>
                   </body>
                 </body>
               </body>

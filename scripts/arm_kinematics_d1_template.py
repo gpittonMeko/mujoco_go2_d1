@@ -32,7 +32,8 @@ J_LIMITS = [
 ]
 
 # Allineate al keyframe home in go2_d1_d1mesh.xml (ultimi 6 valori qpos braccio).
-ARM_FOLD_POSE = [0.0, -1.5, 1.0, 0.22, 0.0, 0.0]
+# Piega più bassa verso terra (sdraiata / attesa IK).
+ARM_FOLD_POSE = [0.0, -1.52, 1.15, 0.08, 0.0, 0.0]
 
 # ARM_REACH_FWD_POSE: assegnata dopo ik_reach (stessi L_*, J_LIMITS) — braccio più avanti per wrist cam in WALK.
 
@@ -65,7 +66,7 @@ def _clamp_workspace(x, y, z):
     """
     x = clamp(x, 0.18, 0.72)
     y = clamp(y, -0.35, 0.35)
-    z = clamp(z, 0.02, 0.50)
+    z = clamp(z, -0.10, 0.50)
     return x, y, z
 
 
@@ -180,7 +181,7 @@ def smooth(current, target, alpha=0.05):
     return [c + alpha * (t - c) for c, t in zip(current, target)]
 
 
-_rfp = ik_reach(0.42, 0.0, 0.12)
+_rfp = ik_reach(0.42, 0.0, 0.05)
 ARM_REACH_FWD_POSE = (
     list(_rfp)
     if _rfp is not None

@@ -1,4 +1,5 @@
 import time
+import math
 import signal
 import socket
 import json
@@ -18,9 +19,12 @@ if config.ENABLE_DEPTH_CAMERA:
     from image_publisher.image_publisher import DepthImagePublisher
 
 BALL_UDP_PORT = 9870
-GRAB_ATTRACT_DIST = 0.15
-GRAB_WELD_DIST = 0.08
-GRAB_FORCE = 1200.0
+WRIST_CAM_CTL_PORT = 9871  # run_go2_d1_ball.py → inclinazione wrist cam in fase presa (solo runtime)
+GRAB_ATTRACT_DIST = 0.22
+GRAB_WELD_DIST = 0.11
+GRAB_FORCE = 2520.0  # +40% attrazione verso il tool tip
+# Estensione lungo asse X di arm_link06 (allineata a arm_kinematics fk_tool_tip +0.07)
+GRAB_TIP_EXTEND = 0.07
 
 locker = threading.Lock()
 
@@ -39,7 +43,7 @@ try:
 except Exception:
     pass
 
-BALL_INIT_POS = [1.0, 0.0, 0.355]
+BALL_INIT_POS = [1.0, 0.2, 0.045]  # come scene*.xml: x=1.0 iniziale, +0.2 m su Y (sinistra robot)
 _ball_body_id = -1
 _ball_qadr = -1
 _ball_qvel_adr = -1
@@ -56,7 +60,65 @@ try:
 except Exception:
     pass
 
+# Wrist camera: quat base da MJCF (ogni avvio sim = come nel progetto); in presa si applica +45° locale.
+_wrist_cam_mj_id = -1
+_wrist_cam_quat_base = _wrist_cam_quat_grasp = None
+_wrist_grasp_cam = False
+_wrist_ctl_sock = None
+try:
+    _wrist_cam_mj_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_camera")
+    if _wrist_cam_mj_id >= 0:
+        _wrist_cam_quat_base = np.array(
+            mj_model.cam_quat[_wrist_cam_mj_id], dtype=np.float64).copy()
+        _dq = np.zeros(4, dtype=np.float64)
+        mujoco.mju_axisAngle2Quat(
+            _dq, np.array([1.0, 0.0, 0.0], dtype=np.float64), math.pi / 4.0)
+        _wrist_cam_quat_grasp = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mulQuat(
+            _wrist_cam_quat_grasp, _wrist_cam_quat_base, _dq)
+        _wrist_ctl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _wrist_ctl_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _wrist_ctl_sock.bind(("127.0.0.1", WRIST_CAM_CTL_PORT))
+        _wrist_ctl_sock.setblocking(False)
+except Exception as _e:
+    print("wrist_camera ctl:", _e)
+
 ball_grabbed = False
+
+
+def _tool_tip_world():
+    """Punta utensile in world frame (stessa convenzione della presa magnetica)."""
+    if _tool_body_id < 0:
+        return None
+    tool_pos = mj_data.xpos[_tool_body_id].copy()
+    tool_fwd = mj_data.xmat[_tool_body_id].reshape(3, 3)[:, 0]
+    return tool_pos + GRAB_TIP_EXTEND * tool_fwd
+
+
+def _poll_wrist_cam_control():
+    """Legge comandi UDP da run_go2_d1_ball (solo memoria; MJCF su disco resta invariato)."""
+    global _wrist_grasp_cam
+    if _wrist_ctl_sock is None:
+        return
+    try:
+        while True:
+            data, _ = _wrist_ctl_sock.recvfrom(512)
+            m = json.loads(data.decode())
+            _wrist_grasp_cam = bool(m.get("wrist_grasp_cam", False))
+    except BlockingIOError:
+        pass
+    except Exception:
+        pass
+
+
+def _apply_wrist_cam_orientation():
+    if _wrist_cam_mj_id < 0 or _wrist_cam_quat_base is None:
+        return
+    if _wrist_grasp_cam and _wrist_cam_quat_grasp is not None:
+        mj_model.cam_quat[_wrist_cam_mj_id][:] = _wrist_cam_quat_grasp
+    else:
+        mj_model.cam_quat[_wrist_cam_mj_id][:] = _wrist_cam_quat_base
 
 # Arm Motors manual override (slider values -> ctrl, solo braccio)
 arm_manual_ctrl = None
@@ -103,9 +165,9 @@ def apply_magnetic_grab():
     if _ball_body_id < 0 or _tool_body_id < 0:
         return 999.0
 
-    tool_pos = mj_data.xpos[_tool_body_id].copy()
-    tool_fwd = mj_data.xmat[_tool_body_id].reshape(3, 3)[:, 0]
-    tip_pos = tool_pos + 0.07 * tool_fwd
+    tip_pos = _tool_tip_world()
+    if tip_pos is None:
+        return 999.0
 
     ball_pos = mj_data.xpos[_ball_body_id].copy()
     diff = tip_pos - ball_pos
@@ -194,20 +256,37 @@ def ball_in_robot_frame():
 
 def detect_red_ball(rgb, depth_raw):
     hsv = cv.cvtColor(rgb, cv.COLOR_RGB2HSV)
-    mask1 = cv.inRange(hsv, np.array([0, 100, 80]), np.array([10, 255, 255]))
-    mask2 = cv.inRange(hsv, np.array([170, 100, 80]), np.array([180, 255, 255]))
-    mask = cv.morphologyEx(mask1 | mask2, cv.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    mask = cv.morphologyEx(mask, cv.MORPH_DILATE, np.ones((5, 5), np.uint8))
+    s_min = int(getattr(config, "BALL_HSV_S_MIN", 100))
+    v_min = int(getattr(config, "BALL_HSV_V_MIN", 80))
+    h1m = int(getattr(config, "BALL_HSV_H1_MAX", 10))
+    h2m = int(getattr(config, "BALL_HSV_H2_MIN", 170))
+    lo = np.array([0, s_min, v_min], dtype=np.uint8)
+    mask1 = cv.inRange(hsv, lo, np.array([h1m, 255, 255], dtype=np.uint8))
+    mask2 = cv.inRange(
+        hsv, np.array([h2m, s_min, v_min], dtype=np.uint8),
+        np.array([180, 255, 255], dtype=np.uint8),
+    )
+    ko = int(getattr(config, "BALL_MORPH_OPEN_K", 5))
+    kd = int(getattr(config, "BALL_MORPH_DILATE_K", 5))
+    ko = ko + (1 - ko % 2)
+    kd = kd + (1 - kd % 2)
+    k_open = np.ones((ko, ko), np.uint8)
+    k_dil = np.ones((kd, kd), np.uint8)
+    mask = cv.morphologyEx(mask1 | mask2, cv.MORPH_OPEN, k_open)
+    mask = cv.morphologyEx(mask, cv.MORPH_DILATE, k_dil)
     contours, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
     c = max(contours, key=cv.contourArea)
-    if cv.contourArea(c) < 30:
+    min_area = float(getattr(config, "BALL_MIN_CONTOUR_AREA", 30))
+    if cv.contourArea(c) < min_area:
         return None
     (cx, cy), radius = cv.minEnclosingCircle(c)
     cx, cy, radius = int(cx), int(cy), int(radius)
-    patch = depth_raw[max(0,cy-3):min(depth_raw.shape[0],cy+4),
-                      max(0,cx-3):min(depth_raw.shape[1],cx+4)]
+    pr = int(getattr(config, "BALL_DEPTH_PATCH_RADIUS", 3))
+    pr = max(2, pr)
+    patch = depth_raw[max(0, cy - pr): min(depth_raw.shape[0], cy + pr + 1),
+                      max(0, cx - pr): min(depth_raw.shape[1], cx + pr + 1)]
     valid = patch[(patch > config.NEAR_CLIP) & (patch < config.FAR_CLIP)]
     depth_m = float(np.median(valid)) if len(valid) > 0 else -1.0
     return (cx, cy, depth_m, radius)
@@ -429,15 +508,19 @@ def PhysicsViewerThread():
 
     while viewer.is_running():
         t0 = time.perf_counter()
+        _poll_wrist_cam_control()
+        _apply_wrist_cam_orientation()
         locker.acquire()
         viewer.sync()
 
         bl = ball_in_robot_frame()
         rz = float(mj_data.xpos[mj_model.body("base_link").id][2]) if bl else 0.33
         grab_dist = 999.0
-        if _tool_body_id >= 0 and _ball_body_id >= 0:
-            grab_dist = float(np.linalg.norm(
-                mj_data.xpos[_tool_body_id] - mj_data.xpos[_ball_body_id]))
+        if _ball_body_id >= 0:
+            tip = _tool_tip_world()
+            if tip is not None:
+                grab_dist = float(
+                    np.linalg.norm(tip - mj_data.xpos[_ball_body_id]))
 
         bd = wd = False
         w_depth = -1.0
