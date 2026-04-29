@@ -734,7 +734,7 @@ def _run_d1_messages(messages: list[dict[str, Any]], delay_ms: int = 900) -> dic
 
 
 def _read_d1_servo_angles() -> list[float] | None:
-    helper = PROJECT_ROOT / "d1_arm_feedback_helper"
+    helper = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
     if not helper.exists():
         return None
     try:
