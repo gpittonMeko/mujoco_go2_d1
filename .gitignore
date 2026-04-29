@@ -35,3 +35,6 @@ MUJOCO_LOG.TXT
 
 # CycloneDDS build (opzionale, se compilato in-place)
 cyclonedds/build/
+
+# D1 arm DDS helpers (compiled locally on Jetson — see scripts/build_d1_arm_helpers.sh)
+bin/

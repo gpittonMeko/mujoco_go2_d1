@@ -5,23 +5,33 @@ Cinematica / pose per il MJCF **go2_d1_d1mesh.xml** (Unitree D1, mesh d1_550).
 **Non** sostituisce `arm_kinematics.py` (braccio Z1 in `go2_d1.xml`). Caricato solo da
 `run_go2_d1_ball_d1kin.py` (alias `sys.modules["arm_kinematics"]`).
 
-Limiti giunti allineati al datasheet D1 (arm_joint1..6 ↔ giunti 0..5; pinza non è DoF MJCF).
+Limiti giunti allineati al datasheet D1 (arm_joint1..6 <-> giunti 0..5; pinza non e'
+un DoF separato nel MJCF). La FK segue posizioni e assi dichiarati nel MJCF D1, evitando
+la vecchia approssimazione planare Z1.
 """
 
-import math
 import numpy as np
 
-# ── Parametri geometrici D1-like (stima conservativa) ─────────────────────────
+# -- Parametri geometrici da go2_d1_d1mesh.xml ---------------------------------
 ARM_BASE_X = 0.15
 ARM_BASE_Y = 0.0
-ARM_BASE_Z = 0.155
+ARM_BASE_Z = 0.155  # riferimento legacy usato da run_go2_d1_ball per clamp target
+ARM_MOUNT_Z = 0.06
 
-L_UPPER = 0.30
-L_FORE_X = 0.20
-L_FORE_Z = 0.04
-L_WRIST = 0.13
+TOOL_TIP_OFFSET = np.array([0.07, 0.0, 0.0], dtype=float)
 
-# Limiti (rad) = datasheet D1: J0 ±135°, J1–J2–J4 ±90°, J3–J5 ±135° → arm_joint1..6
+# Ogni riga: body pos locale, asse hinge locale. Gli assi includono il segno MJCF
+# (J1 ruota intorno a -Z, non +Z).
+D1_CHAIN = [
+    (np.array([0.0, 0.0, 0.0738], dtype=float), np.array([0.0, 0.0, -1.0], dtype=float)),
+    (np.array([0.0, -0.0276, 0.0578], dtype=float), np.array([0.0, 1.0, 0.0], dtype=float)),
+    (np.array([0.0, -0.0004, 0.27], dtype=float), np.array([0.0, 1.0, 0.0], dtype=float)),
+    (np.array([0.05, 0.0275, 0.041325], dtype=float), np.array([1.0, 0.0, 0.0], dtype=float)),
+    (np.array([0.15468, -0.0258, 0.0001], dtype=float), np.array([0.0, 1.0, 0.0], dtype=float)),
+    (np.array([0.0777, 0.025822, -0.0010718], dtype=float), np.array([1.0, 0.0, 0.0], dtype=float)),
+]
+
+# Limiti (rad) = datasheet D1: J0/J3/J5 +/-135 deg, J1/J2/J4 +/-90 deg.
 J_LIMITS = [
     (-2.35619, 2.35619),
     (-1.5708, 1.5708),
@@ -31,13 +41,10 @@ J_LIMITS = [
     (-2.35619, 2.35619),
 ]
 
-# Allineate al keyframe home in go2_d1_d1mesh.xml (ultimi 6 valori qpos braccio).
+# Allineata al keyframe home in go2_d1_d1mesh.xml (ultimi 6 valori qpos braccio).
 ARM_FOLD_POSE = [0.0, -1.5, 1.0, 0.22, 0.0, 0.0]
 
-# ARM_REACH_FWD_POSE: assegnata dopo ik_reach (stessi L_*, J_LIMITS) — braccio più avanti per wrist cam in WALK.
-
 _b = ARM_FOLD_POSE
-# Ricerca: fissi j2–j4 come home; variano j5/j6 e leggermente j1 per la wrist cam.
 SEARCH_POSES_D1 = [
     list(_b),
     list(_b[:4]) + [1.0, 0.0],
@@ -69,102 +76,96 @@ def _clamp_workspace(x, y, z):
     return x, y, z
 
 
-def rot_z(a):
-    c, s = math.cos(a), math.sin(a)
-    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-
-def rot_y(a):
-    c, s = math.cos(a), math.sin(a)
-    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-
-
-def rot_x(a):
-    c, s = math.cos(a), math.sin(a)
-    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-
-
-def fk_planar(j2, j3, j4):
-    s23 = j2 + j3
-    s234 = s23 + j4
-    x = (-L_UPPER * math.cos(j2)
-         + L_FORE_X * math.cos(s23) + L_FORE_Z * math.sin(s23)
-         + L_WRIST * math.cos(s234))
-    z = (L_UPPER * math.sin(j2)
-         - L_FORE_X * math.sin(s23) + L_FORE_Z * math.cos(s234)
-         - L_WRIST * math.sin(s234))
-    return x, z
+def _axis_angle(axis, angle):
+    axis = np.asarray(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+    x, y, z = axis
+    c = float(np.cos(angle))
+    s = float(np.sin(angle))
+    C = 1.0 - c
+    return np.array([
+        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+    ], dtype=float)
 
 
 def fk_full(q):
-    j1, j2, j3, j4, j5, j6 = q[0], q[1], q[2], q[3], q[4], q[5]
-    x_plane, z_plane = fk_planar(j2, j3, j4)
-    c1, s1 = math.cos(j1), math.sin(j1)
-    x_arm = x_plane * c1
-    y_arm = x_plane * s1
-    z_arm = z_plane
-    pos_arm = np.array([x_arm, y_arm, z_arm])
-    pos_base = np.array([ARM_BASE_X, ARM_BASE_Y, ARM_BASE_Z]) + pos_arm
-    R = rot_z(j1) @ rot_y(j2 + j3 + j4) @ rot_z(j5) @ rot_x(j6)
-    return pos_base, R
+    """Restituisce posizione/orientamento di arm_link06 in base_link."""
+    if len(q) != 6:
+        raise ValueError("q deve contenere 6 giunti")
+    pos = np.array([ARM_BASE_X, ARM_BASE_Y, ARM_MOUNT_Z], dtype=float)
+    R = np.eye(3, dtype=float)
+    for qi, (body_pos, axis) in zip(q, D1_CHAIN):
+        pos = pos + R @ body_pos
+        R = R @ _axis_angle(axis, qi)
+    return pos, R
 
 
 def fk_tool_tip(q):
     pos, R = fk_full(q)
-    tool_fwd = R[:, 0]
-    tip = pos + 0.07 * tool_fwd
-    return tip
+    return pos + R @ TOOL_TIP_OFFSET
+
+
+def _clamp_q(q):
+    return np.array([clamp(float(q[i]), *J_LIMITS[i]) for i in range(6)], dtype=float)
+
+
+def _numeric_jacobian(q, tip, eps=1e-5):
+    J = np.zeros((3, 6), dtype=float)
+    for i in range(6):
+        q2 = q.copy()
+        q2[i] = clamp(q2[i] + eps, *J_LIMITS[i])
+        if q2[i] == q[i]:
+            q2[i] = clamp(q2[i] - eps, *J_LIMITS[i])
+        denom = q2[i] - q[i]
+        if abs(denom) < 1e-12:
+            continue
+        J[:, i] = (fk_tool_tip(q2) - tip) / denom
+    return J
 
 
 def ik_reach(target_x, target_y, target_z):
     target_x, target_y, target_z = _clamp_workspace(target_x, target_y, target_z)
-    dx = target_x - ARM_BASE_X
-    dy = target_y - ARM_BASE_Y
-    dz = target_z - ARM_BASE_Z
+    target = np.array([target_x, target_y, target_z], dtype=float)
 
-    j1 = math.atan2(dy, max(math.sqrt(dx * dx + dy * dy), 0.01))
-    j1 = clamp(j1, *J_LIMITS[0])
+    seeds = [
+        ARM_FOLD_POSE,
+        [0.0, -1.2, 0.8, 0.0, 0.0, 0.0],
+        [0.0, -0.8, 0.5, 0.0, 0.4, 0.0],
+        [0.0, -0.4, 0.2, 0.0, 0.8, 0.0],
+        [0.5, -1.0, 0.8, 0.0, 0.3, 0.0],
+        [-0.5, -1.0, 0.8, 0.0, -0.3, 0.0],
+    ]
 
-    r_t = math.sqrt(dx * dx + dy * dy)
-    z_rel = target_z - ARM_BASE_Z
+    best_q = None
+    best_err = float("inf")
+    damping = 2e-3
+    identity = np.eye(3, dtype=float)
+    for seed in seeds:
+        q = _clamp_q(seed)
+        for _ in range(180):
+            tip = fk_tool_tip(q)
+            err = target - tip
+            err_norm = float(np.linalg.norm(err))
+            if err_norm < 0.006:
+                break
+            J = _numeric_jacobian(q, tip)
+            dq = J.T @ np.linalg.solve(J @ J.T + damping * identity, err)
+            step_norm = float(np.linalg.norm(dq))
+            if step_norm > 0.18:
+                dq *= 0.18 / step_norm
+            q = _clamp_q(q + dq)
 
-    best, best_err = None, 1e9
-    for j2i in [0.2, 0.5, 0.9, 1.2, 1.5]:
-        for j3i in [-1.2, -0.8, -0.4, 0.0, 0.4, 0.8, 1.2]:
-            for j4i in [-1.2, -0.6, 0.0, 0.6, 1.2]:
-                j2, j3, j4 = j2i, j3i, j4i
-                lr = 0.6
-                eps = 1e-5
-                for _ in range(150):
-                    x, z = fk_planar(j2, j3, j4)
-                    ex, ez = x - r_t, z - z_rel
-                    if ex * ex + ez * ez < 1e-6:
-                        break
-                    dx2 = (fk_planar(j2 + eps, j3, j4)[0] - x) / eps
-                    dz2 = (fk_planar(j2 + eps, j3, j4)[1] - z) / eps
-                    dx3 = (fk_planar(j2, j3 + eps, j4)[0] - x) / eps
-                    dz3 = (fk_planar(j2, j3 + eps, j4)[1] - z) / eps
-                    dx4 = (fk_planar(j2, j3, j4 + eps)[0] - x) / eps
-                    dz4 = (fk_planar(j2, j3, j4 + eps)[1] - z) / eps
-                    j2 = clamp(j2 - lr * (ex * dx2 + ez * dz2), *J_LIMITS[1])
-                    j3 = clamp(j3 - lr * (ex * dx3 + ez * dz3), *J_LIMITS[2])
-                    j4 = clamp(j4 - lr * (ex * dx4 + ez * dz4), *J_LIMITS[3])
-                    lr *= 0.992
+        err_norm = float(np.linalg.norm(target - fk_tool_tip(q)))
+        if err_norm < best_err:
+            best_err = err_norm
+            best_q = q.copy()
 
-                x, z = fk_planar(j2, j3, j4)
-                e = (x - r_t) ** 2 + (z - z_rel) ** 2
-                if e < best_err:
-                    best_err = e
-                    best = (j2, j3, j4)
-
-    if best is None or best_err > 0.015:
+    if best_q is None or best_err > 0.025:
         return None
 
-    j2, j3, j4 = best
-    j2 = clamp(j2, J_LIMITS[1][0], J_LIMITS[1][1])
-    j5 = 0.0
-    j6 = -0.65
-    return [j1, j2, j3, j4, j5, j6]
+    return best_q.tolist()
 
 
 def step_toward(current, target, max_step):
@@ -186,4 +187,3 @@ ARM_REACH_FWD_POSE = (
     if _rfp is not None
     else [0.0, -1.2, 0.85, 0.25, 0.0, -0.5]
 )
-
