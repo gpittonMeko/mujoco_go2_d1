@@ -2,13 +2,26 @@
 """
 Push dashboard/planner sources to the Jetson + restart Flask ON the NX.
 Run from dev PC:  python scripts/deploy_dashboard_to_nx.py
+
+Override connessione (opzionale): GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD
 """
+import os
 import paramiko
 from pathlib import Path
 
-HOST = "192.168.123.18"
-USER = "unitree"
-PWD = "123"
+
+def nx_host() -> str:
+    return (os.environ.get("GO2_NX_HOST") or "192.168.123.18").strip() or "192.168.123.18"
+
+
+def nx_user() -> str:
+    return (os.environ.get("GO2_NX_USER") or "unitree").strip() or "unitree"
+
+
+def nx_password() -> str:
+    return os.environ.get("GO2_NX_PASSWORD") or "123"
+
+
 REMOTE_BASE = "/home/unitree/go2_visual_dashboard"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -107,14 +120,16 @@ python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050
   exit 1
 )
 echo "Remote checks done (full smoke: run on PC: python scripts/test_dashboard_smoke.py)"
-echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://192.168.123.18:5050"
-""" % REMOTE_BASE
+echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://%s:5050"
+""" % (REMOTE_BASE, nx_host())
 
 
 def main() -> None:
+    host = nx_host()
+    print(f"[deploy] Connecting SSH {nx_user()}@{host} …")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(HOST, username=USER, password=PWD, timeout=45)
+    ssh.connect(host, username=nx_user(), password=nx_password(), timeout=45)
     sftp = ssh.open_sftp()
     for rel in REMOTE_PUSH_FILES:
         loc = REPO_ROOT / rel
