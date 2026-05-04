@@ -3,9 +3,14 @@
 AprilTag-assisted dry-run planner for a floor box grasp with the D1 arm.
 
 This module intentionally does not publish robot commands. It detects tag25h9
-tags 0..3, estimates a conservative target in the D1 workspace, runs the
-existing D1 IK, and returns a preview trajectory for dashboard validation.
+tags on the box (IDs 0..3), optionally tag **5** as a fixed body-frame landmark,
+runs IK preview for grasp-only targets, and returns trajectories for validation.
+
+Operational layout (Jetson stack): AprilTag **5** is intended on top / near the
+XT-16 LiDAR plane — **physical edge length 61 mm** (tags **0–3** on the box use **19 mm**).
+Pose estimation uses the correct edge length per ID so ranges are not biased.
 """
+
 
 from __future__ import annotations
 
@@ -26,9 +31,37 @@ if str(SCRIPTS_DIR) not in sys.path:
 from arm_kinematics_d1_template import ARM_FOLD_POSE, fk_tool_tip, ik_reach, smooth
 
 
-TAG_IDS = {0, 1, 2, 3}
-DEFAULT_TAG_SIZE_M = float(os.environ.get("BOX_TAG_SIZE_M", "0.06"))
+# Tags glued on / near the grasp object (tag25h9 family).
+BOX_TAG_IDS = frozenset({0, 1, 2, 3})
+
+# Fixed landmark on the robot stack (tag25h9 ID 5 — **visible mainly / only from wrist cam**
+# ``/dev/video0``): mounted above / near the XT-16 LiDAR plane so cameras (ahead) and scene
+# objects (further ahead) are interpretable relative to base + arm.
+REFERENCE_TAG_ID_LIDAR_FRAME = 5
+
+TRACKED_TAG_IDS = BOX_TAG_IDS | {REFERENCE_TAG_ID_LIDAR_FRAME}
+
+# Back-compat name used by JSON consumers ("which IDs we look for in frame").
+TAG_IDS = TRACKED_TAG_IDS
+# Physical square **edge** lengths (meters) for pose estimation — tags differ by placement.
+BOX_TAG_SIZE_M = float(os.environ.get("BOX_TAG_SIZE_M", "0.019"))
+REFERENCE_TAG_SIZE_M = float(
+    os.environ.get("REFERENCE_TAG_SIZE_M", os.environ.get("LIDAR_LANDMARK_TAG_SIZE_M", "0.061"))
+)
+
+# Deprecated alias (single-size legacy); prefer BOX_TAG_SIZE_M / REFERENCE_TAG_SIZE_M.
+DEFAULT_TAG_SIZE_M = BOX_TAG_SIZE_M
 DEFAULT_CAMERA_HEIGHT_M = float(os.environ.get("BOX_CAMERA_HEIGHT_M", "0.34"))
+
+
+def tag_edge_length_m(tag_id: int) -> float:
+    """Outer edge length in meters for solvePnP / estimatePoseSingleMarkers."""
+    tid = int(tag_id)
+    if tid == REFERENCE_TAG_ID_LIDAR_FRAME:
+        return REFERENCE_TAG_SIZE_M
+    if tid in BOX_TAG_IDS:
+        return BOX_TAG_SIZE_M
+    return BOX_TAG_SIZE_M
 
 
 @dataclass
@@ -84,18 +117,25 @@ def detect_box_tags(frame: np.ndarray) -> dict[str, Any]:
     if ids is not None:
         for idx, tag_id_arr in enumerate(ids):
             tag_id = int(tag_id_arr[0])
-            if tag_id not in TAG_IDS:
+            if tag_id not in TRACKED_TAG_IDS:
                 continue
             pts = corners[idx].reshape(4, 2).astype(float)
             center = pts.mean(axis=0)
+            d01 = float(np.linalg.norm(pts[0] - pts[2]))
+            d12 = float(np.linalg.norm(pts[1] - pts[3]))
+            diagonal_px = round((d01 + d12) / 2.0, 2)
+            edges = [float(np.linalg.norm(pts[i] - pts[(i + 1) % 4])) for i in range(4)]
+            mean_edge_px = round(float(np.mean(edges)), 2)
             tags.append(
                 {
                     "id": tag_id,
                     "center_px": [round(float(center[0]), 1), round(float(center[1]), 1)],
                     "corners_px": [[round(float(x), 1), round(float(y), 1)] for x, y in pts],
+                    "diagonal_px": diagonal_px,
+                    "mean_edge_px": mean_edge_px,
                 }
             )
-    return {"ok": bool(tags), "tags": tags, "tag_family": "tag25h9", "expected_ids": sorted(TAG_IDS)}
+    return {"ok": bool(tags), "tags": tags, "tag_family": "tag25h9", "expected_ids": sorted(TRACKED_TAG_IDS)}
 
 
 def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[str, Any]:
@@ -104,23 +144,24 @@ def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[s
 
     cam = CameraModel.from_frame(frame)
     dist = np.zeros((5, 1), dtype=np.float32)
-    half = DEFAULT_TAG_SIZE_M / 2.0
-    object_points = np.array(
-        [
-            [-half, half, 0.0],
-            [half, half, 0.0],
-            [half, -half, 0.0],
-            [-half, -half, 0.0],
-        ],
-        dtype=np.float32,
-    )
     poses = []
     for tag in tags_result["tags"]:
+        edge_m = tag_edge_length_m(int(tag["id"]))
+        half = edge_m / 2.0
+        object_points = np.array(
+            [
+                [-half, half, 0.0],
+                [half, half, 0.0],
+                [half, -half, 0.0],
+                [-half, -half, 0.0],
+            ],
+            dtype=np.float32,
+        )
         corners = np.array(tag["corners_px"], dtype=np.float32).reshape(1, 4, 2)
         try:
             if hasattr(cv2.aruco, "estimatePoseSingleMarkers"):
                 _rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                    corners, DEFAULT_TAG_SIZE_M, cam.matrix, dist
+                    corners, edge_m, cam.matrix, dist
                 )
                 t = tvecs[0][0].astype(float)
             else:
@@ -139,39 +180,211 @@ def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[s
         poses.append(
             {
                 "id": tag["id"],
+                "tag_edge_length_m": round(edge_m, 6),
                 "camera_xyz_m": [round(float(t[0]), 4), round(float(t[1]), 4), round(float(t[2]), 4)],
                 "range_m": round(float(np.linalg.norm(t)), 4),
             }
         )
-    return {"ok": bool(poses), "camera_model": cam.__dict__, "tag_size_m": DEFAULT_TAG_SIZE_M, "poses": poses}
+    return {
+        "ok": bool(poses),
+        "camera_model": cam.__dict__,
+        "tag_sizes_m": {
+            "box_tags": BOX_TAG_SIZE_M,
+            "reference_tag_id": REFERENCE_TAG_ID_LIDAR_FRAME,
+            "reference_tag": REFERENCE_TAG_SIZE_M,
+        },
+        "poses": poses,
+    }
 
 
 def estimate_box_target_base(poses_result: dict[str, Any]) -> dict[str, Any]:
     """
     Conservative camera-to-base approximation for preview.
 
-    Real calibration should replace this with a measured transform. For now:
-    camera x = right, y = down, z = forward
-    base x = forward, y = left, z = height above ground/arm base heuristic
+    Uses **only** poses whose tag id is in ``BOX_TAG_IDS``. Landmark tag
+    ``REFERENCE_TAG_ID_LIDAR_FRAME`` is detected for overlays but excluded here.
+
+    OpenCV ``tvec`` is the tag center position in the **camera** frame (typical: x
+    right, y down, z along optical axis). The mapping below is a heuristic; mounting
+    differs per robot/camera. Tune without code edits:
+
+    - ``GO2_BOX_TVEC_SIGN_X``, ``GO2_BOX_TVEC_SIGN_Y``, ``GO2_BOX_TVEC_SIGN_Z`` (default 1)
+    - ``GO2_BOX_TARGET_NEGATE_FORWARD``, ``GO2_BOX_TARGET_NEGATE_LATERAL`` (0/1) — flips
+      after sign multipliers; use if the arm moves **away** from the tag instead of toward it.
     """
     poses = poses_result.get("poses") or []
-    if not poses:
-        return {"ok": False, "error": "no pose estimates"}
+    poses_grasp = [p for p in poses if int(p.get("id", -1)) in BOX_TAG_IDS]
+    if not poses_grasp:
+        return {"ok": False, "error": "no pose estimates for box tags (ids in BOX_TAG_IDS)"}
 
-    xyz = np.array([p["camera_xyz_m"] for p in poses], dtype=float)
+    xyz = np.array([p["camera_xyz_m"] for p in poses_grasp], dtype=float)
     mean = xyz.mean(axis=0)
-    cam_x, cam_y, cam_z = mean
-    target_x = float(np.clip(cam_z, 0.18, 0.72))
-    target_y = float(np.clip(-cam_x, -0.35, 0.35))
+    sx = float(os.environ.get("GO2_BOX_TVEC_SIGN_X", "1"))
+    sy = float(os.environ.get("GO2_BOX_TVEC_SIGN_Y", "1"))
+    sz = float(os.environ.get("GO2_BOX_TVEC_SIGN_Z", "1"))
+    cam_x = float(mean[0]) * sx
+    cam_y = float(mean[1]) * sy
+    cam_z = float(mean[2]) * sz
+
+    # Legacy mapping: forward X ← cam_z, lateral Y ← -cam_x, height from cam_y.
+    fwd = cam_z
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_FORWARD", "0").lower() in {"1", "true", "yes"}:
+        fwd = -fwd
+    lat = -cam_x
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_LATERAL", "0").lower() in {"1", "true", "yes"}:
+        lat = -lat
+    target_x = float(np.clip(fwd, 0.18, 0.72))
+    target_y = float(np.clip(lat, -0.35, 0.35))
     # Aim a little above floor, then approach down. The tag center y helps infer if
     # the box is lower in the image, but we keep z conservative until calibrated.
-    target_z = float(np.clip(DEFAULT_CAMERA_HEIGHT_M - cam_y - 0.10, 0.04, 0.22))
+    height_off = float(os.environ.get("GO2_BOX_TARGET_HEIGHT_OFFSET_M", "0.10"))
+    ht = DEFAULT_CAMERA_HEIGHT_M - cam_y - height_off
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_HEIGHT_TERM", "0").lower() in {"1", "true", "yes"}:
+        ht = DEFAULT_CAMERA_HEIGHT_M + cam_y - height_off
+    target_z = float(np.clip(ht, 0.04, 0.22))
     return {
         "ok": True,
         "base_xyz_m": [round(target_x, 4), round(target_y, 4), round(target_z, 4)],
-        "calibration": "approximate camera-to-base transform; dry-run only",
-        "source_tag_count": len(poses),
+        "calibration": (
+            "heuristic tvec→base; GO2_BOX_TVEC_SIGN_* / GO2_BOX_TARGET_NEGATE_* env if arm diverges from tag"
+        ),
+        "source_tag_count": len(poses_grasp),
+        "camera_xyz_mean_signed": [round(cam_x, 5), round(cam_y, 5), round(cam_z, 5)],
     }
+
+
+def grip_point_from_tags(tags_result: dict[str, Any], frame_shape: tuple[int, int] | None = None) -> dict[str, Any]:
+    tags = tags_result.get("tags") or []
+    box_tags = [t for t in tags if int(t.get("id", -1)) in BOX_TAG_IDS]
+    if not box_tags:
+        return {"ok": False, "source": "apriltag", "reason": "no_box_tags"}
+    centers = [t.get("center_px") for t in box_tags if t.get("center_px")]
+    if not centers:
+        return {"ok": False, "source": "apriltag", "reason": "no_centers"}
+    xs = [float(c[0]) for c in centers]
+    ys = [float(c[1]) for c in centers]
+    all_pts: list[list[float]] = []
+    for t in box_tags:
+        all_pts.extend(t.get("corners_px") or [])
+    if all_pts:
+        px = [float(p[0]) for p in all_pts]
+        py = [float(p[1]) for p in all_pts]
+        x1, x2 = min(px), max(px)
+        y1, y2 = min(py), max(py)
+    else:
+        x1, x2 = min(xs), max(xs)
+        y1, y2 = min(ys), max(ys)
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    area = max(1.0, (x2 - x1) * (y2 - y1))
+    out = {
+        "ok": True,
+        "source": "apriltag",
+        "confidence": 0.98 if len(box_tags) >= 2 else 0.86,
+        "box_tag_ids": [int(t.get("id", -1)) for t in box_tags],
+        "grip_center_px": [round(cx, 1), round(cy, 1)],
+        "grip_axis_px": [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]],
+        "box_bbox_px": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+        "box_size_px": [round(x2 - x1, 1), round(y2 - y1, 1)],
+        "box_area_px": round(area, 1),
+        "gripper_model": "east_west_close_to_center",
+    }
+    if frame_shape is not None and len(frame_shape) >= 2:
+        h, w = float(frame_shape[0]), float(frame_shape[1])
+        out["approach_error_px"] = [round(cx - w / 2.0, 1), round(cy - h / 2.0, 1)]
+        out["approach_error_norm"] = [
+            round((cx - w / 2.0) / max(w / 2.0, 1.0), 4),
+            round((cy - h / 2.0) / max(h / 2.0, 1.0), 4),
+        ]
+    return out
+
+
+def target_base_from_object_detection(detection: dict[str, Any], frame: np.ndarray) -> dict[str, Any]:
+    if not detection.get("ok"):
+        return {"ok": False, "error": detection.get("reason", "no object detection")}
+    cam = CameraModel.from_frame(frame)
+    bbox = detection.get("bbox_xyxy") or []
+    center = detection.get("bbox_center_px") or detection.get("grip_center_px")
+    if len(bbox) < 4 or not center:
+        return {"ok": False, "error": "detection missing bbox/center"}
+    bw = max(1.0, float(bbox[2]) - float(bbox[0]))
+    # Approximate monocular depth from apparent box width. This is deliberately
+    # conservative and only used when AprilTags are absent.
+    box_w_m = float(os.environ.get("GO2_BOX_APPROX_WIDTH_M", "0.16"))
+    depth = (box_w_m * cam.fx) / bw
+    depth = float(np.clip(depth, 0.20, 0.70))
+    cx_px, cy_px = float(center[0]), float(center[1])
+    lat = ((cx_px - cam.cx) / max(cam.fx, 1.0)) * depth
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_LATERAL", "0").lower() in {"1", "true", "yes"}:
+        lat = -lat
+    z = DEFAULT_CAMERA_HEIGHT_M - ((cy_px - cam.cy) / max(cam.fy, 1.0)) * depth - float(
+        os.environ.get("GO2_BOX_TARGET_HEIGHT_OFFSET_M", "0.10")
+    )
+    return {
+        "ok": True,
+        "base_xyz_m": [
+            round(float(np.clip(depth, 0.18, 0.72)), 4),
+            round(float(np.clip(lat, -0.35, 0.35)), 4),
+            round(float(np.clip(z, 0.04, 0.24)), 4),
+        ],
+        "calibration": "monocular bbox heuristic; AprilTag/RealSense depth preferred when available",
+        "source": detection.get("backend", "object_detection"),
+        "bbox_width_px": round(bw, 2),
+        "assumed_box_width_m": box_w_m,
+    }
+
+
+def grip_point_from_object_detection(detection: dict[str, Any], frame_shape: tuple[int, int]) -> dict[str, Any]:
+    if not detection.get("ok"):
+        return {"ok": False, "source": "object_detection", "reason": detection.get("reason", "no detection")}
+    h, w = float(frame_shape[0]), float(frame_shape[1])
+    center = detection.get("grip_center_px") or detection.get("bbox_center_px")
+    bbox = detection.get("bbox_xyxy") or []
+    if not center or len(bbox) < 4:
+        return {"ok": False, "source": "object_detection", "reason": "missing bbox/center"}
+    cx, cy = float(center[0]), float(center[1])
+    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+    area = max(1.0, (x2 - x1) * (y2 - y1))
+    return {
+        "ok": True,
+        "source": detection.get("backend", "object_detection"),
+        "confidence": float(detection.get("confidence") or 0.0),
+        "grip_center_px": [round(cx, 1), round(cy, 1)],
+        "grip_axis_px": detection.get("grip_axis_px") or [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]],
+        "box_bbox_px": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+        "box_size_px": [round(x2 - x1, 1), round(y2 - y1, 1)],
+        "box_area_px": round(area, 1),
+        "approach_error_px": [round(cx - w / 2.0, 1), round(cy - h / 2.0, 1)],
+        "approach_error_norm": [
+            round((cx - w / 2.0) / max(w / 2.0, 1.0), 4),
+            round((cy - h / 2.0) / max(h / 2.0, 1.0), 4),
+        ],
+        "gripper_model": "east_west_close_to_center",
+    }
+
+
+def merge_grip_point(
+    tag_grip: dict[str, Any],
+    object_grip: dict[str, Any],
+    *,
+    prefer_tag_grip: bool = False,
+) -> dict[str, Any]:
+    """Se ``prefer_tag_grip`` (o env ``GO2_GRASP_PREFER_TAG_GRIP``), usa solo AprilTag quando presente."""
+    if prefer_tag_grip and tag_grip.get("ok"):
+        out = dict(tag_grip)
+        out["source"] = "apriltag_preferred"
+        return out
+    if tag_grip.get("ok") and object_grip.get("ok"):
+        out = dict(tag_grip)
+        out["source"] = "apriltag+object_detection"
+        out["object_detection"] = object_grip
+        out["confidence"] = round(max(float(tag_grip.get("confidence", 0.0)), float(object_grip.get("confidence", 0.0))), 4)
+        return out
+    if tag_grip.get("ok"):
+        return tag_grip
+    if object_grip.get("ok"):
+        return object_grip
+    return {"ok": False, "source": "none", "reason": tag_grip.get("reason") or object_grip.get("reason") or "no grip point"}
 
 
 def build_grasp_preview(target_base: dict[str, Any]) -> dict[str, Any]:
@@ -210,21 +423,52 @@ def build_grasp_preview(target_base: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "mode": "dry-run", "plan": plan, "gripper": gripper}
 
 
-def plan_from_frame(frame: np.ndarray) -> dict[str, Any]:
+def plan_from_frame(
+    frame: np.ndarray,
+    object_detection: dict[str, Any] | None = None,
+    *,
+    prefer_tag_grip: bool | None = None,
+) -> dict[str, Any]:
     tags = detect_box_tags(frame)
     poses = estimate_tag_poses(frame, tags)
-    target = estimate_box_target_base(poses)
+    tag_target = estimate_box_target_base(poses)
+    obj_target = target_base_from_object_detection(object_detection or {}, frame) if object_detection else {"ok": False}
+    target = tag_target if tag_target.get("ok") else obj_target
     preview = build_grasp_preview(target)
-    return {"ok": bool(preview.get("ok")), "tags": tags, "poses": poses, "target": target, "preview": preview}
+    tag_grip = grip_point_from_tags(tags, frame.shape[:2])
+    obj_grip = grip_point_from_object_detection(object_detection or {}, frame.shape[:2]) if object_detection else {"ok": False}
+    if prefer_tag_grip is None:
+        prefer_tag_grip = os.environ.get("GO2_GRASP_PREFER_TAG_GRIP", "0").lower() in {"1", "true", "yes"}
+    grip = merge_grip_point(tag_grip, obj_grip, prefer_tag_grip=bool(prefer_tag_grip))
+    return {
+        "ok": bool(preview.get("ok")),
+        "tags": tags,
+        "poses": poses,
+        "target": target,
+        "target_sources": {"apriltag": tag_target, "object_detection": obj_target},
+        "object_detection": object_detection or {"ok": False, "backend": "not_run"},
+        "grip_point": grip,
+        "preview": preview,
+        "tag_calibration": {
+            "family": "tag25h9",
+            "box_tag_edge_m": BOX_TAG_SIZE_M,
+            "reference_tag_edge_m": REFERENCE_TAG_SIZE_M,
+            "reference_tag_id": REFERENCE_TAG_ID_LIDAR_FRAME,
+        },
+    }
 
 
 def draw_tags(frame: np.ndarray, tags_result: dict[str, Any]) -> np.ndarray:
     out = frame.copy()
     for tag in tags_result.get("tags", []):
         pts = np.array(tag["corners_px"], dtype=np.int32)
-        cv2.polylines(out, [pts], True, (0, 255, 0), 2)
+        tid = int(tag["id"])
+        edge_m = tag_edge_length_m(tid)
+        mm = int(round(edge_m * 1000.0))
+        color = (0, 165, 255) if tid == REFERENCE_TAG_ID_LIDAR_FRAME else (0, 255, 0)
+        cv2.polylines(out, [pts], True, color, 2)
         cx, cy = map(int, tag["center_px"])
-        cv2.putText(out, f"id {tag['id']}", (cx + 6, cy - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(out, f"id {tid} ~{mm}mm", (cx + 6, cy - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
     return out
 
 
