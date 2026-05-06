@@ -3343,30 +3343,86 @@ def _read_d1_servo_angles_stable(samples: int | None = None, delay_s: float | No
     return last
 
 
-def _read_d1_servo_angles() -> list[float] | None:
+def _read_d1_servo_angles_with_diag() -> tuple[list[float] | None, dict[str, Any]]:
+    """Esegue ``bin/d1_arm_feedback_helper`` (DDS ``current_servo_angle``). Ritorna angoli + dict motivo se fallisce."""
     helper = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
-    if not helper.exists():
-        return None
+    listen_s = max(1, int(os.environ.get("D1_FEEDBACK_HELPER_LISTEN_S", "3")))
+    timeout_s = float(os.environ.get("D1_FEEDBACK_HELPER_TIMEOUT_S", "14"))
+    domain = int(GO2_DDS_DOMAIN)
+    diag: dict[str, Any] = {
+        "project_root": str(PROJECT_ROOT),
+        "helper_path": str(helper),
+        "helper_exists": helper.is_file(),
+        "helper_executable": bool(helper.is_file() and os.access(helper, os.X_OK)),
+        "dds_domain": domain,
+        "listen_s": listen_s,
+        "timeout_subprocess_s": timeout_s,
+        "go2_local": bool(GO2_LOCAL),
+    }
+    if not helper.is_file():
+        diag["reason"] = "MISSING_BINARY"
+        diag["fix_it"] = "Sulla NX: cd cartella dashboard/repo && bash scripts/build_d1_arm_helpers.sh (serve Unitree SDK2)."
+        return None, diag
+    cmd = [str(helper), str(domain), str(listen_s)]
+    diag["argv"] = cmd
     try:
+        t0 = time.perf_counter()
         result = subprocess.run(
-            [str(helper), str(GO2_DDS_DOMAIN), "2"],
+            cmd,
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=4,
+            timeout=timeout_s,
         )
-    except Exception:
-        return None
-    latest = None
-    for line in result.stdout.splitlines():
-        if line.startswith("servo_angles "):
-            parts = line.split()[1:]
-            if len(parts) >= 7:
-                try:
-                    latest = [float(v) for v in parts[:7]]
-                except ValueError:
-                    latest = None
-    return latest
+        diag["duration_s"] = round(time.perf_counter() - t0, 3)
+        diag["returncode"] = int(result.returncode)
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            diag["stderr_tail"] = stderr[-900:]
+        stdout = result.stdout or ""
+        for line in stdout.splitlines():
+            if line.startswith("servo_count="):
+                diag["dds_counts_line"] = line.strip()
+                break
+        latest: list[float] | None = None
+        for line in stdout.splitlines():
+            if line.startswith("servo_angles "):
+                parts = line.split()[1:]
+                if len(parts) >= 7:
+                    try:
+                        latest = [float(v) for v in parts[:7]]
+                    except ValueError:
+                        latest = None
+        if latest is not None:
+            diag["reason"] = "OK"
+            return latest, diag
+        diag["reason"] = "NO_SERVO_ANGLES_LINE"
+        st = stdout.strip()
+        diag["stdout_tail"] = st[-900:] if st else None
+        diag["fix_it"] = (
+            f"In {listen_s}s nessun topic DDS `current_servo_angle` (PubServoInfo). "
+            "Servizio braccio Unitree acceso? Prova GO2_DDS_DOMAIN se non usi dominio 0. "
+            f"Manuale: `{helper} {domain} {listen_s}` e controlla servo_count."
+        )
+        return None, diag
+    except subprocess.TimeoutExpired as exc:
+        diag["reason"] = "HELPER_TIMEOUT"
+        diag["fix_it"] = "Aumenta D1_FEEDBACK_HELPER_TIMEOUT_S o verifica blocchi DDS."
+        if exc.stdout:
+            diag["stdout_tail"] = str(exc.stdout)[-500:]
+        if exc.stderr:
+            diag["stderr_tail"] = str(exc.stderr)[-500:]
+        return None, diag
+    except Exception as exc:
+        diag["reason"] = "SUBPROCESS_FAILED"
+        diag["error"] = repr(exc)
+        diag["fix_it"] = "Controlla permessi esecuzione su bin/d1_arm_feedback_helper e librerie Unitree (ldd)."
+        return None, diag
+
+
+def _read_d1_servo_angles() -> list[float] | None:
+    angles, _diag = _read_d1_servo_angles_with_diag()
+    return angles
 
 
 def _arm_snapshot_from_servo_deg(servo_deg: list[float]) -> dict[str, Any]:
@@ -5793,18 +5849,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         wrist_off = np.array(wo, dtype=float)
 
     q_fb: list[float] | None = None
-    cur = _read_d1_servo_angles()
-    if cur is not None and len(cur) >= 6:
-        q_fb = [math.radians(float(cur[i])) for i in range(6)]
-        payload["servo_feedback_ok"] = True
-        payload["joints_deg"] = [round(float(cur[i]), 3) for i in range(min(7, len(cur)))]
-        payload["chain_xyz_m"] = fk_chain_positions(q_fb)
-        tip = fk_tool_tip(q_fb)
-        payload["tool_tip_xyz_m"] = [round(float(tip[i]), 5) for i in range(3)]
-    else:
-        payload["servo_feedback_ok"] = False
-
-    q_vis = [float(x) for x in (q_fb if q_fb is not None else ARM_FOLD_POSE)]
+    # FK intermedia = fold; l'unica lettura servo DDS è dopo ``api_box_plan()`` (sotto), così evitiamo due subprocess.
+    q_vis = [float(x) for x in ARM_FOLD_POSE]
 
     _mount_nom = np.array([0.15, 0.0, 0.06], dtype=float)
     _viz_arm_d = np.array(
@@ -6115,10 +6161,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         cro["delta_x_object_minus_front_m"] = round(xo - xf, 5)
     payload["chain_order_plus_x"] = cro
 
-    # Rilettura servo subito prima della FK viewer: ``api_box_plan()`` può richiedere secondi; senza
-    # questo ``q_vis`` restava la snapshot di inizio richiesta. Un poll ``scene_3d`` full che completa
-    # dopo un ``?fast=1`` sovrascriveva Three.js con giunti più vecchi del braccio reale.
-    _curv = _read_d1_servo_angles()
+    # Rilettura servo (una sola) subito prima della FK viewer: ``api_box_plan()`` può richiedere secondi.
+    _curv, _servo_diag_full = _read_d1_servo_angles_with_diag()
     if _curv is not None and len(_curv) >= 6:
         q_fb = [math.radians(float(_curv[i])) for i in range(6)]
         q_vis = [float(x) for x in q_fb]
@@ -6127,6 +6171,13 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         payload["chain_xyz_m"] = fk_chain_positions(q_fb)
         _tipv = fk_tool_tip(q_fb)
         payload["tool_tip_xyz_m"] = [round(float(_tipv[i]), 5) for i in range(3)]
+        payload["servo_feedback_diag"] = {
+            "reason": "OK",
+            "duration_s": _servo_diag_full.get("duration_s"),
+            "dds_domain": _servo_diag_full.get("dds_domain"),
+            "listen_s": _servo_diag_full.get("listen_s"),
+            "helper_path": _servo_diag_full.get("helper_path"),
+        }
     else:
         q_fb = None
         q_vis = [float(x) for x in ARM_FOLD_POSE]
@@ -6134,6 +6185,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         payload.pop("joints_deg", None)
         payload.pop("chain_xyz_m", None)
         payload.pop("tool_tip_xyz_m", None)
+        payload["servo_feedback_diag"] = _servo_diag_full
     _wc_live = fk_wrist_camera_center_m(q_vis, wrist_off)
     _wv_live = fk_wrist_camera_view_axis_unit_m(q_vis, wrist_off)
     _wc_mj = fk_wrist_camera_center_m(q_vis, None)
@@ -6568,6 +6620,22 @@ def _calibration_flow_payload() -> dict[str, Any]:
 @APP.route("/api/arm/calibration_flow", methods=["GET"])
 def api_arm_calibration_flow() -> Any:
     return jsonify(_calibration_flow_payload())
+
+
+@APP.route("/api/arm/servo_feedback_diag", methods=["GET"])
+def api_arm_servo_feedback_diag() -> Any:
+    """Perché non leggiamo il servo: esegue il probe DDS una volta e ritorna ``diag`` completo."""
+    angles, diag = _read_d1_servo_angles_with_diag()
+    resp = jsonify(
+        {
+            "ok": True,
+            "servo_feedback_ok": angles is not None and len(angles or []) >= 6,
+            "joints_deg": angles,
+            "diag": diag,
+        }
+    )
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @APP.route("/api/arm/scene_3d", methods=["GET"])

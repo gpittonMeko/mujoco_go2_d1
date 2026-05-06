@@ -3188,7 +3188,11 @@
 
       var bits = [];
       if (d.servo_feedback_ok) bits.push('servo');
-      else bits.push('pose demo');
+      else {
+        bits.push('pose demo');
+        var sfd0 = d.servo_feedback_diag;
+        if (sfd0 && sfd0.reason) bits.push('servo_DDS:' + String(sfd0.reason));
+      }
       if (sg.pose_is_feedback === false) bits.push('fold pose');
       bits.push('viola=depth · giallo=polso · rosso=tag5 · grigio=XT-16 · verde=tag scatola 0–3 · magenta=pinza · emerald=target');
 
@@ -3220,8 +3224,23 @@
           if (cva.three_js_autotune_it) calBlock += cva.three_js_autotune_it + '\n';
           calBlock += '\n';
         }
+        var sfd2 = d.servo_feedback_diag || {};
+        var servoBlock = '';
+        if (!d.servo_feedback_ok && sfd2.reason) {
+          servoBlock =
+            'Servo DDS: reason=' +
+            String(sfd2.reason) +
+            '\n' +
+            (sfd2.fix_it ? String(sfd2.fix_it) + '\n' : '') +
+            (sfd2.helper_path ? 'helper_path=' + String(sfd2.helper_path) + '\n' : '') +
+            (sfd2.dds_counts_line ? String(sfd2.dds_counts_line) + '\n' : '') +
+            (sfd2.stderr_tail ? 'stderr: ' + String(sfd2.stderr_tail).slice(0, 500) + '\n' : '') +
+            (sfd2.stdout_tail ? 'stdout: ' + String(sfd2.stdout_tail).slice(0, 400) + '\n' : '') +
+            '\n';
+        }
         det.textContent =
           warn +
+          servoBlock +
           calBlock +
           tagLine +
           'Sfere: giunti (blu), cam front (viola), polso (giallo), tag5 landmark (rosso), tag scatola 0–3 (verde/teal da visione), pinza FK (magenta), target presa (verde). '

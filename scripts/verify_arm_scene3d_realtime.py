@@ -73,6 +73,14 @@ def main() -> int:
                 "Rilancia con --accept-demo-pose per verificare solo stabilità FK senza hardware.",
                 file=sys.stderr,
             )
+            try:
+                durl = base.rstrip("/") + "/api/arm/servo_feedback_diag?_=" + str(int(time.time() * 1000))
+                req = urllib.request.Request(durl, headers={"Cache-Control": "no-store"})
+                with urllib.request.urlopen(req, timeout=25.0) as resp:
+                    dj = json.loads(resp.read().decode())
+                print("servo_feedback_diag:", json.dumps(dj.get("diag"), indent=2), file=sys.stderr)
+            except Exception as exd:
+                print("servo_feedback_diag fetch failed:", exd, file=sys.stderr)
             return 1
         s0 = json.dumps(samples[0]["scene_graph"].get("d1_joint_locals_m"), sort_keys=True)
         sn = json.dumps(samples[-1]["scene_graph"].get("d1_joint_locals_m"), sort_keys=True)

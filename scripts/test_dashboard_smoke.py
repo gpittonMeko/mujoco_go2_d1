@@ -263,6 +263,8 @@ def main() -> int:
     s3 = r.get_json()
     assert s3.get("ok") is True
     assert s3.get("frame") == "arm_base"
+    assert isinstance(s3.get("servo_feedback_diag"), dict)
+    assert "reason" in s3["servo_feedback_diag"]
     assert isinstance(s3.get("vis_geometry_effective"), dict)
     assert "arm_vs_tag5_x" in s3["vis_geometry_effective"]
     sg = s3.get("scene_graph")
