@@ -794,7 +794,9 @@
           <span><i class="arm3d-dot" style="background:#1e3a8a;"></i> Giunti</span>
           <span><i class="arm3d-dot" style="background:#a855f7;"></i> Cam front (MJCF)</span>
           <span><i class="arm3d-dot" style="background:#eab308;"></i> Camera polso</span>
-          <span><i class="arm3d-dot" style="background:#dc2626;"></i> Tag 5 / XT-16</span>
+          <span><i class="arm3d-dot" style="background:#dc2626;"></i> Tag 5</span>
+          <span><i class="arm3d-dot" style="background:#64748b;"></i> XT-16 (cilindro)</span>
+          <span><i class="arm3d-dot" style="background:#db2777;"></i> Pinza FK</span>
           <span><i class="arm3d-dot" style="background:#10b981;"></i> Target presa (EMA · da piano)</span>
           <span class="small muted">Coni: checkbox sul canvas.</span>
         </div>
@@ -941,13 +943,13 @@
               <input type="range" id="vg_front_vs_tag5_z" min="-500" max="500" step="1" value="0" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">Polso FK ΔX <code id="vg_l_wrist_local_dx" class="muted">—</code>
-              <input type="range" id="vg_wrist_local_dx" min="-200" max="200" step="1" value="0" />
+              <input type="range" id="vg_wrist_local_dx" min="-350" max="350" step="1" value="0" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">Polso FK ΔY <code id="vg_l_wrist_local_dy" class="muted">—</code>
-              <input type="range" id="vg_wrist_local_dy" min="-200" max="200" step="1" value="0" />
+              <input type="range" id="vg_wrist_local_dy" min="-350" max="350" step="1" value="0" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">Polso FK ΔZ <code id="vg_l_wrist_local_dz" class="muted">—</code>
-              <input type="range" id="vg_wrist_local_dz" min="-200" max="200" step="1" value="0" />
+              <input type="range" id="vg_wrist_local_dz" min="-350" max="350" step="1" value="0" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">EMA target (α) <code id="vg_l_target_ema_alpha" class="muted">—</code>
               <input type="range" id="vg_target_ema_alpha" min="5" max="99" step="1" value="28" />
@@ -1038,9 +1040,13 @@
           </summary>
           <div class="flow-card" style="margin-top:10px;padding:12px 14px;">
             <p class="small" style="margin:0 0 10px;line-height:1.45;color:#cbd5e1;">
-              Per la trasformazione <strong>tvec → base braccio</strong> basta <strong>un AprilTag 25h9 ID 5</strong> fisso sul robot (vicino XT-16): crea
-              <code>data/tag5_calibration_arm_base.json</code>. Non servono altri marker sul cane per questo passo.
-              I tag <strong>0–3 sulla scatola</strong> servono a dove prendere l’oggetto; la loro lettura usa la <strong>stessa</strong> correzione di calibrazione del landmark.
+              <strong>arm_link00</strong> è l’origine del <strong>braccio</strong> (primo giunto), in metri: <strong>+X</strong> avanti rispetto al cane.
+              Il «nominale» del tag 5 è dove sta il <strong>centro del marker</strong> nel mondo reale in quella base — non è una stima dalla sola mesh Three.js: viene da <strong>misura/CAD</strong> o allineando la scena alla vista reale e rifinendo con «Salva offset».
+              Per <strong>tvec → base</strong> basta <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): di solito lo vede <strong>solo la camera polso (0)</strong>;
+              la RealSense (6) può non inquadrarlo: va bene. Il POST «Salva offset» crea <code>data/tag5_calibration_arm_base.json</code>.
+              <strong>dual_probe</strong> (GET opzionale) confronta due stime <em>solo se</em> entrambe le camere vedono <em>lo stesso</em> tag 5 nello stesso istante; non calibra la mutua posa polso↔muso.
+              Per stimare bene quella geometria servirebbe un <strong>punto 3D comune</strong> visto da entrambe (es. tag a terra con posa nota): oggi <strong>non</strong> c’è un wizard dedicato; si affianca con gli slider del viewer.
+              I tag <strong>0–3 sulla scatola</strong> servono alla presa; usano la <strong>stessa</strong> correzione del landmark.
             </p>
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
               <button type="button" class="primary-go" onclick="calibrationFlowReload()">Aggiorna guida e stato server</button>
@@ -1075,11 +1081,26 @@
               <button type="button" onclick="tag5CalibClear()">Cancella file calibrazione</button>
             </div>
             <pre id="tag5CalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:200px;font-size:11px;">—</pre>
+            <h4 style="margin:16px 0 8px;font-size:13px;">Calibrazione doppia (stesso tag su polso + RealSense)</h4>
+            <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
+              Con lo <strong>stesso</strong> AprilTag inquadrato da <strong>video0</strong> e <strong>video6</strong> (anche su scatola/oggetto): nominale centro tag in <code>arm_link00</code> (m).
+              Per ID fuori 0–3 e 5 imposta <strong>lato tag</strong> (m). Scrive <code>offset_by_logical_camera_device_m</code> nel JSON — <strong>non</strong> sostituisce il salvataggio tag5/XT-16 sopra.
+            </p>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+              <label class="small">tag_id <input type="number" step="1" id="dual_tag_id" value="2" style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+              <label class="small">lato tag (m, opz.) <input type="number" step="0.001" id="dual_tag_edge" placeholder="0.019" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+              <label class="small">Nom. X <input type="number" step="0.001" id="dual_nom_x" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+              <label class="small">Y <input type="number" step="0.001" id="dual_nom_y" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+              <label class="small">Z <input type="number" step="0.001" id="dual_nom_z" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+            </div>
+            <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva offset 0+6 (stesso tag)</button>
+            <pre id="dualSharedCalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:180px;font-size:11px;">—</pre>
             <p class="small muted" style="margin-top:10px;line-height:1.4;">
-              <strong>Coerenza viewer:</strong> dopo il salvataggio, nel riquadro dettaglio scena compaiono righe
-              <code>Calib:</code> da <code>calibration_visual_alignment</code> (file offset, tag5 nel piano, distanza MJCF depth↔tag5 in mm).
-              Usa gli slider «Camera frontale» / frustum nel pannello geometria finché il <strong>modello viola</strong> coincide con la RealSense reale;
-              le <strong>sfere rosse/verdi dei tag</strong> seguono già la stessa matematica del piano presa.
+              <strong>Coerenza viewer:</strong> dopo «Salva offset» la pagina aggiorna <code>scene_3d</code> <strong>completo</strong> (con <code>/api/box/plan</code>) così la sfera rossa usa la visione quando il tag è nel piano; evita solo l’anteprima <code>?fast=1</code> subito dopo.
+              Nel riquadro dettaglio compaiono righe <code>Calib:</code> da <code>calibration_visual_alignment</code>.
+              Gli slider «Camera frontale» / frustum allineano il <strong>modello viola</strong> alla RealSense; non sostituiscono una calibrazione stereo polso↔muso (per quella servirebbe un riferimento comune visto da entrambe).
             </p>
           </div>
         </details>
@@ -1829,7 +1850,7 @@
       if (k.indexOf('viz_arm_mount_') === 0) return { lo: -250, hi: 250 };
       if (k.indexOf('viz_front_cam_') === 0) return { lo: -350, hi: 350 };
       if (k.indexOf('arm_vs_tag5_') === 0 || k.indexOf('front_vs_tag5_') === 0) return { lo: -500, hi: 500 };
-      if (k.indexOf('wrist_local_') === 0) return { lo: -200, hi: 200 };
+      if (k.indexOf('wrist_local_') === 0) return { lo: -350, hi: 350 };
       return { lo: -250, hi: 250 };
     }
     function visGeomUpdateLabel(sliderKey) {
@@ -2008,13 +2029,22 @@
      * Coda serializzata (no AbortController): su HTTP il server può comunque elaborare richieste
      * già arrivate; abort solo client causava race e sensazione «funziona una volta».
      * scene_3d full chiama /api/box/plan (pesante su NX). Durante il drag usiamo scene_3d?fast=1.
-     * Throttle basso (~un frame) sul percorso slider: il server è leggero in modalità fast.
+     * Il server rilegge i servo subito prima della FK viewer (pose fresca); ``fetch`` con ``cache:'no-store'``.
+     * **Non** incrementare un "generation" all'inizio di ogni poll fast: se il tick (200 ms) parte più spesso
+     * della latenza HTTP su NX, le risposte risultano sempre ``gen`` obsolete e il braccio resta fermo.
+     * Single-flight + coda per fast/full (no AbortController sui tick).
      */
     var visGeomWantFlush = false;
     var visGeomFlushBusy = false;
     /** >0: non accodare flush slider né inviare POST geometria da cursore (evita che annulli preset/load). */
     var visGeomRealtimeSuppressed = 0;
     var arm3dPollRaf = 0;
+    /** Al massimo una ``scene_3d?fast=1`` in volo; se arrivano altre richieste si rimette in coda una sola. */
+    var arm3dFastInflight = false;
+    var arm3dFastQueued = false;
+    /** Idem per ``scene_3d`` full (piano / più lenta). */
+    var arm3dFullInflight = false;
+    var arm3dFullQueued = false;
     /** Finché è true, ``arm3dTickFastIfVisible`` / ``Full`` non partono (evita scene_3d prima della boot preset+slider). */
     var arm3dGeomBootHoldIntervals = true;
     var visGeomInputRaf = 0;
@@ -3113,6 +3143,44 @@
       if (lm.xt16_tag_m && lm.xt16_tag_m.length >= 3) {
         arm3dAddSphereRobotBl(lm.xt16_tag_m, COL_TAG5, RTag);
       }
+      var tfv = d.tags_for_viewer;
+      if (tfv && tfv.length) {
+        for (var tvi = 0; tvi < tfv.length; tvi++) {
+          var tr = tfv[tvi];
+          if (!tr || !tr.base_xyz_base_link_m || tr.base_xyz_base_link_m.length < 3) continue;
+          var tidv = tr.id != null ? parseInt(tr.id, 10) : -1;
+          if (tidv < 0 || tidv > 3) continue;
+          var colBox = 0x22c55e;
+          if (tidv === 1) colBox = 0x34d399;
+          else if (tidv === 2) colBox = 0x2dd4bf;
+          else if (tidv === 3) colBox = 0x5eead4;
+          var rBox = Math.max(RTag * 0.82, tidv === 0 ? 0.009 : 0.0075);
+          arm3dAddSphereRobotBl(tr.base_xyz_base_link_m, colBox, rBox);
+        }
+      }
+      var cyl = lm.xt16_lidar_cylinder_base_link_m;
+      if (cyl && cyl.center_m && cyl.center_m.length >= 3 && cyl.radius_m > 0 && cyl.height_m > 0) {
+        var rC = Number(cyl.radius_m);
+        var hC = Number(cyl.height_m);
+        var cg = new THREE.CylinderGeometry(rC, rC, hC, 22, 1, false);
+        var cmat = new THREE.MeshStandardMaterial({
+          color: 0x64748b,
+          metalness: 0.28,
+          roughness: 0.52,
+          flatShading: true
+        });
+        var cm = new THREE.Mesh(cg, cmat);
+        cm.position.set(Number(cyl.center_m[0]), Number(cyl.center_m[1]), Number(cyl.center_m[2]));
+        var ay = new THREE.Vector3(0, 1, 0);
+        var az = new THREE.Vector3(0, 0, 1);
+        cm.quaternion.setFromUnitVectors(ay, az);
+        arm3d.markers.add(cm);
+      }
+      var tipBl = lm.tool_tip_base_link_m;
+      if (tipBl && tipBl.length >= 3) {
+        var COL_TOOL_TIP = 0xdb2777;
+        arm3dAddSphereRobotBl(tipBl, COL_TOOL_TIP, Math.max(RJoint * 0.72, 0.006));
+      }
       var tgtBl = lm.object_grasp_target_display_base_link_m;
       if (tgtBl && tgtBl.length >= 3) {
         arm3dAddSphereRobotBl(tgtBl, COL_GRASP_TARGET, Math.max(RWrist, 0.009));
@@ -3122,7 +3190,7 @@
       if (d.servo_feedback_ok) bits.push('servo');
       else bits.push('pose demo');
       if (sg.pose_is_feedback === false) bits.push('fold pose');
-      bits.push('viola=depth · giallo=polso · rosso=tag5 · verde=target presa');
+      bits.push('viola=depth · giallo=polso · rosso=tag5 · grigio=XT-16 · verde=tag scatola 0–3 · magenta=pinza · emerald=target');
 
       if (st) {
         st.textContent =
@@ -3140,7 +3208,7 @@
             : '';
         var cva = d.calibration_visual_alignment || {};
         var calBlock = '';
-        if (cva && (cva.tag5_offset_file_present != null || cva.mjcf_depth_to_tag5_mm != null)) {
+        if (cva && (cva.tag5_offset_file_present != null || cva.mjcf_depth_to_tag5_mm != null || cva.three_js_autotune_it)) {
           calBlock += 'Calib: file offset tag5=' + (cva.tag5_offset_file_present ? 'sì' : 'no');
           calBlock += ' | nominale env=' + (cva.nominal_tag5_env_configured ? 'sì' : 'no');
           calBlock += ' | tag5 nel piano=' + (cva.tag5_visible_in_plan ? 'sì' : 'no');
@@ -3149,19 +3217,35 @@
           calBlock += '\n';
           if (cva.note_it) calBlock += cva.note_it + '\n';
           if (cva.align_hint_it) calBlock += cva.align_hint_it + '\n';
+          if (cva.three_js_autotune_it) calBlock += cva.three_js_autotune_it + '\n';
           calBlock += '\n';
         }
         det.textContent =
           warn +
           calBlock +
           tagLine +
-          'Sfere: giunti (blu), camera front MJCF (viola + slider mm «Camera frontale»), polso (giallo), tag 5 (rosso), target presa EMA (verde, da /api/box/plan quando ok). Frustum: checkbox sul canvas.';
+          'Sfere: giunti (blu), cam front (viola), polso (giallo), tag5 landmark (rosso), tag scatola 0–3 (verde/teal da visione), pinza FK (magenta), target presa (verde). '
+          + 'Cilindro grigio = XT-16 sotto il tag. Frustum: checkbox sul canvas.';
       }
     }
     async function arm3dPoll(fast) {
+      var isFast = fast === true;
+      if (isFast) {
+        if (arm3dFastInflight) {
+          arm3dFastQueued = true;
+          return;
+        }
+        arm3dFastInflight = true;
+      } else {
+        if (arm3dFullInflight) {
+          arm3dFullQueued = true;
+          return;
+        }
+        arm3dFullInflight = true;
+      }
       try {
-        var q = '_=' + Date.now() + (fast === true ? '&fast=1' : '');
-        var res = await fetch(dashboardApi('/api/arm/scene_3d?' + q));
+        var q = '_=' + Date.now() + (isFast ? '&fast=1' : '');
+        var res = await fetch(dashboardApi('/api/arm/scene_3d?' + q), { cache: 'no-store' });
         var j = await res.json();
         if (j.ok) arm3dUpdateFromPayload(j);
         else {
@@ -3171,6 +3255,20 @@
       } catch (e) {
         var st2 = document.getElementById('arm3dStatusLine');
         if (st2) st2.textContent = String(e);
+      } finally {
+        if (isFast) {
+          arm3dFastInflight = false;
+          if (arm3dFastQueued) {
+            arm3dFastQueued = false;
+            void arm3dPoll(true);
+          }
+        } else {
+          arm3dFullInflight = false;
+          if (arm3dFullQueued) {
+            arm3dFullQueued = false;
+            void arm3dPoll(false);
+          }
+        }
       }
     }
     async function calibrationFlowReload() {
@@ -3253,8 +3351,9 @@
         var j = await res.json();
         if (pre) pre.textContent = JSON.stringify(j, null, 2);
         if (j.ok) {
-          arm3dPoll(true);
-          void arm3dPoll(false);
+          try {
+            await arm3dPoll(false);
+          } catch (e3d) {}
           try {
             await calibrationFlowReload();
           } catch (e2) {}
@@ -3270,11 +3369,55 @@
         var j = await res.json();
         if (pre) pre.textContent = JSON.stringify(j, null, 2);
         if (j.ok) {
-          arm3dPoll(true);
-          void arm3dPoll(false);
+          try {
+            await arm3dPoll(false);
+          } catch (e3d2) {}
           try {
             await calibrationFlowReload();
           } catch (e3) {}
+        }
+      } catch (e) {
+        if (pre) pre.textContent = String(e);
+      }
+    }
+    async function sharedDualCalibSave() {
+      var pre = document.getElementById('dualSharedCalibStatus');
+      try {
+        var tidEl = document.getElementById('dual_tag_id');
+        var edgeEl = document.getElementById('dual_tag_edge');
+        var dx = document.getElementById('dual_nom_x');
+        var dy = document.getElementById('dual_nom_y');
+        var dz = document.getElementById('dual_nom_z');
+        var tid = tidEl ? parseInt(tidEl.value, 10) : NaN;
+        var xv = dx && dx.value !== '' ? parseFloat(dx.value) : NaN;
+        var yv = dy && dy.value !== '' ? parseFloat(dy.value) : NaN;
+        var zv = dz && dz.value !== '' ? parseFloat(dz.value) : NaN;
+        if (isNaN(tid) || tid < 0) {
+          if (pre) pre.textContent = 'tag_id non valido';
+          return;
+        }
+        if (isNaN(xv) || isNaN(yv) || isNaN(zv)) {
+          if (pre) pre.textContent = 'Imposta nominale X Y Z (m) del centro tag in arm_link00';
+          return;
+        }
+        var body = { tag_id: tid, nominal_arm_base_m: [xv, yv, zv], logical_devices: [0, 6] };
+        if (edgeEl && edgeEl.value !== '' && !isNaN(parseFloat(edgeEl.value))) {
+          body.tag_edge_length_m = parseFloat(edgeEl.value);
+        }
+        var res = await fetch(dashboardApi('/api/arm/tag_calibration_shared_dual'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var j = await res.json();
+        if (pre) pre.textContent = JSON.stringify(j, null, 2);
+        if (j.ok) {
+          try {
+            await arm3dPoll(false);
+          } catch (e3d) {}
+          try {
+            await calibrationFlowReload();
+          } catch (e2) {}
         }
       } catch (e) {
         if (pre) pre.textContent = String(e);
@@ -4511,7 +4654,7 @@
     }
     setInterval(dashboardPollHeavySequential, 1250);
     setInterval(loadStatus, 5000);
-    setInterval(arm3dTickFastIfVisible, 900);
+    setInterval(arm3dTickFastIfVisible, 200);
     setInterval(arm3dTickFullIfVisible, 4000);
   </script>
 </body>

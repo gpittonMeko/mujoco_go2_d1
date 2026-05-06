@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
-"""
-AprilTag-assisted dry-run planner for a floor box grasp with the D1 arm.
-
-This module intentionally does not publish robot commands. It detects tag25h9
-tags on the box (IDs 0..3), optionally tag **5** as a fixed body-frame landmark,
-runs IK preview for grasp-only targets, and returns trajectories for validation.
-
-Operational layout (Jetson stack): AprilTag **5** is intended on top / near the
-XT-16 LiDAR plane — **physical edge length 61 mm** (tags **0–3** on the box use **19 mm**).
-Pose estimation uses the correct edge length per ID so ranges are not biased.
-"""
+"""Planner AprilTag + IK presa (no comandi robot). Tag 0–3 scatola, tag 5 landmark; edge m per ID da env."""
 
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
@@ -46,7 +38,7 @@ TAG_IDS = TRACKED_TAG_IDS
 # Physical square **edge** lengths (meters) for pose estimation — tags differ by placement.
 BOX_TAG_SIZE_M = float(os.environ.get("BOX_TAG_SIZE_M", "0.019"))
 REFERENCE_TAG_SIZE_M = float(
-    os.environ.get("REFERENCE_TAG_SIZE_M", os.environ.get("LIDAR_LANDMARK_TAG_SIZE_M", "0.061"))
+    os.environ.get("REFERENCE_TAG_SIZE_M", os.environ.get("LIDAR_LANDMARK_TAG_SIZE_M", "0.060"))
 )
 
 # Deprecated alias (single-size legacy); prefer BOX_TAG_SIZE_M / REFERENCE_TAG_SIZE_M.
@@ -102,7 +94,9 @@ def _aruco_detector() -> tuple[Any, Any] | tuple[None, None]:
     return dictionary, params
 
 
-def detect_box_tags(frame: np.ndarray) -> dict[str, Any]:
+def detect_box_tags(
+    frame: np.ndarray, *, include_tag_ids: frozenset[int] | None = None
+) -> dict[str, Any]:
     detector, params = _aruco_detector()
     if detector is None:
         return {"ok": False, "error": "OpenCV aruco AprilTag support unavailable", "tags": []}
@@ -114,10 +108,13 @@ def detect_box_tags(frame: np.ndarray) -> dict[str, Any]:
         corners, ids, _ = cv2.aruco.detectMarkers(gray, detector, parameters=params)
 
     tags = []
+    allowed = set(TRACKED_TAG_IDS)
+    if include_tag_ids:
+        allowed |= set(include_tag_ids)
     if ids is not None:
         for idx, tag_id_arr in enumerate(ids):
             tag_id = int(tag_id_arr[0])
-            if tag_id not in TRACKED_TAG_IDS:
+            if tag_id not in allowed:
                 continue
             pts = corners[idx].reshape(4, 2).astype(float)
             center = pts.mean(axis=0)
@@ -135,10 +132,15 @@ def detect_box_tags(frame: np.ndarray) -> dict[str, Any]:
                     "mean_edge_px": mean_edge_px,
                 }
             )
-    return {"ok": bool(tags), "tags": tags, "tag_family": "tag25h9", "expected_ids": sorted(TRACKED_TAG_IDS)}
+    return {"ok": bool(tags), "tags": tags, "tag_family": "tag25h9", "expected_ids": sorted(allowed)}
 
 
-def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[str, Any]:
+def estimate_tag_poses(
+    frame: np.ndarray,
+    tags_result: dict[str, Any],
+    *,
+    tag_edge_length_overrides: dict[int, float] | None = None,
+) -> dict[str, Any]:
     if not tags_result.get("ok"):
         return {"ok": False, "error": tags_result.get("error", "no tags"), "poses": []}
 
@@ -146,7 +148,11 @@ def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[s
     dist = np.zeros((5, 1), dtype=np.float32)
     poses = []
     for tag in tags_result["tags"]:
-        edge_m = tag_edge_length_m(int(tag["id"]))
+        tid = int(tag["id"])
+        if tag_edge_length_overrides and tid in tag_edge_length_overrides:
+            edge_m = float(tag_edge_length_overrides[tid])
+        else:
+            edge_m = tag_edge_length_m(tid)
         half = edge_m / 2.0
         object_points = np.array(
             [
@@ -197,6 +203,179 @@ def estimate_tag_poses(frame: np.ndarray, tags_result: dict[str, Any]) -> dict[s
     }
 
 
+def _default_tag5_calibration_path() -> Path:
+    return SCRIPTS_DIR.parent / "data" / "tag5_calibration_arm_base.json"
+
+
+def tag5_calibration_offset_arm_base_m(logical_camera_device: int | None = None) -> list[float] | None:
+    """
+    Offset additivo (m) in frame base braccio, da file scritto da calibrazione.
+
+    Se il JSON contiene ``offset_by_logical_camera_device_m`` con la chiave del device
+    (stringa ``"0"`` o ``"6"``), usa quell'offset per quella telecamera; altrimenti usa
+    ``offset_arm_base_m`` (calibrazione landmark tag 5 classica, stesso offset per tutte).
+    Disattivabile con ``GO2_TAG5_CALIBRATION_ENABLE=0``.
+    """
+    if os.environ.get("GO2_TAG5_CALIBRATION_ENABLE", "1").lower() in {"0", "false", "no"}:
+        return None
+    path = os.environ.get("GO2_TAG5_CALIBRATION_JSON", "").strip()
+    p = Path(path).expanduser() if path else _default_tag5_calibration_path()
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if logical_camera_device is not None:
+            by_dev = data.get("offset_by_logical_camera_device_m")
+            if isinstance(by_dev, dict):
+                key = str(int(logical_camera_device))
+                off_d = by_dev.get(key)
+                if isinstance(off_d, list) and len(off_d) >= 3:
+                    return [float(off_d[0]), float(off_d[1]), float(off_d[2])]
+        off = data.get("offset_arm_base_m")
+        if isinstance(off, list) and len(off) >= 3:
+            return [float(off[0]), float(off[1]), float(off[2])]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _camera_tvec_to_base_heuristic_xyz(camera_xyz_m: Sequence[float]) -> list[float]:
+    """
+    Euristica tvec OpenCV → base braccio **senza** offset calibrazione tag 5.
+    Usata per calcolare l'offset: nominal - heuristic(tag5).
+    """
+    if len(camera_xyz_m) < 3:
+        return [0.18, 0.0, 0.12]
+    sx = float(os.environ.get("GO2_BOX_TVEC_SIGN_X", "1"))
+    sy = float(os.environ.get("GO2_BOX_TVEC_SIGN_Y", "1"))
+    sz = float(os.environ.get("GO2_BOX_TVEC_SIGN_Z", "1"))
+    cam_x = float(camera_xyz_m[0]) * sx
+    cam_y = float(camera_xyz_m[1]) * sy
+    cam_z = float(camera_xyz_m[2]) * sz
+    fwd = cam_z
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_FORWARD", "0").lower() in {"1", "true", "yes"}:
+        fwd = -fwd
+    lat = -cam_x
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_LATERAL", "0").lower() in {"1", "true", "yes"}:
+        lat = -lat
+    target_x = float(np.clip(fwd, 0.18, 0.72))
+    target_y = float(np.clip(lat, -0.35, 0.35))
+    height_off = float(os.environ.get("GO2_BOX_TARGET_HEIGHT_OFFSET_M", "0.10"))
+    ht = DEFAULT_CAMERA_HEIGHT_M - cam_y - height_off
+    if os.environ.get("GO2_BOX_TARGET_NEGATE_HEIGHT_TERM", "0").lower() in {"1", "true", "yes"}:
+        ht = DEFAULT_CAMERA_HEIGHT_M + cam_y - height_off
+    target_z = float(np.clip(ht, 0.04, 0.22))
+    return [target_x, target_y, target_z]
+
+
+def camera_tvec_to_base_xyz(
+    camera_xyz_m: Sequence[float],
+    *,
+    logical_camera_device: int | None = None,
+    apply_tag5_calibration: bool = True,
+) -> list[float]:
+    """
+    tvec OpenCV (centro tag) → stima nel frame **base braccio** (arm_link00 / FK).
+    Se ``apply_tag5_calibration`` è True, applica l'offset da file calibrazione (solo per il
+    landmark tag 5: è ``nominal - heuristic(tag5)`` e **non** va sommato ai tag scatola 0–3).
+    """
+    h = _camera_tvec_to_base_heuristic_xyz(camera_xyz_m)
+    if not apply_tag5_calibration:
+        return h
+    off = tag5_calibration_offset_arm_base_m(logical_camera_device)
+    if off is None:
+        return h
+    return [h[0] + off[0], h[1] + off[1], h[2] + off[2]]
+
+
+def make_tag5_calibration_record(
+    nominal_tag5_arm_base_m: Sequence[float],
+    tag5_camera_xyz_m: Sequence[float],
+    *,
+    logical_camera_device: int,
+) -> dict[str, Any]:
+    """
+    Crea il record da salvare in ``data/tag5_calibration_arm_base.json``:
+    ``offset = nominal - heuristic(tag5)`` nello stesso frame (base braccio).
+    """
+    h = _camera_tvec_to_base_heuristic_xyz(
+        [float(tag5_camera_xyz_m[0]), float(tag5_camera_xyz_m[1]), float(tag5_camera_xyz_m[2])]
+    )
+    off = [float(nominal_tag5_arm_base_m[i]) - h[i] for i in range(3)]
+    return {
+        "offset_arm_base_m": [round(off[0], 6), round(off[1], 6), round(off[2], 6)],
+        "nominal_tag5_arm_base_m": [round(float(nominal_tag5_arm_base_m[i]), 6) for i in range(3)],
+        "tag5_camera_xyz_m_used": [round(float(tag5_camera_xyz_m[i]), 6) for i in range(3)],
+        "heuristic_base_before_m": [round(h[i], 6) for i in range(3)],
+        "logical_camera_device": int(logical_camera_device),
+        "reference_tag_id": REFERENCE_TAG_ID_LIDAR_FRAME,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "note": (
+            "Offset ``offset_arm_base_m`` da landmark tag 5 (tipicamente polso). "
+            "Se presente ``offset_by_logical_camera_device_m``, quello ha priorità per device 0/6."
+        ),
+    }
+
+
+def tvec_camera_m_for_tag_id(
+    frame: np.ndarray,
+    tag_id: int,
+    *,
+    tag_edge_length_overrides: dict[int, float] | None = None,
+) -> list[float] | None:
+    """
+    tvec OpenCV (centro tag) nel frame camera per ``tag_id`` se rilevato nel frame.
+    ``tag_edge_length_overrides`` imposta il lato (m) per ID non standard (0–3/5 usano le costanti).
+    """
+    tid = int(tag_id)
+    tags = detect_box_tags(frame, include_tag_ids=frozenset({tid}))
+    poses = estimate_tag_poses(frame, tags, tag_edge_length_overrides=tag_edge_length_overrides)
+    for p in poses.get("poses") or []:
+        if int(p.get("id", -1)) != tid:
+            continue
+        c = p.get("camera_xyz_m")
+        if isinstance(c, list) and len(c) >= 3:
+            return [float(c[0]), float(c[1]), float(c[2])]
+    return None
+
+
+def apriltag_tag_estimates_base_m(poses_result: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Per ogni tag con pose solvePnP, stima la posizione del centro tag nel frame base braccio
+    (vis 3D). Include anche il landmark ID 5 se presente.
+    """
+    if not poses_result.get("ok"):
+        return []
+    out: list[dict[str, Any]] = []
+    for p in poses_result.get("poses") or []:
+        cam = p.get("camera_xyz_m")
+        if not isinstance(cam, list) or len(cam) < 3:
+            continue
+        raw = [float(cam[0]), float(cam[1]), float(cam[2])]
+        dev = None
+        if isinstance(p.get("logical_camera_device"), (int, float)):
+            try:
+                dev = int(p["logical_camera_device"])
+            except (TypeError, ValueError):
+                dev = None
+        tid = int(p.get("id", -1))
+        base = camera_tvec_to_base_xyz(
+            raw,
+            logical_camera_device=dev,
+            apply_tag5_calibration=(tid == REFERENCE_TAG_ID_LIDAR_FRAME),
+        )
+        out.append(
+            {
+                "id": int(p.get("id", -1)),
+                "base_xyz_m": [round(base[i], 5) for i in range(3)],
+                "range_m": p.get("range_m"),
+                "camera_xyz_m": [round(raw[i], 5) for i in range(3)],
+                "logical_camera_device": dev,
+            }
+        )
+    return out
+
+
 def estimate_box_target_base(poses_result: dict[str, Any]) -> dict[str, Any]:
     """
     Conservative camera-to-base approximation for preview.
@@ -226,22 +405,21 @@ def estimate_box_target_base(poses_result: dict[str, Any]) -> dict[str, Any]:
     cam_y = float(mean[1]) * sy
     cam_z = float(mean[2]) * sz
 
-    # Legacy mapping: forward X ← cam_z, lateral Y ← -cam_x, height from cam_y.
-    fwd = cam_z
-    if os.environ.get("GO2_BOX_TARGET_NEGATE_FORWARD", "0").lower() in {"1", "true", "yes"}:
-        fwd = -fwd
-    lat = -cam_x
-    if os.environ.get("GO2_BOX_TARGET_NEGATE_LATERAL", "0").lower() in {"1", "true", "yes"}:
-        lat = -lat
-    target_x = float(np.clip(fwd, 0.18, 0.72))
-    target_y = float(np.clip(lat, -0.35, 0.35))
-    # Aim a little above floor, then approach down. The tag center y helps infer if
-    # the box is lower in the image, but we keep z conservative until calibrated.
-    height_off = float(os.environ.get("GO2_BOX_TARGET_HEIGHT_OFFSET_M", "0.10"))
-    ht = DEFAULT_CAMERA_HEIGHT_M - cam_y - height_off
-    if os.environ.get("GO2_BOX_TARGET_NEGATE_HEIGHT_TERM", "0").lower() in {"1", "true", "yes"}:
-        ht = DEFAULT_CAMERA_HEIGHT_M + cam_y - height_off
-    target_z = float(np.clip(ht, 0.04, 0.22))
+    dev: int | None = None
+    for p in poses_grasp:
+        if isinstance(p.get("logical_camera_device"), (int, float)):
+            try:
+                dev = int(p["logical_camera_device"])
+                break
+            except (TypeError, ValueError):
+                pass
+
+    tb = camera_tvec_to_base_xyz(
+        [float(mean[0]), float(mean[1]), float(mean[2])],
+        logical_camera_device=dev,
+        apply_tag5_calibration=False,
+    )
+    target_x, target_y, target_z = tb[0], tb[1], tb[2]
     return {
         "ok": True,
         "base_xyz_m": [round(target_x, 4), round(target_y, 4), round(target_z, 4)],
@@ -428,9 +606,16 @@ def plan_from_frame(
     object_detection: dict[str, Any] | None = None,
     *,
     prefer_tag_grip: bool | None = None,
+    logical_camera_device: int | None = None,
+    include_tag_ids: frozenset[int] | None = None,
+    tag_edge_length_overrides: dict[int, float] | None = None,
 ) -> dict[str, Any]:
-    tags = detect_box_tags(frame)
-    poses = estimate_tag_poses(frame, tags)
+    tags = detect_box_tags(frame, include_tag_ids=include_tag_ids)
+    poses = estimate_tag_poses(frame, tags, tag_edge_length_overrides=tag_edge_length_overrides)
+    if logical_camera_device is not None:
+        for p in poses.get("poses") or []:
+            if isinstance(p, dict):
+                p["logical_camera_device"] = int(logical_camera_device)
     tag_target = estimate_box_target_base(poses)
     obj_target = target_base_from_object_detection(object_detection or {}, frame) if object_detection else {"ok": False}
     target = tag_target if tag_target.get("ok") else obj_target

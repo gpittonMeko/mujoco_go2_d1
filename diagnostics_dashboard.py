@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-"""
-Diagnostics dashboard for a Unitree Go2 lab setup.
-
-Most checks are read-only (ping, SSH inventory, cameras). Optional modes when
-running on the robot: real arm DDS motion (`GO2_ENABLE_REAL_ARM`), Sport API
-base poses Stand up / Crouch (`GO2_ENABLE_BASE_MOTION`, default 1 when `GO2_LOCAL=1`),
-saved START alignment snapshots with `arm_at_start` (servo + `joints_rad` for IK). Grasp attempt: (optional) fold →
-go to saved START → wait for AprilTag → … Wrist grasp: `GO2_GRASP_WRIST_POLICY` (default `center_then_grasp_on_loss`, IK from cached plan on tag loss; `legacy_double_lock` restores old behavior). Manual: `data/true_zero_pose.json` (Salva ZERO) and «ZERO → START» for a
-smooth path from calibrated fold to `start_alignment.json`. D1 drag-teaching: see `docs/d1_arm_protocol_feasibility.md`; `POST /api/arm/teach_mode` is 501 until
-the protocol is integrated. Experimental mirror/assist drag-follow loop: `scripts/d1_drag_follow_experimental.py`
-and `POST /api/arm/drag_follow`. Sport RPC from `/api/base/accompany_mode` uses a thread timeout
-(`GO2_SPORT_RPC_TIMEOUT_S`, default 45s) so the worker does not hang.
-"""
+"""Flask handlers + ``APP``. Run ``scripts/serve_dashboard_modular.py`` — not this file as __main__."""
 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import statistics
@@ -32,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Flask, Response, jsonify, render_template_string, request
+from flask import Flask, Response, abort, jsonify, render_template_string, request, send_from_directory
 
 try:
     import cv2
@@ -46,6 +35,159 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+TAG5_CALIB_PATH = PROJECT_ROOT / "data" / "tag5_calibration_arm_base.json"
+GO2_SCENE_ASSETS_DIR = PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "assets"
+D1_SCENE_MESH_DIR = (
+    PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "d1_550_description" / "meshes"
+)
+# Scena MuJoCo inclusa (Go2+D1 mesh + tavolo/palla) per anteprima PNG server-side.
+MUJOCO_SCENE_PREVIEW_XML = PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "scene_d1_mesh.xml"
+
+from go2_dashboard.cameras import (
+    CAMERA_CACHE,
+    CAMERA_DEVICES,
+    _cv_videocapture,
+    _v4l_index_for_logical_camera,
+    usb_auto_v4l_mapping,
+)
+
+
+def _scene_mesh_manifest() -> dict[str, list[str]]:
+    """Elenco file mesh serviti da ``/api/arm/scene_meshes`` (solo nomi presenti su disco)."""
+    go2: list[str] = []
+    d1: list[str] = []
+    if GO2_SCENE_ASSETS_DIR.is_dir():
+        go2 = sorted(p.name for p in GO2_SCENE_ASSETS_DIR.glob("*.obj"))
+    if D1_SCENE_MESH_DIR.is_dir():
+        d1 = sorted(p.name for p in D1_SCENE_MESH_DIR.glob("*.STL"))
+    return {"go2_obj": go2, "d1_stl": d1}
+
+
+def _d1_stl_disk_summary() -> dict[str, Any]:
+    """
+    Metadati STL sul disco. I file ``Empty_Link*.STL`` **minimali** del repo (spesso ~684 byte,
+    12 triangoli = un box) non sono la geometria CAD fina del D1 — da qui i «blocchi» in Three.js.
+    """
+    out: dict[str, Any] = {
+        "meshes_dir": str(D1_SCENE_MESH_DIR),
+        "files_byte_size": {},
+        "looks_like_placeholder": False,
+    }
+    if not D1_SCENE_MESH_DIR.is_dir():
+        return out
+    sizes: list[int] = []
+    for p in sorted(D1_SCENE_MESH_DIR.glob("*.STL")):
+        try:
+            sz = int(p.stat().st_size)
+            out["files_byte_size"][p.name] = sz
+            if sz > 0:
+                sizes.append(sz)
+        except OSError:
+            out["files_byte_size"][p.name] = -1
+    # Mesh CAD veri sono tipicamente ≫ 4 KiB; placeholder venduti nel repo sono tutti ~684 B.
+    if sizes and max(sizes) < 4096:
+        out["looks_like_placeholder"] = True
+    return out
+
+
+def _rpy_to_quat_xyzw_ros(roll: float, pitch: float, yaw: float) -> list[float]:
+    """Quaternion (x,y,z,w) da RPY in radianti (convenzione URDF/ROS)."""
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    return [qx, qy, qz, qw]
+
+
+def _d1_urdf_visual_offsets_list() -> list[dict[str, Any]]:
+    """
+    Offset visual mesh nel frame di ogni link D1 (base + Empty_Link1..6), da URDF se presente.
+    Senza file: identità — utente può impostare ``GO2_D1_URDF_PATH`` o vendere
+    ``d1_550_description/urdf/d1_550_description.urdf`` sotto la root repo.
+    """
+    ident = {"pos_m": [0.0, 0.0, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    out: list[dict[str, Any]] = [dict(ident) for _ in range(7)]
+    cands: list[Path] = []
+    envp = os.environ.get("GO2_D1_URDF_PATH", "").strip()
+    if envp:
+        cands.append(Path(envp))
+    cands.extend(
+        [
+            PROJECT_ROOT / "d1_550_description" / "urdf" / "d1_550_description.urdf",
+            PROJECT_ROOT
+            / "unitree_mujoco"
+            / "unitree_robots"
+            / "go2_d1"
+            / "d1_550_description"
+            / "urdf"
+            / "d1_550_description.urdf",
+        ]
+    )
+    path = next((p for p in cands if str(p) and p.is_file()), None)
+    if path is None:
+        return out
+    try:
+        import xml.etree.ElementTree as ET
+
+        tree = ET.parse(str(path))
+        root = tree.getroot()
+        for link in root.findall("link"):
+            vis = link.find("visual")
+            if vis is None:
+                continue
+            geom_el = vis.find("geometry")
+            mesh_el = geom_el.find("mesh") if geom_el is not None else None
+            fn = ""
+            if mesh_el is not None:
+                fn = (mesh_el.get("filename") or mesh_el.get("uri") or "").replace("\\", "/")
+            fnl = fn.lower()
+            idx: int | None = None
+            if "base_link" in fnl:
+                idx = 0
+            else:
+                for li in range(1, 7):
+                    if f"empty_link{li}" in fnl or f"link{li}.stl" in fnl:
+                        idx = li
+                        break
+            if idx is None:
+                continue
+            orig = vis.find("origin")
+            xyz = [0.0, 0.0, 0.0]
+            rpy = [0.0, 0.0, 0.0]
+            if orig is not None:
+                xs = orig.get("xyz", "0 0 0").split()
+                rs = orig.get("rpy", "0 0 0").split()
+                if len(xs) >= 3:
+                    xyz = [float(xs[0]), float(xs[1]), float(xs[2])]
+                if len(rs) >= 3:
+                    rpy = [float(rs[0]), float(rs[1]), float(rs[2])]
+            q = _rpy_to_quat_xyzw_ros(rpy[0], rpy[1], rpy[2])
+            out[idx] = {
+                "pos_m": [round(float(xyz[i]), 6) for i in range(3)],
+                "quat_xyzw": [round(float(q[i]), 6) for i in range(4)],
+            }
+    except Exception:
+        return [dict(ident) for _ in range(7)]
+    return out
+
+
+def _nominal_tag5_arm_base_from_env() -> list[float] | None:
+    """Centro AprilTag 5 (landmark XT-16) nel frame base braccio: ``GO2_TAG5_NOMINAL_ARM_BASE_M=x,y,z`` (m)."""
+    raw = os.environ.get("GO2_TAG5_NOMINAL_ARM_BASE_M", "").strip()
+    if not raw:
+        return None
+    try:
+        parts = [float(x.strip()) for x in raw.split(",")]
+        if len(parts) >= 3:
+            return [parts[0], parts[1], parts[2]]
+    except ValueError:
+        return None
+    return None
+
+
 GO2_HOST = os.environ.get("GO2_HOST", "192.168.123.18")
 GO2_INTERNAL_HOST = os.environ.get("GO2_INTERNAL_HOST", "192.168.123.222")
 GO2_USER = os.environ.get("GO2_USER", "unitree")
@@ -76,6 +218,30 @@ ETHERNET_CANDIDATES = [
 ]
 
 APP = Flask(__name__)
+_LOG_VIS = logging.getLogger(__name__)
+
+
+@APP.after_request
+def _dashboard_api_cors_headers(response: Response) -> Response:
+    """Header CORS leggeri su /api/* — utili dietro proxy e per preflight OPTIONS (evita ``Failed to fetch``)."""
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+        response.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        response.headers.setdefault(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Requested-With",
+        )
+        response.headers.setdefault("Access-Control-Max-Age", "3600")
+    return response
+
+
+@APP.route("/api", defaults={"subpath": ""}, methods=["OPTIONS"])
+@APP.route("/api/<path:subpath>", methods=["OPTIONS"])
+def _api_options_preflight(subpath: str = "") -> Response:
+    """Risposta vuota a OPTIONS — alcuni browser inviano preflight su POST JSON."""
+    return Response(status=204)
+
+
 # Riavvio: questo timestamp è all’import del modulo; utile vs mtime di diagnostics_dashboard.py su disco.
 _DASHBOARD_SELF = Path(__file__).resolve()
 PROCESS_STARTED_AT_EPOCH = time.time()
@@ -96,19 +262,19 @@ def _dashboard_py_mtime_iso() -> str | None:
         return None
 
 
-STATUS_LOCK = threading.Lock()
 STATUS: dict[str, Any] = {
     "updated_at": None,
     "running": False,
     "summary": "No diagnostics run yet.",
     "tests": {},
 }
+STATUS_LOCK = threading.Lock()
 # Process optional avviato da POST /api/arm/drag_follow (script sperimentale).
-DRAG_FOLLOW_PROC: subprocess.Popen | None = None
+DRAG_FOLLOW_PROC: Optional[subprocess.Popen] = None
 # Meta quando drag_follow è avviato da questa istanza Flask (PID, durata, parametri).
-DRAG_FOLLOW_META: dict[str, Any] | None = None
+DRAG_FOLLOW_META: Optional[dict[str, Any]] = None
 # Ultimo stop / uscita processo (feedback UI).
-DRAG_FOLLOW_LAST_END: dict[str, Any] | None = None
+DRAG_FOLLOW_LAST_END: Optional[dict[str, Any]] = None
 # stdout/stderr dello script drag-follow (exit code, print ERROR…).
 DRAG_FOLLOW_LOG_FP: Any = None
 # Log mirror append-only (relativo a PROJECT_ROOT).
@@ -363,11 +529,112 @@ def _drag_follow_stop_if_running(*, hold_after_stop: bool = True) -> dict[str, A
     return {"drag_follow_stopped": True, "hold_after_stop": hold_after}
 
 
+@APP.route("/api/arm/scene_meshes/<kind>/<path:filename>", methods=["GET"])
+def api_arm_scene_meshes(kind: str, filename: str) -> Any:
+    """Serve file .obj (Go2) o .STL (D1) per il viewer 3D; path traversal bloccato."""
+    from werkzeug.utils import secure_filename
+
+    base_dir: Path
+    if kind == "go2":
+        if not filename.lower().endswith(".obj"):
+            abort(404)
+        base_dir = GO2_SCENE_ASSETS_DIR
+    elif kind == "d1":
+        if not filename.lower().endswith(".stl"):
+            abort(404)
+        base_dir = D1_SCENE_MESH_DIR
+    else:
+        abort(404)
+    safe = secure_filename(filename)
+    if not safe or safe != filename:
+        abort(404)
+    path = base_dir / safe
+    if not path.is_file():
+        abort(404)
+    mimetype = "model/stl" if kind == "d1" else "text/plain"
+    return send_from_directory(str(base_dir), safe, mimetype=mimetype)
+
+
+@APP.route("/api/mujoco/preview.png", methods=["GET"])
+def api_mujoco_preview_png() -> Any:
+    """
+    Un singolo frame RGB del modello MuJoCo ``scene_d1_mesh.xml`` (keyframe ``home``).
+    Richiede il pacchetto Python ``mujoco`` sul server; non incorpora il viewer GLFW nel browser.
+    Disabilita con ``GO2_MUJOCO_PREVIEW=0``. Query: ``w``, ``h`` (64–960).
+    """
+    import io
+
+    if os.environ.get("GO2_MUJOCO_PREVIEW", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return Response("GO2_MUJOCO_PREVIEW disabled", status=503, mimetype="text/plain")
+    if not MUJOCO_SCENE_PREVIEW_XML.is_file():
+        return Response(
+            "scene XML missing on server — deploy unitree_mujoco/.../scene_d1_mesh.xml + go2_d1_d1mesh.xml (see deploy_dashboard_to_nx)",
+            status=503,
+            mimetype="text/plain",
+        )
+    try:
+        import mujoco  # type: ignore
+    except ImportError:
+        return Response("mujoco Python package not installed", status=503, mimetype="text/plain")
+
+    try:
+        w = min(960, max(64, int(request.args.get("w", 640))))
+        h = min(960, max(64, int(request.args.get("h", 480))))
+    except (TypeError, ValueError):
+        w, h = 640, 480
+
+    try:
+        model = mujoco.MjModel.from_xml_path(str(MUJOCO_SCENE_PREVIEW_XML.resolve()))
+        data = mujoco.MjData(model)
+        khome = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        if khome >= 0:
+            mujoco.mj_resetDataKeyframe(model, data, khome)
+        n_robot = 25  # 7 free base + 12 gambe + 6 braccio (come simulate_python)
+        if model.nq > n_robot and hasattr(model, "qpos0"):
+            data.qpos[n_robot:] = model.qpos0[n_robot:]
+        mujoco.mj_forward(model, data)
+        renderer = mujoco.Renderer(model, h, w)
+        try:
+            renderer.update_scene(data)
+            pixels = renderer.render()
+        finally:
+            close = getattr(renderer, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": repr(exc)}), 503
+
+    if cv2 is not None:
+        try:
+            ok, buf = cv2.imencode(".png", cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR))
+            if ok:
+                return Response(
+                    buf.tobytes(),
+                    mimetype="image/png",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+                )
+        except Exception:
+            pass
+    try:
+        from PIL import Image
+
+        img = Image.fromarray(pixels)
+        bio = io.BytesIO()
+        img.save(bio, format="PNG")
+        return Response(
+            bio.getvalue(),
+            mimetype="image/png",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
+    except Exception as enc_exc:
+        return jsonify({"ok": False, "error": repr(enc_exc)}), 503
+
+
 @APP.route("/api/health", methods=["GET"])
 def api_health() -> Any:
     """Smoke test minimo — niente camere né DDS."""
-    mt = _dashboard_py_mtime_epoch()
-    reload_recommended = bool(mt is not None and mt > PROCESS_STARTED_AT_EPOCH)
+    py_mt = _dashboard_py_mtime_epoch()
+    reload_recommended = bool(py_mt is not None and py_mt > PROCESS_STARTED_AT_EPOCH)
     return jsonify(
         {
             "ok": True,
@@ -377,47 +644,158 @@ def api_health() -> Any:
             "dashboard_py_mtime": _dashboard_py_mtime_iso(),
             "reload_recommended": reload_recommended,
             "reload_hint": (
-                "Il file diagnostics_dashboard.py sul disco è più nuovo di questo processo: riavvia Flask "
-                "(su NX: python scripts/deploy_dashboard_to_nx.py oppure kill PID e rilancia)."
+                "Il file ``diagnostics_dashboard.py`` sul disco è più nuovo di questo processo: riavvia Flask "
+                "(su NX: kill PID e rilancia). Il file ``templates/dashboard.html`` viene invece riletto automaticamente quando cambia."
                 if reload_recommended
                 else None
             ),
         }
     )
 
-CAMERA_DEVICES = {
-    0: "Sonix HD 1080P PC-Camera (arm/external USB)",
-    6: "Intel RealSense D435i RGB stream",
-}
 
-
-def _v4l_index_for_logical_camera(logical: int) -> int:
+@APP.route("/api/base/sport_env", methods=["GET"])
+def api_base_sport_env() -> Any:
     """
-    Indice V4L2 reale (ls -l /dev/video*). Sul Jetson il RGB RealSense spesso non è video6:
-    prova es. GO2_VIDEO_INDEX_6=4 o 2 dopo rs-enumerate-devices / test manuali.
+    Diagnostica IP/interfacce per Sport: la UI parla HTTP con questa macchina;
+    i comandi base usano DDS (domain + interfaccia L2 verso il cane), non ``GO2_HOST``.
     """
-    key = f"GO2_VIDEO_INDEX_{logical}"
-    if key in os.environ:
-        try:
-            return int(str(os.environ[key]).strip())
-        except ValueError:
-            pass
-    return int(logical)
+    iface_raw = (GO2_DDS_INTERFACE or "").strip()
+    port = int(os.environ.get("GO2_DASHBOARD_PORT", "5050"))
+    return jsonify(
+        {
+            "ok": True,
+            "sport_uses_dashboard_http_ip_for_rpc": False,
+            "dashboard_bind_host": GO2_DASHBOARD_BIND,
+            "dashboard_port": port,
+            "go2_host_env": GO2_HOST,
+            "go2_internal_host_env": GO2_INTERNAL_HOST,
+            "dds_domain": GO2_DDS_DOMAIN,
+            "dds_interface_env": iface_raw or None,
+            "dds_interface_effective": iface_raw if iface_raw else "(vuoto — Cyclone DDS sceglie interfaccia di default)",
+            "subnet_hint_it": (
+                "La Sport API non è «scrivere a un IP»: usa DDS (Layer 2) sulla LAN Unitree tipica 192.168.123.0/24. "
+                "Indirizzi spesso citati: Jetson/PC 192.168.123.18 o .222, MCU braccio .161, router .100; "
+                "il cane come AP spesso .1 — il ping verifica solo IPv4, non sostituisce DDS domain/interfaccia."
+            ),
+            "sport_mode_service_hint_it": (
+                "Su firmware/app Unitree: il controllo high-level richiede che il servizio sport sia consentito sul robot; "
+                "in più segnalazioni (SDK Python issue #19) si risolve abilitando sport_mode dall’app Go2. "
+                "Chiudi anche connessioni concorrenti (app/Wi‑Fi) che possono bloccare il canale."
+            ),
+            "motion_prepare_env_it": (
+                "Se Sport risponde ma il robot non segue: sulla NX puoi provare MotionSwitcher prima dei comandi — "
+                "GO2_SPORT_MOTION_PREPARE=1, opz. GO2_SPORT_RELEASE_IF_HELD=1, GO2_SPORT_SELECT_MODE=normal (o ai). "
+                "Vedi script go2_accompany.py."
+            ),
+            "references": [
+                {
+                    "title": "unitree_sdk2_python — SportClient send error / sport_mode",
+                    "url": "https://github.com/unitreerobotics/unitree_sdk2_python/issues/19",
+                },
+                {
+                    "title": "Unitree sdk2 — SportClient (Go2)",
+                    "url": "https://github.com/unitreerobotics/unitree_sdk2/blob/main/include/unitree/robot/go2/sport/sport_client.hpp",
+                },
+            ],
+            "hint_it": (
+                "Apri la dashboard su http://<IP-Jetson>:" + str(port) + " — corretto per Flask. "
+                "Crouch/Stand inviano Sport RPC sulla NX via DDS: serve ``GO2_DDS_INTERFACE`` "
+                "sulla NIC che ha reachability L2 verso il quadrupede (tipicamente eth0 su 192.168.123.x). "
+                "Se manca o è wlan0/eth0 sbagliato, RPC può fallire (es. codice 3102)."
+            ),
+            "sport_connectivity_probe_get": "/api/base/sport_connectivity",
+            "sport_connectivity_method_it": (
+                "GET esegue MotionSwitcher.CheckMode sul cane (solo lettura, nessun movimento) — stesso DDS di SportClient."
+            ),
+        }
+    )
 
 
-def _cv_videocapture(v4l_index: int) -> Any:
-    """Apertura V4L2 esplicita su Linux — alcuni device RealSense non aprono col backend default."""
-    if cv2 is None:
-        raise RuntimeError("cv2 unavailable")
-    if platform.system().lower() == "linux":
-        try:
-            cap = cv2.VideoCapture(v4l_index, cv2.CAP_V4L2)
-            if cap.isOpened():
-                return cap
-            cap.release()
-        except Exception:
-            pass
-    return cv2.VideoCapture(v4l_index)
+@APP.route("/api/base/sport_last", methods=["GET"])
+def api_base_sport_last() -> Any:
+    """Ultimo risultato ``sport_accompany`` (anche da thread dopo HTTP 202)."""
+    with LAST_SPORT_RPC_LOCK:
+        snap = {k: v for k, v in LAST_SPORT_RPC.items()}
+    return jsonify({"ok": True, **snap})
+
+
+@APP.route("/api/base/sport_connectivity", methods=["GET"])
+def api_base_sport_connectivity() -> Any:
+    """
+    Smoke DDS → cane senza movimento: ``MotionSwitcherClient.CheckMode`` (stesso trasporto della Sport API).
+
+    Solo sulla Jetson con ``GO2_LOCAL=1``. Nessun comando StandDown/StandUp.
+    """
+    if not GO2_LOCAL:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "GO2_LOCAL!=1 — esegui questo probe sulla NX accanto al cane.",
+                }
+            ),
+            403,
+        )
+
+    timeout_s = float(os.environ.get("GO2_SPORT_CONNECTIVITY_TIMEOUT_S", "15"))
+    script = PROJECT_ROOT / "scripts" / "dds_motion_ping_once.py"
+    if not script.is_file():
+        return jsonify({"ok": False, "reason": "missing_scripts/dds_motion_ping_once.py"}), 500
+    # Subprocess: un segfault in Cyclone/MotionSwitcher non deve abbattere il processo Flask.
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": f"probe_timeout_after_{timeout_s}s",
+                    "hint_it": "MotionSwitcher non ha risposto in tempo — DDS o cane irraggiungibile.",
+                }
+            ),
+            504,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "reason": repr(exc)}), 502
+
+    if proc.returncode != 0:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "dds_motion_ping_subprocess_failed",
+                    "returncode": proc.returncode,
+                    "stderr": (proc.stderr or "")[:4000],
+                    "stdout": (proc.stdout or "")[:1200],
+                    "hint_it": "Il probe DDS è uscito con codice ≠0 (spesso segfault libreria nativa). Flask resta vivo.",
+                }
+            ),
+            502,
+        )
+    try:
+        result = json.loads((proc.stdout or "").strip() or "{}")
+    except json.JSONDecodeError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": f"json_decode:{exc!s}",
+                    "stdout": (proc.stdout or "")[:1200],
+                    "stderr": (proc.stderr or "")[:800],
+                }
+            ),
+            502,
+        )
+
+    status = 200 if isinstance(result, dict) and result.get("ok") else 502
+    return jsonify(result), status
 
 
 def _parse_step_deg_list(raw: str | None, default: list[float]) -> list[float]:
@@ -492,145 +870,29 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-class CameraCache:
-    def __init__(self, devices: dict[int, str], fps: float = 20.0, jpeg_quality: int = 68):
-        self.devices = devices
-        self.period = 1.0 / max(fps, 1.0)
-        self.jpeg_quality = jpeg_quality
-        self.frames: dict[int, dict[str, Any]] = {}
-        self.errors: dict[int, str] = {}
-        self._stop = threading.Event()
-        self._started_devices: set[int] = set()
-        self._lock = threading.Lock()
-
-    def start(self, device: int | None = None) -> None:
-        if cv2 is None:
-            return
-        devices = [device] if device is not None else list(self.devices)
-        for dev in devices:
-            if dev not in self.devices or dev in self._started_devices:
-                continue
-            self._started_devices.add(dev)
-            threading.Thread(target=self._loop, args=(dev,), daemon=True).start()
-
-    def _loop(self, device: int) -> None:
-        cap = None
-        while not self._stop.is_set():
-            start = time.perf_counter()
-            if cap is None or not cap.isOpened():
-                if cap is not None:
-                    cap.release()
-                v4l_idx = _v4l_index_for_logical_camera(device)
-                cap = _cv_videocapture(v4l_idx)
-                if cap.isOpened():
-                    try:
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    except Exception:
-                        pass
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                    cap.set(cv2.CAP_PROP_FPS, 15)
-                else:
-                    with self._lock:
-                        self.errors[device] = f"open failed (V4L /dev/video{v4l_idx}, logical {device})"
-                    time.sleep(1.0)
-                    continue
-
-            ok, frame = (False, None)
-            try:
-                ok, frame = cap.read()
-            except Exception as exc:
-                with self._lock:
-                    self.errors[device] = f"read failed: {exc!r}"
-                cap.release()
-                cap = None
-                time.sleep(0.5)
-                continue
-
-            if ok and frame is not None:
-                # RealSense: aprire il nodo sbagliato dà frame tutti neri; non sovrascrivere la cache.
-                if frame.size and float(frame.max()) < 4.0:
-                    with self._lock:
-                        self.errors[device] = (
-                            f"frame nero su V4L — verifica GO2_VIDEO_INDEX_{device} "
-                            f"(reale /dev/video{_v4l_index_for_logical_camera(device)}, logico {device})"
-                        )
-                    time.sleep(0.25)
-                    continue
-                enc_ok, jpg = cv2.imencode(
-                    ".jpg",
-                    frame,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
-                )
-                if enc_ok:
-                    with self._lock:
-                        self.frames[device] = {
-                            "jpg": jpg.tobytes(),
-                            "ts": time.time(),
-                            "shape": list(frame.shape),
-                            "label": self.devices[device],
-                        }
-                        self.errors.pop(device, None)
-            else:
-                with self._lock:
-                    self.errors[device] = "read returned no frame"
-                cap.release()
-                cap = None
-                time.sleep(0.5)
-                continue
-            delay = self.period - (time.perf_counter() - start)
-            if delay > 0:
-                time.sleep(delay)
-        if cap is not None:
-            cap.release()
-
-    def get_jpeg(self, device: int, wait_s: float = 1.2) -> bytes | None:
-        self.start(device)
-        deadline = time.time() + wait_s
-        while True:
-            with self._lock:
-                item = self.frames.get(device)
-                if item is not None and time.time() - item["ts"] < 3.0:
-                    return item["jpg"]
-            if time.time() >= deadline:
-                return None
-            time.sleep(0.04)
-
-    def peek_jpeg(self, device: int) -> bytes | None:
-        """Ultimo frame in cache senza attesa (per MJPEG: niente blocchi lunghi sul generator)."""
-        self.start(device)
-        with self._lock:
-            item = self.frames.get(device)
-            if item is None:
-                return None
-            return item["jpg"]
-
-    def stats(self) -> dict[str, Any]:
-        now = time.time()
-        with self._lock:
-            return {
-                str(device): {
-                    "label": self.devices[device],
-                    "available": device in self.frames and (now - self.frames[device]["ts"]) < 5.0,
-                    "started": device in self._started_devices,
-                    "age_ms": None if device not in self.frames else round((now - self.frames[device]["ts"]) * 1000, 1),
-                    "shape": None if device not in self.frames else self.frames[device]["shape"],
-                    "error": self.errors.get(device),
-                }
-                for device in self.devices
-            }
-
-
-CAMERA_CACHE = CameraCache(
-    CAMERA_DEVICES,
-    fps=float(os.environ.get("GO2_CAMERA_CACHE_FPS", "20")),
-)
-
 ARM_GRASP_ABORT = threading.Event()
 ARM_OPERATION_LOCK = threading.RLock()
 LAST_ARM_JOB: dict[str, Any] = {"status": "idle", "updated_at": None, "detail": {}}
 ARM_GRASP_EVENTS: list[dict[str, Any]] = []
 ARM_GRASP_EVENTS_MAX = 80
+# Ultimo esito Sport RPC (anche thread background): utile se HTTP 202 nasconde i codici.
+LAST_SPORT_RPC: dict[str, Any] = {
+    "updated_at": None,
+    "mode": None,
+    "sync": None,
+    "result": None,
+    "error": None,
+}
+LAST_SPORT_RPC_LOCK = threading.Lock()
+
+
+def _sport_record_last(*, mode: str, sync: bool, result: Any | None, error: str | None) -> None:
+    with LAST_SPORT_RPC_LOCK:
+        LAST_SPORT_RPC["updated_at"] = now_iso()
+        LAST_SPORT_RPC["mode"] = mode
+        LAST_SPORT_RPC["sync"] = sync
+        LAST_SPORT_RPC["result"] = result
+        LAST_SPORT_RPC["error"] = error
 # Override da dashboard (slider): usati dal grasp loop al posto di env per la sessione.
 ARM_UI_TUNING: dict[str, Any] = {}
 ARM_UI_TUNING_LOCK = threading.Lock()
@@ -639,6 +901,13 @@ ARM_UI_TUNING_LOCK = threading.Lock()
 # prefer_tag_grip, grasp_execute_arm (opzionale; se assente si usa solo env).
 ARM_GRASP_SESSION: dict[str, Any] = {}
 ARM_GRASP_SESSION_LOCK = threading.Lock()
+
+# Offset visualizzazione 3D: tag5 → mount / camera front / offset locale polso (sessione Flask).
+VIS_GEOMETRY_TUNING: dict[str, float] = {}
+VIS_GEOMETRY_TUNING_LOCK = threading.Lock()
+# EMA solo per la sfera verde (display) in scene_3d — non modifica il piano presa.
+_SCENE3D_TARGET_DISPLAY_STATE: dict[str, Any] = {"ema_m": None}
+_SCENE3D_TARGET_DISPLAY_LOCK = threading.Lock()
 
 
 def _ui_tuning_get(key: str) -> Any | None:
@@ -719,6 +988,332 @@ def grasp_session_effective_flags() -> dict[str, Any]:
         "prefer_tag_grip": _effective_grasp_bool("prefer_tag_grip", "GO2_GRASP_PREFER_TAG_GRIP"),
         "grasp_execute_arm": _grasp_execute_enabled(),
     }
+
+
+def _vis_geometry_defaults_dict() -> dict[str, float]:
+    default_alpha = float(os.environ.get("GO2_SCENE3D_TARGET_EMA_ALPHA", "0.28"))
+    # Mount mesh braccio in viewer (``viz_arm_mount_*``): default −200 mm in +X base_link (indietro) rispetto al nominale MJCF (0.15,0,0.06).
+    # Polso: default ``wrist_local_*`` somma al MJCF 0.02,0,0.05 → ~0.07,0,0.03 (camera ~30 mm sopra pinza locale).
+    return {
+        "arm_vs_tag5_x": -0.20,
+        "arm_vs_tag5_y": 0.0,
+        "arm_vs_tag5_z": 0.0,
+        "front_vs_tag5_x": 0.20,
+        "front_vs_tag5_y": 0.0,
+        "front_vs_tag5_z": -0.08,
+        "wrist_local_dx": 0.05,
+        "wrist_local_dy": 0.0,
+        "wrist_local_dz": -0.02,
+        "target_ema_alpha": default_alpha,
+        "viz_go2_tx_m": 0.0,
+        "viz_go2_ty_m": 0.0,
+        "viz_go2_tz_m": 0.0,
+        "viz_joint_markers_dx_m": -0.15,
+        "viz_joint_markers_dy_m": 0.0,
+        "viz_joint_markers_dz_m": 0.0,
+        "viz_arm_mount_dx_m": -0.20,
+        "viz_arm_mount_dy_m": 0.0,
+        "viz_arm_mount_dz_m": 0.0,
+        "viz_front_cam_dx_m": 0.0,
+        "viz_front_cam_dy_m": 0.0,
+        "viz_front_cam_dz_m": 0.0,
+        "frustum_depth_rx_deg": 0.0,
+        "frustum_depth_ry_deg": 0.0,
+        "frustum_depth_rz_deg": 0.0,
+        "frustum_wrist_rx_deg": 0.0,
+        "frustum_wrist_ry_deg": 0.0,
+        "frustum_wrist_rz_deg": 0.0,
+        "frustum_depth_far_m": 0.32,
+        "frustum_wrist_far_m": 0.32,
+    }
+
+
+_ALLOWED_VIS_GEOMETRY: dict[str, tuple[float, float]] = {
+    "arm_vs_tag5_x": (-0.5, 0.5),
+    "arm_vs_tag5_y": (-0.5, 0.5),
+    "arm_vs_tag5_z": (-0.5, 0.5),
+    "front_vs_tag5_x": (-0.5, 0.5),
+    "front_vs_tag5_y": (-0.5, 0.5),
+    "front_vs_tag5_z": (-0.5, 0.5),
+    "wrist_local_dx": (-0.35, 0.35),
+    "wrist_local_dy": (-0.35, 0.35),
+    "wrist_local_dz": (-0.35, 0.35),
+    "target_ema_alpha": (0.05, 0.99),
+    "viz_go2_tx_m": (-0.95, 0.95),
+    "viz_go2_ty_m": (-0.95, 0.95),
+    "viz_go2_tz_m": (-0.95, 0.95),
+    "viz_joint_markers_dx_m": (-0.15, 0.15),
+    "viz_joint_markers_dy_m": (-0.15, 0.15),
+    "viz_joint_markers_dz_m": (-0.15, 0.15),
+    "viz_arm_mount_dx_m": (-0.25, 0.25),
+    "viz_arm_mount_dy_m": (-0.25, 0.25),
+    "viz_arm_mount_dz_m": (-0.25, 0.25),
+    "viz_front_cam_dx_m": (-0.4, 0.4),
+    "viz_front_cam_dy_m": (-0.4, 0.4),
+    "viz_front_cam_dz_m": (-0.4, 0.4),
+    "frustum_depth_rx_deg": (-120.0, 120.0),
+    "frustum_depth_ry_deg": (-120.0, 120.0),
+    "frustum_depth_rz_deg": (-120.0, 120.0),
+    "frustum_wrist_rx_deg": (-120.0, 120.0),
+    "frustum_wrist_ry_deg": (-120.0, 120.0),
+    "frustum_wrist_rz_deg": (-120.0, 120.0),
+    "frustum_depth_far_m": (0.04, 1.8),
+    "frustum_wrist_far_m": (0.04, 1.8),
+}
+
+VIS_GEOMETRY_JSON_PATH = PROJECT_ROOT / "data" / "vis_geometry_tuning.json"
+VIS_GEOMETRY_PRESETS_PATH = PROJECT_ROOT / "data" / "vis_geometry_presets.json"
+VIS_GEOMETRY_PRESETS_LOCK = threading.Lock()
+
+
+def _load_vis_geometry_from_disk() -> None:
+    """Ripristina slider geometria 3D dopo riavvio Flask (NX/PC)."""
+    if not VIS_GEOMETRY_JSON_PATH.is_file():
+        return
+    try:
+        raw = json.loads(VIS_GEOMETRY_JSON_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw, dict):
+        return
+    with VIS_GEOMETRY_TUNING_LOCK:
+        for key, (lo, hi) in _ALLOWED_VIS_GEOMETRY.items():
+            if key not in raw:
+                continue
+            try:
+                v = float(raw[key])
+            except (TypeError, ValueError):
+                continue
+            VIS_GEOMETRY_TUNING[key] = max(lo, min(hi, v))
+
+
+def _save_vis_geometry_to_disk() -> None:
+    with VIS_GEOMETRY_TUNING_LOCK:
+        snap = {str(k): float(v) for k, v in VIS_GEOMETRY_TUNING.items()}
+    try:
+        VIS_GEOMETRY_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        VIS_GEOMETRY_JSON_PATH.write_text(
+            json.dumps(snap, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _vis_geometry_effective() -> dict[str, float]:
+    defaults = _vis_geometry_defaults_dict()
+    with VIS_GEOMETRY_TUNING_LOCK:
+        over = dict(VIS_GEOMETRY_TUNING)
+    return {**defaults, **over}
+
+
+def _vis_geometry_preset_snapshot_effective() -> dict[str, float]:
+    eff = _vis_geometry_effective()
+    out: dict[str, float] = {}
+    for k in _ALLOWED_VIS_GEOMETRY:
+        try:
+            out[k] = float(eff[k])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _vis_geometry_apply_preset_values(values: dict[str, Any]) -> list[str]:
+    errs: list[str] = []
+    with VIS_GEOMETRY_TUNING_LOCK:
+        VIS_GEOMETRY_TUNING.clear()
+        for key, (lo, hi) in _ALLOWED_VIS_GEOMETRY.items():
+            if key not in values:
+                continue
+            try:
+                raw_v = float(values[key])
+            except (TypeError, ValueError):
+                errs.append(key)
+                continue
+            VIS_GEOMETRY_TUNING[key] = max(lo, min(hi, raw_v))
+    return errs
+
+
+def _vis_geometry_presets_read_dict() -> dict[str, Any]:
+    if not VIS_GEOMETRY_PRESETS_PATH.is_file():
+        return {"version": 1, "presets": {}}
+    try:
+        raw = json.loads(VIS_GEOMETRY_PRESETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "presets": {}}
+    if not isinstance(raw, dict):
+        return {"version": 1, "presets": {}}
+    pr = raw.get("presets")
+    if not isinstance(pr, dict):
+        raw["presets"] = {}
+    return raw
+
+
+def _vis_geometry_presets_write_dict(data: dict[str, Any]) -> bool:
+    try:
+        VIS_GEOMETRY_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        VIS_GEOMETRY_PRESETS_PATH.write_text(
+            json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
+def _sanitize_preset_name(name: object) -> str | None:
+    if not isinstance(name, str):
+        return None
+    n = name.strip()
+    if not n or len(n) > 80:
+        return None
+    if any(c in n for c in "<>\r\n\x00"):
+        return None
+    return n
+
+
+def _builtin_vis_geometry_preset_2_values() -> dict[str, float]:
+    """Preset «2» incorporato se ``data/vis_geometry_presets.json`` non lo definisce.
+
+    Offset polso: MJCF + delta ≈ camera sopra pinza (~30 mm in Z locale rispetto a tool).
+    """
+    base = dict(_vis_geometry_defaults_dict())
+    base.update(
+        {
+            "wrist_local_dx": 0.05,
+            "wrist_local_dy": 0.0,
+            "wrist_local_dz": -0.02,
+        }
+    )
+    out: dict[str, float] = {}
+    for key, (lo, hi) in _ALLOWED_VIS_GEOMETRY.items():
+        try:
+            out[key] = max(lo, min(hi, float(base[key])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _ensure_named_preset_on_disk(name: str, vals: dict[str, float]) -> None:
+    """Aggiunge il preset al JSON se manca, così GET /presets e il menu mostrano il nome."""
+    sn = _sanitize_preset_name(name)
+    if not sn:
+        return
+    snap = {str(k): float(vals[k]) for k in _ALLOWED_VIS_GEOMETRY if k in vals}
+    if not snap:
+        return
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+        presets_obj = raw.setdefault("presets", {})
+        if not isinstance(presets_obj, dict):
+            presets_obj = {}
+            raw["presets"] = presets_obj
+        if sn in presets_obj:
+            return
+        presets_obj[sn] = {
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "values": snap,
+        }
+        _vis_geometry_presets_write_dict(raw)
+
+
+def _apply_startup_vis_geometry_preset_if_configured() -> None:
+    """Applica un preset vis-geometry all'avvio del processo e persiste su ``vis_geometry_tuning.json``.
+
+    Nome da ``GO2_VIS_GEOMETRY_DEFAULT_PRESET`` (default ``\"2\"``). Disabilitazione:
+    ``GO2_SKIP_DEFAULT_VIS_GEOMETRY_PRESET=1``.
+
+    Se il nome è ``\"2\"`` e non è definito in ``vis_geometry_presets.json``, si usa il preset
+    incorporato e viene creato l'entry nel file (menu preset popolato).
+    """
+    skip = os.environ.get("GO2_SKIP_DEFAULT_VIS_GEOMETRY_PRESET", "").strip().lower()
+    if skip in {"1", "true", "yes", "on"}:
+        return
+    # Nota: ``os.environ.get("KEY", "2")`` restituisce "" se KEY è esportata vuota → rompe il default.
+    raw_dflt = os.environ.get("GO2_VIS_GEOMETRY_DEFAULT_PRESET")
+    if raw_dflt is None:
+        default_nm = "2"
+    else:
+        default_nm = raw_dflt.strip() or "2"
+    name = _sanitize_preset_name(default_nm)
+    if not name:
+        return
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+        entry = (raw.get("presets") or {}).get(name)
+    vals: dict[str, Any] | None = None
+    used_builtin = False
+    if isinstance(entry, dict):
+        v = entry.get("values")
+        if isinstance(v, dict):
+            vals = dict(v)
+    if vals is None and name == "2":
+        vals = _builtin_vis_geometry_preset_2_values()
+        used_builtin = True
+    if not vals:
+        return
+    errs = _vis_geometry_apply_preset_values(vals)
+    if errs:
+        _LOG_VIS.warning(
+            "vis_geometry startup preset %r NOT applied (parse/clamp errors): %s",
+            name,
+            errs[:12],
+        )
+        return
+    with _SCENE3D_TARGET_DISPLAY_LOCK:
+        _SCENE3D_TARGET_DISPLAY_STATE["ema_m"] = None
+    _save_vis_geometry_to_disk()
+    try:
+        eff = _vis_geometry_effective()
+        _LOG_VIS.info(
+            "vis_geometry startup preset %r OK — Corpo Go2 mm: tx=%.1f ty=%.1f tz=%.1f | "
+            "mount vs tag5 mm: %.1f,%.1f,%.1f | wrist_local mm: %.1f,%.1f,%.1f",
+            name,
+            float(eff.get("viz_go2_tx_m", 0.0)) * 1000.0,
+            float(eff.get("viz_go2_ty_m", 0.0)) * 1000.0,
+            float(eff.get("viz_go2_tz_m", 0.0)) * 1000.0,
+            float(eff.get("arm_vs_tag5_x", 0.0)) * 1000.0,
+            float(eff.get("arm_vs_tag5_y", 0.0)) * 1000.0,
+            float(eff.get("arm_vs_tag5_z", 0.0)) * 1000.0,
+            float(eff.get("wrist_local_dx", 0.0)) * 1000.0,
+            float(eff.get("wrist_local_dy", 0.0)) * 1000.0,
+            float(eff.get("wrist_local_dz", 0.0)) * 1000.0,
+        )
+    except Exception:
+        pass
+    if used_builtin:
+        _ensure_named_preset_on_disk("2", _builtin_vis_geometry_preset_2_values())
+
+
+_load_vis_geometry_from_disk()
+_apply_startup_vis_geometry_preset_if_configured()
+
+
+def _scene3d_target_ema_update(
+    raw_m: list[float] | None,
+    alpha: float,
+    *,
+    freeze_on_missing: bool = False,
+) -> list[float] | None:
+    """EMA sul target fused per la vista 3D; reset se il planner non fornisce target."""
+    with _SCENE3D_TARGET_DISPLAY_LOCK:
+        st = _SCENE3D_TARGET_DISPLAY_STATE
+        if raw_m is None or len(raw_m) < 3:
+            if freeze_on_missing:
+                ema = st.get("ema_m")
+                if ema is None or not isinstance(ema, list) or len(ema) < 3:
+                    return None
+                return [round(float(ema[i]), 5) for i in range(3)]
+            st["ema_m"] = None
+            return None
+        a = max(0.0, min(1.0, float(alpha)))
+        ema = st.get("ema_m")
+        if ema is None or not isinstance(ema, list) or len(ema) < 3:
+            st["ema_m"] = [float(raw_m[i]) for i in range(3)]
+        else:
+            for i in range(3):
+                ema[i] = a * float(raw_m[i]) + (1.0 - a) * float(ema[i])
+        out = st["ema_m"]
+        return [round(float(out[i]), 5) for i in range(3)]
 
 
 BOX_TAG_IDS_IK = frozenset({0, 1, 2, 3})
@@ -1130,23 +1725,131 @@ def _base_motion_allowed() -> tuple[bool, str | None]:
     return True, None
 
 
-@APP.route("/api/base/accompany_mode", methods=["POST"])
+def _sport_stand_modes_use_subprocess() -> bool:
+    """StandDown/StandUp in processo figlio — evita SIGSEGV Cyclone che uccide Flask (default: on)."""
+    return os.environ.get("GO2_SPORT_SUBPROCESS_STAND_MODES", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _sport_accompany_subprocess(
+    *,
+    mode: str,
+    enable: bool,
+    stand_up_first: bool,
+    speed_level: int | None,
+) -> dict[str, Any]:
+    """Esegue ``sport_accompany`` in subprocess; ritorna dict (anche se crash/timeout)."""
+    script = PROJECT_ROOT / "scripts" / "sport_accompany_once.py"
+    if not script.is_file():
+        return {"ok": False, "reason": "missing_scripts/sport_accompany_once.py", "mode": mode}
+    cmd: list[str] = [
+        sys.executable,
+        str(script),
+        "--mode",
+        mode,
+        "--enable",
+        "1" if enable else "0",
+        "--stand-up-first",
+        "1" if stand_up_first else "0",
+    ]
+    if speed_level is not None:
+        cmd.extend(["--speed-level", str(int(speed_level))])
+    timeout_s = float(os.environ.get("GO2_SPORT_RPC_TIMEOUT_S", "55"))
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": f"sport_subprocess_timeout_after_{timeout_s}s",
+            "hint_it": "Il processo Sport non ha finito in tempo.",
+        }
+    stderr = (proc.stderr or "")[-4000:]
+    if proc.returncode != 0 and not (proc.stdout or "").strip():
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": f"sport_subprocess_exit_{proc.returncode}",
+            "hint_it": (
+                "Uscita anomala (spesso SIGSEGV=-11 in CycloneDDS). Allinea cyclonedds + unitree_sdk2py sulla NX; "
+                "evita due copie SDK in PYTHONPATH."
+            ),
+            "stderr_tail": stderr[-2500:],
+        }
+    try:
+        out: dict[str, Any] = json.loads((proc.stdout or "").strip() or "{}")
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": "sport_subprocess_bad_json",
+            "stdout": (proc.stdout or "")[:2000],
+            "stderr": stderr[-1500:],
+            "subprocess_returncode": proc.returncode,
+        }
+    if proc.returncode != 0 and not out.get("ok"):
+        out["subprocess_returncode"] = proc.returncode
+        if stderr.strip():
+            out["stderr_tail"] = stderr[-2000:]
+    return out
+
+
+@APP.route("/api/base/accompany_mode", methods=["GET", "POST"])
 def api_base_accompany_mode() -> Any:
     ok_gate, reason = _base_motion_allowed()
     if not ok_gate:
         return jsonify({"ok": False, "reason": reason}), 403
-    body = request.get_json(silent=True) or {}
+
+    if request.method == "GET":
+        # Fallback LAN: alcuni browser/proxy rispondono "Failed to fetch" solo su POST JSON (preflight/CORB).
+        # GET «semplice» evita Content-Type application/json + preflight.
+        if os.environ.get("GO2_ALLOW_GET_BASE_MOTION", "1").lower() not in {"1", "true", "yes", "on"}:
+            return jsonify({"ok": False, "reason": "GET disabled (set GO2_ALLOW_GET_BASE_MOTION=1)"}), 405
+        mq = (request.args.get("mode") or "").strip().lower()
+        if not mq:
+            return jsonify({"ok": False, "reason": "missing_query_parameter_mode"}), 400
+        body: dict[str, Any] = {"mode": mq, "enable": True, "stand_up_first": False}
+        if request.args.get("stand_up_first", "").lower() in {"1", "true", "yes"}:
+            body["stand_up_first"] = True
+        if request.args.get("enable", "").lower() in {"0", "false", "no"}:
+            body["enable"] = False
+        sl = request.args.get("speed_level")
+        if sl is not None and str(sl).strip() != "":
+            try:
+                body["speed_level"] = int(sl)
+            except ValueError:
+                pass
+        if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
+            body["sync"] = True
+    else:
+        body = request.get_json(silent=True) or {}
+
     enable = bool(body.get("enable", True))
     stand_first = bool(body.get("stand_up_first", False))
     speed_raw = body.get("speed_level")
     speed_level = int(speed_raw) if speed_raw is not None else None
-    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-    from go2_accompany import sport_accompany
 
     iface = GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None
     mode = str(body.get("mode") or "joystick").strip().lower()
+    dds_iface_report = iface if iface else None
 
     def _sport_call() -> Any:
+        if mode in {"crouch", "stand_up"} and _sport_stand_modes_use_subprocess():
+            return _sport_accompany_subprocess(
+                mode=mode,
+                enable=enable,
+                stand_up_first=stand_first,
+                speed_level=speed_level,
+            )
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+        from go2_accompany import sport_accompany
+
         return sport_accompany(
             project_root=PROJECT_ROOT,
             domain=GO2_DDS_DOMAIN,
@@ -1157,12 +1860,63 @@ def api_base_accompany_mode() -> Any:
             speed_level=speed_level,
         )
 
+    sync = os.environ.get("GO2_SPORT_RPC_SYNC", "0").lower() in {"1", "true", "yes"}
+    if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
+        sync = True
+    if isinstance(body.get("sync"), bool) and body.get("sync"):
+        sync = True
+    # Crouch/Stand: default sincrono così la risposta HTTP riporta i codici RPC reali (202 «OK» nasconde fallimenti DDS).
+    async_stand = os.environ.get("GO2_SPORT_ASYNC_STAND_MODES", "0").lower() in {"1", "true", "yes"}
+    if mode in {"crouch", "stand_up"} and not async_stand:
+        sync = True
+
+    if not sync:
+        # Risposta immediata (202): import DDS + RPC Sport restano nel thread in background.
+        # Così il browser non va in "Failed to fetch" mentre il worker è occupato (MJPEG + GIL + RPC lunga).
+        def _bg() -> None:
+            try:
+                result = _sport_call()
+                _sport_record_last(mode=mode, sync=False, result=result, error=None)
+                _LOG_VIS.info("sport_accompany mode=%s ok=%s", mode, result.get("ok") if isinstance(result, dict) else result)
+            except Exception as exc:
+                _sport_record_last(mode=mode, sync=False, result=None, error=repr(exc))
+                _LOG_VIS.exception("sport_accompany mode=%s failed (background)", mode)
+
+        threading.Thread(target=_bg, name=f"sport-{mode}", daemon=True).start()
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "async": True,
+                    "mode": mode,
+                    "dds_domain": GO2_DDS_DOMAIN,
+                    "dds_interface": dds_iface_report,
+                    "hint_it": "Sport RPC avviato in background sulla NX. Se il cane non reagisce, controlla i log (dashboard_run.log) e DDS.",
+                    "dds_hint_it": (
+                        "Sport non usa l'IP del browser: DDS domain "
+                        + str(GO2_DDS_DOMAIN)
+                        + ", interfaccia "
+                        + (dds_iface_report or "default Cyclone")
+                        + ". Verifica GET /api/base/sport_env sulla NX."
+                    ),
+                }
+            ),
+            202,
+        )
+
     timeout_s = float(os.environ.get("GO2_SPORT_RPC_TIMEOUT_S", "45"))
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_sport_call)
             result = fut.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError:
+        _sport_record_last(
+            mode=mode,
+            sync=True,
+            result=None,
+            error=f"sport_rpc_timeout_after_{timeout_s}s",
+        )
         return (
             jsonify(
                 {
@@ -1174,8 +1928,10 @@ def api_base_accompany_mode() -> Any:
             504,
         )
     except Exception as exc:
+        _sport_record_last(mode=mode, sync=True, result=None, error=repr(exc))
         return jsonify({"ok": False, "reason": repr(exc)}), 502
 
+    _sport_record_last(mode=mode, sync=True, result=result, error=None)
     status = 200 if result.get("ok") else 502
     return jsonify(result), status
 
@@ -2166,17 +2922,23 @@ def robot_camera_jpeg(device: int) -> bytes | None:
 
     command = f"""
 python3 - <<'PY'
-import base64, cv2, sys
-dev={int(device)}
-cap=cv2.VideoCapture(dev)
-ok=False
+import base64, cv2, sys, os
+logical = {int(device)}
+key = f"GO2_VIDEO_INDEX_{{logical}}"
+try:
+    v4l = int(str(os.environ.get(key, logical)).strip())
+except ValueError:
+    v4l = logical
+cap = cv2.VideoCapture(v4l)
+ok = False
+frame = None
 if cap.isOpened():
     for _ in range(3):
         ok, frame = cap.read()
-        if ok:
+        if ok and frame is not None:
             break
 cap.release()
-if not ok:
+if not ok or frame is None:
     raise SystemExit(2)
 ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
 if not ok:
@@ -2991,7 +3753,11 @@ def _wait_for_apriltag_detection() -> dict[str, Any]:
     deadline = time.time() + wait_s
     last = _box_plan_snapshot()
     t_wait_start = time.time()
-    _grasp_live_phase(f"Attesa primo AprilTag (max {int(wait_s)}s) — mostra «Camere & AprilTag»…")
+    _grasp_live_phase(
+        f"Attesa primo AprilTag (max {int(wait_s)}s) — mostra «Camere & AprilTag»…",
+        progress_step=4,
+        tag_wait_total_s=int(wait_s),
+    )
     next_phase_ping = t_wait_start
     next_hold_ping = t_wait_start + 1.0
     while time.time() < deadline:
@@ -3001,13 +3767,18 @@ def _wait_for_apriltag_detection() -> dict[str, Any]:
         if now >= next_phase_ping:
             next_phase_ping = now + 2.8
             elapsed = int(now - t_wait_start)
-            _grasp_live_phase(f"Attesa AprilTag… {elapsed}s / {int(wait_s)}s (polso o RealSense)")
+            _grasp_live_phase(
+                f"Attesa AprilTag… {elapsed}s / {int(wait_s)}s (polso o RealSense)",
+                progress_step=4,
+                tag_wait_elapsed_s=elapsed,
+                tag_wait_total_s=int(wait_s),
+            )
         if now >= next_hold_ping:
             next_hold_ping = now + 1.8
             _arm_hold_keepalive("attesa AprilTag, nessun movimento richiesto")
         plan = _box_plan_snapshot()
         if _plan_has_apriltag_detection(plan):
-            _grasp_live_phase("AprilTag rilevato — proseguo con ricerca/IK…")
+            _grasp_live_phase("AprilTag rilevato — proseguo con ricerca/IK…", progress_step=4)
             return {
                 "ok": True,
                 "wait_s_elapsed": round(time.time() - t_wait_start, 2),
@@ -3266,7 +4037,7 @@ def publish_d1_arm_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
     if not plan_payload.get("ok") or not preview.get("ok") or not stages:
         return {"ok": False, "attempted_motion": False, "reason": "No valid IK plan to execute"}
 
-    _grasp_live_phase("Esecuzione piano IK sul braccio (comandi DDS multi-step)…")
+    _grasp_live_phase("Esecuzione piano IK sul braccio (comandi DDS multi-step)…", progress_step=7)
     try:
         pdelay = _effective_plan_delay_ms()
         messages, sent = _stage_messages(stages, close_gripper=True, max_step_deg=D1_MAX_STEP_DEG_GRASP)
@@ -3558,10 +4329,20 @@ def _wait_for_visible_plan(wait_s: float | None = None) -> dict[str, Any]:
     deadline = time.time() + wait_s
     last = _box_plan_snapshot()
     next_hold_ping = time.time() + 1.2
+    next_ui_ping = time.time()
     while time.time() < deadline:
         if ARM_GRASP_ABORT.is_set():
             return last
         now = time.time()
+        if now >= next_ui_ping:
+            next_ui_ping = now + 2.4
+            rem = max(0.0, deadline - now)
+            _grasp_live_phase(
+                f"Piano con grip/telecamere — attesa… ~{int(rem)}s",
+                progress_step=5,
+                plan_wait_remaining_s=round(rem, 1),
+                plan_wait_total_s=round(float(wait_s), 1),
+            )
         if now >= next_hold_ping:
             next_hold_ping = now + 1.8
             _arm_hold_keepalive("attesa piano visibile")
@@ -3605,13 +4386,13 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
     )
     if os.environ.get("GO2_GRASP_ENTRY_HOLD", "1").lower() in {"1", "true", "yes"}:
         if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() in {"1", "true", "yes"}:
-            _grasp_live_phase("Hold sulla posa corrente (anti-cedimento prima di fold/START)…")
+            _grasp_live_phase("Hold sulla posa corrente (anti-cedimento prima di fold/START)…", progress_step=1)
             er = int(os.environ.get("GO2_GRASP_ENTRY_HOLD_REPEATS", "20"))
             ed = int(os.environ.get("GO2_GRASP_ENTRY_HOLD_DELAY_MS", "90"))
             publish_d1_hold_current(repeats=max(8, er), delay_ms=max(45, ed))
-    _grasp_live_phase("Fold braccio — posizione compatta")
+    _grasp_live_phase("Fold braccio — posizione compatta", progress_step=2)
     fold_raw = _goto_fold_arm_pose()
-    _grasp_live_phase("Riallineamento braccio alla posa START salvata…")
+    _grasp_live_phase("Riallineamento braccio alla posa START salvata…", progress_step=3)
     prelude_raw = _goto_saved_start_arm_pose()
     wait_tags = _wait_for_apriltag_detection()
     alignment_prelude: dict[str, Any] = {
@@ -3657,7 +4438,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
         }
 
     log: list[dict[str, Any]] = []
-    _grasp_live_phase("Allineamento vista — attesa tag/plan utilizzabile sulle camere…")
+    _grasp_live_phase("Allineamento vista — attesa tag/plan utilizzabile sulle camere…", progress_step=5)
     first_plan = _wait_for_visible_plan()
     last_front_plan = _camera_candidate(first_plan, 6) if _camera_candidate(first_plan, 6).get("ok") else None
     fused_confirm_count = 0
@@ -3686,8 +4467,16 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
             )
         _grasp_live_phase(
             f"Avvicinamento / ricerca — ciclo {cycle + 1} di {mc} (muovo polso verso tag)",
+            progress_step=6,
             cycle=cycle + 1,
             max_cycles=mc,
+            live_grip_visible=bool(grip_vis),
+            live_wrist_box_tags=bool(box_vis),
+            live_diagonal_px=round(float(md_px), 1) if md_px is not None else None,
+            live_loss_streak=int(loss_streak),
+            live_center_norm=round(float(center_hints.get("norm")), 4)
+            if center_hints.get("norm") is not None
+            else None,
         )
         plan = _box_plan_snapshot()
         wrist_plan = _camera_candidate(plan, 0)
@@ -3753,7 +4542,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                         attempted_motion=_attempted_from_log(),
                         alignment_prelude=alignment_prelude,
                     )
-                _grasp_live_phase("Tag box molto vicino (diagonale) — eseguo IK da ultimo piano valido")
+                _grasp_live_phase("Tag box molto vicino (diagonale) — eseguo IK da ultimo piano valido", progress_step=7)
                 execution = publish_d1_arm_plan(last_valid_execute)
                 return {
                     **execution,
@@ -3775,7 +4564,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                         attempted_motion=_attempted_from_log(),
                         alignment_prelude=alignment_prelude,
                     )
-                _grasp_live_phase("Punto presa perso dal polso — eseguo IK (ultimo piano valido)")
+                _grasp_live_phase("Punto presa perso dal polso — eseguo IK (ultimo piano valido)", progress_step=7)
                 execution = publish_d1_arm_plan(last_valid_execute)
                 return {
                     **execution,
@@ -3806,7 +4595,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                             attempted_motion=_attempted_from_log(),
                             alignment_prelude=alignment_prelude,
                         )
-                    _grasp_live_phase("Lock AprilTag sul polso confermato — eseguo piano IK (approccio / presa)")
+                    _grasp_live_phase("Lock AprilTag sul polso confermato — eseguo piano IK (approccio / presa)", progress_step=7)
                     execution = publish_d1_arm_plan({
                         **confirm,
                         "ok": True,
@@ -3840,7 +4629,8 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                 if _plan_ready_for_fused_ik(plan_exec) and not ARM_GRASP_ABORT.is_set():
                     sc = plan_exec.get("selected_camera")
                     _grasp_live_phase(
-                        f"IK dal piano fuso (camera {sc}) — variabile GO2_GRASP_USE_FUSED_PLAN_IK=1 attiva (lock polso non richiesto)."
+                        f"IK dal piano fuso (camera {sc}) — variabile GO2_GRASP_USE_FUSED_PLAN_IK=1 attiva (lock polso non richiesto).",
+                        progress_step=7,
                     )
                     execution = publish_d1_arm_plan({
                         **plan_exec,
@@ -3955,7 +4745,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                 attempted_motion=_attempted_from_log(),
                 alignment_prelude=alignment_prelude,
             )
-        _grasp_live_phase("Fallback presa da RealSense (camera 6) — esecuzione IK")
+        _grasp_live_phase("Fallback presa da RealSense (camera 6) — esecuzione IK", progress_step=7)
         execution = publish_d1_arm_plan({
             "ok": True,
             "selected_camera": 6,
@@ -3975,7 +4765,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
         "ok": False,
         "attempted_motion": _attempted_from_log(),
         "grasp_policy": "continuous_wrist_search_no_lock",
-        "reason": "Search cycles completed; wrist /dev/video0 never locked. Set GO2_FRONT_CAMERA_FALLBACK_GRASP=1 for RealSense-only grasp (risky).",
+        "reason": "Search cycles completed; wrist camera (logical 0) never locked. Set GO2_FRONT_CAMERA_FALLBACK_GRASP=1 for RealSense-only grasp (risky).",
         "cycles": log,
         "final_plan": final_plan,
         "dry_run_plan": first_plan,
@@ -4088,13 +4878,20 @@ def _grasp_crouch_then_preflight_worker(drain_s: float, settle_s: float) -> None
                         {"phase_label_it": "Crouch non eseguito: " + str(reason)},
                     )
             return
-        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-        from go2_accompany import sport_accompany
-
         iface = GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None
         timeout_s = float(os.environ.get("GO2_SPORT_RPC_TIMEOUT_S", "45"))
 
         def _crouch_call() -> Any:
+            if _sport_stand_modes_use_subprocess():
+                return _sport_accompany_subprocess(
+                    mode="crouch",
+                    enable=True,
+                    stand_up_first=False,
+                    speed_level=None,
+                )
+            sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+            from go2_accompany import sport_accompany
+
             return sport_accompany(
                 project_root=PROJECT_ROOT,
                 domain=GO2_DDS_DOMAIN,
@@ -4254,9 +5051,65 @@ def set_status(new_status: dict[str, Any]) -> None:
         STATUS.update(new_status)
 
 
+def _json_safe_for_status(obj: Any) -> Any:
+    """Copia ricorsiva serializzabile JSON: no NaN/Inf, numpy → Python nativi."""
+    if obj is None or isinstance(obj, bool):
+        return obj
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        return int(obj)
+    if isinstance(obj, float):
+        return None if math.isnan(obj) or math.isinf(obj) else obj
+    if isinstance(obj, dict):
+        return {str(k): _json_safe_for_status(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe_for_status(v) for v in obj]
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.decode("utf-8", errors="replace")
+    try:
+        import numpy as np  # type: ignore
+
+        if isinstance(obj, np.generic):
+            return _json_safe_for_status(obj.item())
+        if isinstance(obj, np.ndarray):
+            return _json_safe_for_status(obj.tolist())
+    except Exception:
+        pass
+    if hasattr(obj, "tolist") and callable(obj.tolist):
+        try:
+            return _json_safe_for_status(obj.tolist())
+        except Exception:
+            pass
+    if hasattr(obj, "item") and callable(obj.item):
+        try:
+            return _json_safe_for_status(obj.item())
+        except Exception:
+            pass
+    return str(obj)
+
+
 def get_status() -> dict[str, Any]:
     with STATUS_LOCK:
-        return json.loads(json.dumps(STATUS, default=str))
+        safe = _json_safe_for_status(STATUS)
+        return json.loads(json.dumps(safe))
+
+
+@APP.route("/api/status")
+def api_status() -> Any:
+    try:
+        return jsonify(get_status())
+    except Exception as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": repr(exc),
+                "updated_at": now_iso(),
+                "running": False,
+                "summary": "Stato diagnostico non serializzabile (bug interno); premi «Run All Tests».",
+                "tests": {},
+            }
+        )
 
 
 def frame_from_camera(device: int) -> Any | None:
@@ -4271,37 +5124,59 @@ def frame_from_camera(device: int) -> Any | None:
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
-def frame_from_camera_peek(device: int) -> Any | None:
+def _camera_jpeg_for_mjpeg(device: int, last_cam_jpg: bytes | None) -> bytes | None:
     """
-    Ultimo frame in cache (come MJPEG) — nessun wait su get_jpeg. Per overlay AprilTag ad alta frequenza.
-    ``/api/box/plan`` resta su ``frame_from_camera`` (lettura più robusta all’avvio).
+    Stessa logica di ``/stream/robot/camera/<n>.mjpg``: peek cache, al primo frame ``get_jpeg`` con attesa,
+    poi riuso dell’ultimo JPEG camera se la peek è vuota (evita buchi neri tra i frame).
     """
-    if cv2 is None:
-        return None
-    if GO2_LOCAL:
-        CAMERA_CACHE.start(device)
-        jpg = CAMERA_CACHE.peek_jpeg(device)
-    else:
-        jpg = robot_camera_jpeg(device)
-    if jpg is None:
-        return None
-    import numpy as np
-
-    arr = np.frombuffer(jpg, dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-
-def _apriltag_overlay_jpeg_bytes(device: int) -> bytes | None:
-    """Frame cache → detect AprilTag → JPEG overlay (stream MJPEG + GET singolo)."""
     if device not in CAMERA_DEVICES:
         return None
-    frame = frame_from_camera_peek(device)
-    if frame is None or cv2 is None:
-        return None
-    try:
-        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-        from box_grasp_planner import detect_box_tags, draw_tags
+    first_wait_s = float(os.environ.get("GO2_MJPEG_FIRST_FRAME_WAIT_S", "1.8"))
+    if GO2_LOCAL and cv2 is not None:
+        CAMERA_CACHE.start(device)
+        jpg = CAMERA_CACHE.peek_jpeg(device)
+        if jpg is None and last_cam_jpg is None:
+            jpg = CAMERA_CACHE.get_jpeg(device, wait_s=first_wait_s)
+        elif jpg is None:
+            jpg = last_cam_jpg
+    else:
+        jpg = robot_camera_jpeg(device)
+        if jpg is None:
+            jpg = last_cam_jpg
+    return jpg
 
+
+_TAG_DRAW_FNS: Optional[tuple[Any, Any]] = None
+_TAG_DRAW_IMPORT_ERROR: Optional[str] = None
+
+
+def _box_planner_detect_draw() -> tuple[Any, Any] | None:
+    """Import lazy una tantum — evita costi e fallimenti ripetuti sul path MJPEG."""
+    global _TAG_DRAW_FNS, _TAG_DRAW_IMPORT_ERROR
+    if _TAG_DRAW_IMPORT_ERROR is not None:
+        return None
+    if _TAG_DRAW_FNS is None:
+        try:
+            scripts = str(PROJECT_ROOT / "scripts")
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from box_grasp_planner import detect_box_tags, draw_tags
+
+            _TAG_DRAW_FNS = (detect_box_tags, draw_tags)
+        except Exception as exc:
+            _TAG_DRAW_IMPORT_ERROR = repr(exc)
+            return None
+    return _TAG_DRAW_FNS
+
+
+def _encode_apriltag_overlay_frame(frame: Any) -> bytes | None:
+    if cv2 is None:
+        return None
+    pair = _box_planner_detect_draw()
+    if pair is None:
+        return None
+    detect_box_tags, draw_tags = pair
+    try:
         out = draw_tags(frame, detect_box_tags(frame))
         aq = int(os.environ.get("GO2_ANNOTATED_JPEG_QUALITY", "72"))
         aq = max(55, min(95, aq))
@@ -4309,6 +5184,35 @@ def _apriltag_overlay_jpeg_bytes(device: int) -> bytes | None:
         return jpg.tobytes() if ok else None
     except Exception:
         return None
+
+
+def _jpeg_apply_apriltag_if_possible(jpg: bytes) -> bytes:
+    """
+    Decodifica un JPEG camera → overlay tag → JPEG; se overlay fallisce o è disabilitato, ritorna il raw.
+    Così lo stream ``tags.mjpg`` non resta mai nero mentre il MJPEG grezzo ha dati.
+    """
+    if cv2 is None:
+        return jpg
+    if _env_truthy(os.environ.get("GO2_APRILTAG_STREAM_RAW_ONLY"), default="0"):
+        return jpg
+    import numpy as np
+
+    arr = np.frombuffer(jpg, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return jpg
+    enc = _encode_apriltag_overlay_frame(frame)
+    return enc if enc is not None else jpg
+
+
+def _apriltag_overlay_jpeg_bytes(device: int) -> bytes | None:
+    """Un frame annotato (o raw se overlay non disponibile) per GET ``/api/box/annotated``."""
+    if device not in CAMERA_DEVICES:
+        return None
+    jpg = _camera_jpeg_for_mjpeg(device, None)
+    if jpg is None:
+        return None
+    return _jpeg_apply_apriltag_if_possible(jpg)
 
 
 def background_run() -> None:
@@ -4326,2119 +5230,33 @@ def background_run() -> None:
         })
 
 
-HTML = r"""
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Go2 Diagnostics Dashboard</title>
-  <style>
-    :root { color-scheme: dark; font-family: Inter, Segoe UI, Arial, sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: radial-gradient(circle at top left, #172554, #020617 48%); color: #e5e7eb; }
-    header { padding: 22px 26px; background: rgba(2,6,23,.72); border-bottom: 1px solid #334155; backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 2; }
-    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: .2px; }
-    .sub { color: #bfdbfe; }
-    main { padding: 22px; display: grid; gap: 18px; }
-    button { background: #2563eb; color: white; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700; }
-    button.green { background: #059669; }
-    button.green:hover { background: #047857; }
-    button.warn { background: #d97706; }
-    button.warn:hover { background: #b45309; }
-    button.emergency { background: #b91c1c; }
-    button.emergency:hover { background: #991b1b; }
-    button.emergency.always-visible {
-      font-size: 15px;
-      padding: 12px 18px;
-      border: 2px solid #fecaca;
-      box-shadow: 0 0 0 2px rgba(185, 28, 28, .25), 0 8px 20px rgba(0,0,0,.28);
-    }
-    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-    .layout { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(340px, .8fr); gap: 18px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-    .card { background: rgba(15,23,42,.9); border: 1px solid #334155; border-radius: 18px; padding: 16px; box-shadow: 0 18px 40px rgba(0,0,0,.24); }
-    .card h2 { margin: 0 0 12px; font-size: 17px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .ok { color: #34d399; }
-    .bad { color: #fb7185; }
-    .warn { color: #fbbf24; }
-    .muted { color: #94a3b8; }
-    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #1e293b; margin: 2px; font-size: 12px; border: 1px solid #475569; }
-    .pill.ok { color: #a7f3d0; border-color: #059669; background: rgba(5, 150, 105, 0.2); }
-    .pill.warn { color: #fde68a; border-color: #d97706; background: rgba(217, 119, 6, 0.2); }
-    .pill.bad { color: #fecaca; border-color: #dc2626; background: rgba(220, 38, 38, 0.25); }
-    .metric { font-size: 28px; font-weight: 800; margin: 6px 0; }
-    .small { color: #9ca3af; font-size: 13px; }
-    pre { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; background: #020617; padding: 10px; border-radius: 12px; border: 1px solid #1e293b; font-size: 12px; }
-    canvas { width: 100%; height: 420px; background: radial-gradient(circle, #0f172a, #020617); border: 1px solid #334155; border-radius: 16px; }
-    .cams { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
-    .cam { background: #020617; border: 1px solid #334155; border-radius: 14px; overflow: hidden; min-height: 150px; }
-    .cam img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #020617; }
-    .cam span { display: block; padding: 8px 10px; color: #cbd5e1; font-size: 12px; }
-    .flow-h { margin: 14px 0 8px; font-size: 14px; font-weight: 700; color: #e2e8f0; display: flex; align-items: center; gap: 10px; }
-    .step-num { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; border-radius: 8px; background: #334155; font-size: 13px; }
-    pre.compact-pre { max-height: 180px; font-size: 11px; }
-    details.diag-acc { background: rgba(15,23,42,.75); border: 1px solid #334155; border-radius: 14px; margin-bottom: 8px; overflow: hidden; }
-    details.diag-acc summary { cursor: pointer; padding: 12px 14px; list-style: none; font-weight: 700; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
-    details.diag-acc summary::-webkit-details-marker { display: none; }
-    details.diag-acc summary .muted { font-weight: 400; font-size: 11px; max-width: min(900px, 92vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    details.diag-acc pre { max-height: 260px; margin: 0 14px 14px; }
-    .diag-stack { display: flex; flex-direction: column; gap: 0; }
-    .banner-op { background: rgba(66,32,6,.92); border: 1px solid #d97706; border-radius: 14px; padding: 14px 18px; margin-bottom: 16px; font-size: 14px; line-height: 1.45; }
-    .banner-op code { background: #1e293b; padding: 2px 8px; border-radius: 6px; font-size: 13px; }
-    #dragFollowStatus { max-height: 200px; font-size: 12px; line-height: 1.5; border: 2px solid #334155; transition: border-color .25s, box-shadow .25s; }
-    #dragFollowStatus.live { border-color: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,.25); }
-    #dragFollowBadge { font-weight: 800; font-size: 13px; display: inline-block; margin-bottom: 6px; }
-    body.drag-follow-running .hide-when-drag-active { display: none !important; }
-    body.drag-follow-running .drag-session-block {
-      border: 1px solid rgba(34, 197, 94, 0.45);
-      border-radius: 14px;
-      padding: 14px 14px 10px;
-      background: rgba(34, 197, 94, 0.07);
-      margin-bottom: 4px;
-    }
-    /* Operazioni — tab */
-    .op-tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 14px 0 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid #334155;
-    }
-    .op-tab {
-      background: #1e293b;
-      color: #e2e8f0;
-      border: 1px solid #475569;
-      border-radius: 10px;
-      padding: 10px 16px;
-      cursor: pointer;
-      font-weight: 700;
-      font-size: 14px;
-      transition: background .15s, border-color .15s, color .15s;
-    }
-    .op-tab:hover { background: #334155; border-color: #64748b; }
-    .op-tab.is-active {
-      background: #1d4ed8;
-      border-color: #3b82f6;
-      color: #fff;
-      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
-    }
-    .op-panel { display: none; animation: opFade .22s ease-out; }
-    .op-panel.is-active { display: block; }
-    @keyframes opFade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-    .mission-hero {
-      background: linear-gradient(135deg, rgba(30, 58, 138, 0.35), rgba(15, 23, 42, 0.9));
-      border: 1px solid #334155;
-      border-radius: 16px;
-      padding: 18px 18px 16px;
-      margin-bottom: 18px;
-    }
-    .mission-hero h3 { margin: 0 0 8px; font-size: 16px; color: #e2e8f0; }
-    .mission-hero .lead { margin: 0 0 14px; color: #94a3b8; font-size: 13px; line-height: 1.5; }
-    .mission-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .mission-actions .primary-go {
-      font-size: 15px;
-      padding: 12px 20px;
-      border-radius: 12px;
-      background: #059669;
-      border: 0;
-      color: #fff;
-      font-weight: 800;
-      cursor: pointer;
-    }
-    .mission-actions .primary-go:hover { background: #047857; }
-    .mission-actions .secondary-go {
-      background: #334155;
-      color: #e2e8f0;
-      border: 1px solid #475569;
-      border-radius: 10px;
-      padding: 10px 16px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .mission-actions .secondary-go:hover { background: #475569; }
-    .pulse-hint { font-size: 12px; color: #94a3b8; margin-left: 4px; }
-    .flow-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 14px;
-      margin-top: 8px;
-    }
-    .flow-card {
-      background: rgba(15, 23, 42, 0.65);
-      border: 1px solid #334155;
-      border-radius: 14px;
-      padding: 14px 14px 12px;
-    }
-    .flow-card h4 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: #cbd5e1; letter-spacing: .02em; }
-    .flow-card .small { margin-top: 0; }
-    .joint-editor-card { grid-column: 1 / -1; max-width: 100%; }
-    .joint-sliders { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-    .joint-slider-row {
-      display: grid;
-      grid-template-columns: 36px 1fr 58px;
-      align-items: center;
-      gap: 8px 10px;
-    }
-    @media (max-width: 700px) {
-      .joint-slider-row { grid-template-columns: 32px 1fr; }
-      .joint-slider-row .joint-val { grid-column: 2; text-align: left; }
-    }
-    .joint-slider-row input[type="range"] { width: 100%; accent-color: #10b981; }
-    .joint-lab { font-size: 12px; font-weight: 800; color: #94a3b8; }
-    .joint-val { font-size: 12px; color: #e2e8f0; font-variant-numeric: tabular-nums; text-align: right; }
-    .joint-mvbtn { padding: 6px 10px; font-size: 12px; border-radius: 8px; border: 1px solid #475569; background: #1e293b; color: #e2e8f0; cursor: pointer; white-space: nowrap; }
-    .joint-mvbtn:hover { background: #334155; }
-    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } .cams { grid-template-columns: 1fr; } }
-    .always-cam-strip {
-      position: sticky;
-      top: 0;
-      z-index: 30;
-      border-color: #2563eb99;
-      box-shadow: 0 6px 28px rgba(15, 23, 42, 0.55);
-      margin-bottom: 16px;
-      padding: 10px 12px;
-    }
-    .always-cam-strip h2 { margin-top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-    .quick-op-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .quick-op-row .primary-go { background:#059669; padding:10px 14px; border-radius:10px; font-weight:900; }
-    .quick-cams { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; }
-    .quick-cams img { width: 132px; max-width: 28vw; height: 74px; object-fit: contain; background:#020617; border:1px solid #334155; border-radius:8px; }
-    .always-cam-more { display: none; margin-top: 12px; max-height: calc(100vh - 160px); overflow: auto; padding-right: 4px; }
-    .always-cam-strip.expanded .always-cam-more { display: block; }
-    .always-cam-strip.expanded .quick-cams img { width: 96px; height: 54px; }
-    .always-cam-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(120px, 1fr));
-      gap: 12px;
-      margin-top: 10px;
-    }
-    @media (max-width: 900px) {
-      .always-cam-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .quick-cams { width: 100%; margin-left: 0; }
-      .quick-cams img { flex: 1; min-width: 120px; }
-    }
-    .always-cam-strip .cam-strip-tile img,
-    .always-cam-strip .cam-strip-tile canvas {
-      width: 100%;
-      max-height: min(160px, 24vh);
-      object-fit: contain;
-      background: #0f172a;
-      border-radius: 8px;
-      border: 1px solid #334155;
-      display: block;
-    }
-    .always-cam-strip.expanded .always-cam-grid { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
-    .always-cam-strip.expanded .cam-strip-tile img,
-    .always-cam-strip.expanded .cam-strip-tile canvas {
-      max-height: min(460px, 46vh);
-      min-height: 260px;
-    }
-    .vision-large-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(320px, 1fr));
-      gap: 14px;
-      margin: 12px 0 14px;
-    }
-    @media (max-width: 900px) { .vision-large-grid { grid-template-columns: 1fr; } }
-    .vision-large-tile { background:#020617; border:1px solid #334155; border-radius:14px; overflow:hidden; }
-    .vision-large-tile img,
-    .vision-large-tile canvas {
-      width: 100%;
-      height: min(520px, 52vh);
-      object-fit: contain;
-      display: block;
-      background:#020617;
-    }
-    .vision-large-tile img.bad-frame,
-    .vision-large-tile canvas.bad-frame {
-      outline: 3px solid #dc2626;
-      opacity: 0.92;
-    }
-    .vision-large-tile strong,
-    .vision-large-tile span { display:block; padding:8px 10px; font-size:13px; }
-    .vision-large-tile strong { color:#e2e8f0; padding-bottom:0; }
-    .vision-large-tile span { color:#94a3b8; }
-    .always-cam-strip .cam-strip-tile img.bad-frame,
-    .always-cam-strip .cam-strip-tile canvas.bad-frame {
-      outline: 2px solid #dc2626;
-      opacity: .68;
-    }
-    .always-cam-strip .cam-strip-tile span {
-      display: block;
-      font-size: 11px;
-      color: #94a3b8;
-      margin-top: 6px;
-      line-height: 1.35;
-    }
-    .tuning-controls .tune-row { margin-bottom: 12px; }
-    .tuning-controls .tune-row label { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 12px; color: #cbd5e1; flex-wrap: wrap; }
-    .tuning-controls input[type="range"] { width: 100%; margin-top: 6px; }
-    .grasp-status-grid { display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px; margin:12px 0; }
-    @media (max-width: 900px) { .grasp-status-grid { grid-template-columns: 1fr; } }
-    .big-state { border:1px solid #334155; border-radius:14px; padding:12px; background:rgba(2,6,23,.55); }
-    .big-state strong { display:block; font-size:18px; margin-bottom:5px; }
-    .big-state.ok { border-color:#059669; background:rgba(5,150,105,.18); }
-    .big-state.warn { border-color:#d97706; background:rgba(217,119,6,.16); }
-    .big-state.bad { border-color:#dc2626; background:rgba(220,38,38,.18); }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Go2 Diagnostics Dashboard</h1>
-    <div class="sub">Robot {{ go2_host }} | XT-16 {{ xt16_host }} | Servo arm {{ servo_arm_host }} | Stack locale NX se GO2_LOCAL=1</div>
-    <div id="serverBootBadge" class="small muted" style="margin-top:8px;line-height:1.45;">Stato processo dashboard…</div>
-    <p class="small muted" style="margin-top:6px;">Listen Flask (lato server): <code>{{ dashboard_bind }}</code>:{{ dashboard_port }} · GO2_LOCAL={{ go2_local }}</p>
-  </header>
-  <noscript><div class="banner-op" style="margin:16px;">Abilita JavaScript: senza, la dashboard non aggiorna stato, camere e pulsanti restano statici.</div></noscript>
-  <iframe name="graspPostTarget" style="display:none;width:0;height:0;border:0;" title="grasp POST target"></iframe>
-  <main>
-    {% if dashboard_bind == "127.0.0.1" %}
-    <div class="banner-op" style="border-color:#dc2626;background:rgba(127,29,29,.38);">
-      <strong>Flask è in ascolto solo su <code>127.0.0.1</code>:{{ dashboard_port }}</strong> — da un altro PC (es. il laptop) la pagina sembra «morta» / non si apre.
-      Sulla macchina che ospita la dashboard esporta <code>GO2_LOCAL=1</code> e <code>GO2_DASHBOARD_HOST=0.0.0.0</code>, poi riavvia il processo (<code>python3 diagnostics_dashboard.py</code> o deploy).
-    </div>
-    {% endif %}
-    <div class="banner-op" style="border-color:#2563eb;background:rgba(30,58,138,.25);">
-      <strong>Verifica LAN (dal tuo PC, stessa rete del robot):</strong>
-      <code>python scripts/verify_dashboard_http.py http://{{ go2_host }}:{{ dashboard_port }}</code>
-      deve stampare OK per <code>/api/health</code> e per <code>/</code>. Se fallisce, il problema è rete/firewall/processo — non il browser.
-    </div>
-    <div class="banner-op">
-      <strong>PC esterno (browser sul tuo laptop):</strong> usa l’IP del robot sulla LAN —
-      <code>http://{{ go2_host }}:{{ dashboard_port }}</code>
-      (porta <code>{{ dashboard_port }}</code> se diversa).
-      <strong>Non</strong> usare <code>http://127.0.0.1:5050</code> qui: quel indirizzo è solo il «localhost» del PC dove hai il mouse, <strong>non</strong> il cane.
-    </div>
-    <section class="card always-cam-strip" id="alwaysCamStrip">
-      <div class="quick-op-row">
-        <strong>Camere &amp; AprilTag</strong>
-        <span id="alwaysCameraStatus" class="pill warn">…</span>
-        <span id="alwaysBoxStatus" class="pill warn">planner</span>
-        <button type="button" class="emergency always-visible" onclick="emergencyHold()" title="Abort sequenza + kill helper movimento + hold DDS immediato">FERMA / HOLD</button>
-        <form method="post" action="{{ script_root|default('') }}/api/arm/grasp_box/attempt" target="graspPostTarget" style="display:inline;margin:0;" onsubmit="setPresaSequenceStatus('POST diretto grasp inviato — guarda stato sotto…', false); setTimeout(refreshGraspJobPanel, 350); setTimeout(refreshGraspJobPanel, 1200);">
-          <button type="submit" class="primary-go" title="POST diretto: non dipende dal fetch JavaScript">Avvia grasp</button>
-        </form>
-        <button type="button" class="green" onclick="saveTrueZeroPose()" title="Scrive data/true_zero_pose.json (usa editor giunti sotto per angoli esatti)">Salva ZERO</button>
-        <button type="button" onclick="gotoTrueZeroPose()" title="Movimento lento verso file ZERO">Vai a ZERO</button>
-        <button type="button" class="primary-go" style="background:#0f766e;border-color:#0d9488;" onclick="gotoSavedStartPose()" title="Vai direttamente alla posa START salvata (start_alignment.json)">Vai a START</button>
-        <button type="button" onclick="openOpTab('graspseq')">Sequenza/debug</button>
-        <button type="button" onclick="toggleAlwaysCamDetails()">Mostra camere GRANDI/debug</button>
-        <div class="quick-cams">
-          <img id="alwaysCam0" alt="cam0" src="/stream/robot/camera/0.mjpg">
-          <img id="alwaysCam6" alt="cam6" src="/stream/robot/camera/6.mjpg">
-        </div>
-      </div>
-      <div class="always-cam-more" id="alwaysCamMore">
-        <p class="small muted" style="margin:0 0 8px;">
-          Overlay tag = <strong>stesso MJPEG</strong> delle raw (flusso unico in &lt;img&gt;), nessun canvas nascosto.
-        </p>
-        <div class="always-cam-grid">
-          <div class="cam-strip-tile">
-            <img id="alwaysBox0" class="apriltag-mjpeg" alt="AprilTag polso" src="/stream/robot/camera/0/tags.mjpg" />
-            <span>Overlay GRANDE polso · AprilTag</span>
-          </div>
-          <div class="cam-strip-tile">
-            <img id="alwaysBox6" class="apriltag-mjpeg" alt="AprilTag frontale" src="/stream/robot/camera/6/tags.mjpg" />
-            <span>Overlay GRANDE frontale · AprilTag</span>
-          </div>
-          <div class="cam-strip-tile">
-            <img alt="cam0 detail" src="/stream/robot/camera/0.mjpg">
-            <span id="alwaysCam0Status">Raw /dev/video0 — …</span>
-          </div>
-          <div class="cam-strip-tile">
-            <img alt="cam6 detail" src="/stream/robot/camera/6.mjpg">
-            <span id="alwaysCam6Status">Raw /dev/video6 — …</span>
-          </div>
-        </div>
-        <div class="flow-grid" style="margin-top:14px;">
-          <div class="flow-card">
-            <h4>Stato tag — polso <code>video0</code></h4>
-            <p id="alwaysTag0" class="small" style="margin:0;color:#94a3b8;">…</p>
-          </div>
-          <div class="flow-card">
-            <h4>Stato tag — frontale <code>video6</code></h4>
-            <p id="alwaysTag6" class="small" style="margin:0;color:#94a3b8;">…</p>
-          </div>
-        </div>
-        <div class="flow-card" style="margin-top:14px;">
-          <h4>Log detection (da <code>/api/box/plan</code>)</h4>
-          <pre id="aprilTagLog" class="small compact-pre" style="max-height:140px;margin:0;">In attesa…</pre>
-        </div>
-        <div class="flow-card" style="margin-top:14px;">
-          <h4>Perché il braccio non si muove?</h4>
-          <p class="small muted" style="margin:0 0 6px;">Checklist server: GO2_LOCAL, arm reale, helper <code>bin/d1_arm_*</code>, feedback DDS, START salvato.</p>
-          <pre id="armMotionDiagPre" class="small compact-pre" style="max-height:200px;margin:0;">Carico…</pre>
-        </div>
-        <div class="flow-card tuning-controls" style="margin-top:14px;">
-          <h4>Parametri sequenza presa (sessione Flask)</h4>
-          <p class="small muted" style="margin:0 0 10px;">
-            Sovrascrive temporaneamente gli env. <button type="button" onclick="resetUiTuning()" style="margin-left:6px;">Ripristina default</button>
-            <span id="uiTuningStatus" class="small muted"></span>
-          </p>
-          <div class="tune-row">
-            <label>Attesa tag (s) <span id="tune_tag_wait_s_v" class="muted"></span></label>
-            <input type="range" id="tune_tag_wait_s" min="5" max="300" step="1" />
-          </div>
-          <div class="tune-row">
-            <label>Attesa piano visibile (s) <span id="tune_visible_plan_wait_s_v" class="muted"></span></label>
-            <input type="range" id="tune_visible_plan_wait_s" min="0.5" max="120" step="0.5" />
-          </div>
-          <div class="tune-row">
-            <label>Cicli ricerca max <span id="tune_search_max_cycles_v" class="muted"></span></label>
-            <input type="range" id="tune_search_max_cycles" min="1" max="40" step="1" />
-          </div>
-          <div class="tune-row">
-            <label>Ritardo tra comandi ricerca (ms) <span id="tune_search_delay_ms_v" class="muted"></span></label>
-            <input type="range" id="tune_search_delay_ms" min="80" max="2500" step="10" />
-          </div>
-          <div class="tune-row">
-            <label>Ritardo tra pianificazioni (ms) <span id="tune_plan_delay_ms_v" class="muted"></span></label>
-            <input type="range" id="tune_plan_delay_ms" min="80" max="3200" step="10" />
-          </div>
-        </div>
-      </div>
-    </section>
-    <section class="card" style="border-color:#1d4ed899;" id="opPanel">
-      <h2>Operazioni <span id="nxModeBadge" class="pill warn">…</span></h2>
-      <p class="small muted" style="margin-bottom:0;">
-        <strong>Camere &amp; AprilTag</strong>: stream + overlay + «vedo i tag?» ·
-        <strong>LiDAR</strong> separato ·
-        <strong>Sequenza presa</strong>: fasi live (fold → tag → START → ricerca → IK), pulsanti e log ·
-        poi Corpo Go2 e Drag.
-      </p>
+_DASHBOARD_HTML_PATH = PROJECT_ROOT / "templates" / "dashboard.html"
+_DASHBOARD_HTML_CACHE_MT: float | None = None
+_DASHBOARD_HTML_CACHE_TEXT: str = ""
 
-      <div class="op-tabs" role="tablist" aria-label="Sezioni operative">
-        <button type="button" class="op-tab is-active" role="tab" data-op-tab="camtag" aria-selected="true">Camere &amp; AprilTag</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="lidar" aria-selected="false">LiDAR XT-16</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Sequenza presa</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="go2" aria-selected="false">Corpo Go2</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="drag" aria-selected="false">Drag mano</button>
-      </div>
 
-      <div id="op-camtag" class="op-panel is-active" role="tabpanel" data-op-panel="camtag">
-        <p class="small muted" style="margin-bottom:12px;">
-          Vista grande per controllare se i tag sono davvero in frame. Tag scatola <strong>0–3</strong>, landmark <strong>5</strong>.
-        </p>
-        <p class="small" style="margin-bottom:10px;">
-          Stato camere (dup): <span id="cameraStatus" class="warn">warming</span> · Planner: <span id="boxStatus" class="warn">dry-run</span>
-        </p>
-        <div class="vision-large-grid">
-          <div class="vision-large-tile">
-            <canvas id="camtagBox0" width="640" height="480"></canvas>
-            <strong>Overlay AprilTag — polso <code>/dev/video0</code></strong>
-            <span>Copia in tempo reale dallo strip sopra (stesso stream).</span>
-          </div>
-          <div class="vision-large-tile">
-            <canvas id="camtagBox6" width="640" height="480"></canvas>
-            <strong>Overlay AprilTag — frontale RealSense <code>/dev/video6</code></strong>
-            <span>Copia dallo strip · Se nera: <code>GO2_VIDEO_INDEX_6</code> sulla NX.</span>
-          </div>
-          <div class="vision-large-tile">
-            <img alt="Raw grande polso" src="/stream/robot/camera/0.mjpg">
-            <strong>Raw polso <code>/dev/video0</code></strong>
-            <span>Stream MJPEG live senza overlay.</span>
-          </div>
-          <div class="vision-large-tile">
-            <img alt="Raw grande frontale" src="/stream/robot/camera/6.mjpg">
-            <strong>Raw frontale <code>/dev/video6</code></strong>
-            <span>Stream MJPEG live senza overlay.</span>
-          </div>
-        </div>
-        <div class="flow-grid" style="margin-bottom:14px;">
-          <div class="flow-card">
-            <h4>AprilTag — polso <code>/dev/video0</code></h4>
-            <p id="tagSummary0" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
-          </div>
-          <div class="flow-card">
-            <h4>AprilTag — frontale <code>/dev/video6</code></h4>
-            <p id="tagSummary6" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
-          </div>
-        </div>
-        <article class="card" style="margin-top:14px;">
-          <h2>Anteprima IK · <code>/api/box/plan</code> <span class="small warn">aggiornamento ~1,6s</span></h2>
-          <pre id="planSnapshot" class="small compact-pre">Loading dry-run plan...</pre>
-        </article>
-      </div>
-
-      <div id="op-lidar" class="op-panel" role="tabpanel" data-op-panel="lidar">
-        <p class="small muted" style="margin-bottom:12px;">Visualizzazione UDP locale sulla NX (<code>GO2_LOCAL=1</code>). Da PC remoto il LiDAR dipende dal routing verso la Jetson.</p>
-        <article class="card">
-          <h2>LiDAR XT-16 Live <span id="lidarStatus" class="warn">waiting</span></h2>
-          <canvas id="lidarCanvas" width="900" height="620"></canvas>
-          <div id="lidarMeta" class="small">Listening on robot UDP 2368...</div>
-        </article>
-      </div>
-
-      <div id="op-graspseq" class="op-panel" role="tabpanel" data-op-panel="graspseq">
-        <div class="hide-when-drag-active">
-        <div class="mission-hero">
-          <h3>Sequenza presa braccio</h3>
-          <p class="lead">
-            Avvio tentativo e stato <strong>fase per fase</strong> (vedi riga grande). Le camere sono nella <strong>striscia fissa sopra</strong> e in
-            <strong>Camere &amp; AprilTag</strong>. Serve <code>GO2_ENABLE_REAL_ARM=1</code> e helper <code>bin/d1_arm_*</code>.
-          </p>
-          <p id="graspPhaseBig" class="metric" style="font-size:19px;margin:10px 0 14px;line-height:1.4;color:#e2e8f0;">
-            <span class="muted">Fase sequenza: —</span>
-          </p>
-          <div class="grasp-status-grid">
-            <div id="tagStateBig" class="big-state warn">
-              <strong>VISIONE: …</strong>
-              <span class="small">AprilTag 0–3 + box detector su polso/frontale</span>
-            </div>
-            <div id="gripStateBig" class="big-state warn">
-              <strong>PRESA: …</strong>
-              <span class="small">Centro presa + asse griffe est/ovest</span>
-            </div>
-            <div id="motionStateBig" class="big-state warn">
-              <strong>MOTO: fermo</strong>
-              <span class="small">Mostra quando il braccio sta ricevendo comandi</span>
-            </div>
-            <div id="ikStateBig" class="big-state warn">
-              <strong>IK: …</strong>
-              <span class="small">Target + traiettoria braccio</span>
-            </div>
-            <div id="detectorStateBig" class="big-state warn">
-              <strong>DETECTOR: …</strong>
-              <span class="small">YOLO26/YOLO11 TensorRT o fallback</span>
-            </div>
-          </div>
-          <div class="mission-actions">
-            <form method="post" action="{{ script_root|default('') }}/api/arm/grasp_box/attempt" target="graspPostTarget" style="display:inline;margin:0;" onsubmit="setPresaSequenceStatus('POST diretto grasp inviato — guarda stato sotto…', false); setTimeout(refreshGraspJobPanel, 350); setTimeout(refreshGraspJobPanel, 1200);">
-              <button type="submit" class="primary-go" title="POST diretto: non dipende dal fetch JavaScript">Avvia sequenza presa (braccio)</button>
-            </form>
-            <button type="button" class="secondary-go" onclick="graspAfterCrouch()">Crouch cane → poi grasp</button>
-            <button type="button" class="secondary-go" onclick="refreshDetectionNow()">Aggiorna detection ora</button>
-            <span id="detectionPulse" class="pulse-hint"></span>
-          </div>
-          <div class="flow-card" style="margin-top:14px;border:1px solid #334155;">
-            <h4 style="margin-top:0;">Flag grasp (sessione processo)</h4>
-            <p class="small muted" style="margin:0 0 10px;">Sovrascrive gli env sulla NX fino a reset o riavvio Flask. API: <code>GET/POST /api/arm/grasp_session</code>.</p>
-            <div class="tune-row" style="flex-wrap:wrap;gap:8px 16px;">
-              <label class="small"><input type="checkbox" id="gs_trust_wrist" /> Fiducia IK polso</label>
-              <label class="small"><input type="checkbox" id="gs_fused_ik" /> Piano fuso (USE_FUSED_PLAN_IK)</label>
-              <label class="small"><input type="checkbox" id="gs_fused_center" /> FUSED_WITH_CENTER (extra)</label>
-              <label class="small"><input type="checkbox" id="gs_front_fallback" /> Fallback IK frontale</label>
-              <label class="small"><input type="checkbox" id="gs_prefer_tag" /> Grip solo AprilTag (no merge YOLO)</label>
-              <label class="small"><input type="checkbox" id="gs_execute_arm" /> Esegui braccio (EXECUTE_ARM)</label>
-            </div>
-            <p style="margin:10px 0 0;">
-              <button type="button" class="secondary-go" onclick="applyGraspSessionFromUi()">Applica flag</button>
-              <button type="button" onclick="resetGraspSessionUi()">Reset sessione</button>
-              <span id="graspSessionStatus" class="small muted"></span>
-            </p>
-          </div>
-          <div class="flow-card" style="margin-top:12px;border:1px dashed #475569;">
-            <h4 style="margin-top:0;">Fasi 1–3 (riferimento)</h4>
-            <ul class="small muted" style="margin:0;padding-left:1.2em;line-height:1.55;">
-              <li><strong>Fase 1</strong> — Allineamento: fold opz., posa START, attesa AprilTag e piano visibile (dual cam <code>/api/box/plan</code>).</li>
-              <li><strong>Fase 2</strong> — Avvicinamento: ricerca polso da hint frontale + micro-step centratura grip; hold tra i comandi.</li>
-              <li><strong>Fase 3</strong> — Presa: esecuzione IK multi-step + pinza al trigger (tag grande in frame o grip perso dopo debounce); nel JSON risultato ogni ciclo include <code>ik_gate</code> (debug gating).</li>
-            </ul>
-          </div>
-          <p id="presaSequenceStatus" class="small" style="margin-top:12px;min-height:1.5em;line-height:1.45;color:#cbd5e1;">
-            Pronto — dopo «Avvia» la fase si aggiorna qui sopra e nel JSON sotto.
-          </p>
-          <p class="small muted" style="margin:12px 0 0;">
-            <button type="button" class="emergency" style="padding:8px 14px;font-size:13px;" onclick="emergencyHold()">FERMA — hold</button>
-            · Job: <span id="graspJobHint" class="muted">—</span>
-          </p>
-        </div>
-
-        <div class="flow-card" style="margin-top:14px;border:1px solid #475569;background:rgba(15,23,42,.55);">
-          <h4 style="margin-top:0;">Flusso visione → punto presa → IK → moto braccio <span class="small muted">/api/arm/grasp_pipeline</span></h4>
-          <p class="small muted" style="margin:0 0 8px;line-height:1.5;">
-            Diagnostica aggiornata: dove si interrompe la catena (frame, detector/tag, punto presa, target, IK, DDS).
-            Con <code>GO2_ENABLE_REAL_ARM=0</code> il braccio <strong>non</strong> riceve comandi. Se il RealSense ha piano IK valido ma il polso no,
-            di default si resta in ricerca: su NX prova <code>GO2_GRASP_USE_FUSED_PLAN_IK=1</code> (due snapshot consecutivi col piano fuso ok) oppure
-            <code>GO2_FRONT_CAMERA_FALLBACK_GRASP=1</code> dopo i cicli di ricerca.
-          </p>
-          <p id="graspEnvBadge" class="small" style="margin:0 0 8px;line-height:1.45;color:#e2e8f0;">Env: …</p>
-          <pre id="graspEventLogPre" class="small compact-pre" style="max-height:180px;margin:0 0 10px;border-color:#475569;">Log eventi presa…</pre>
-          <pre id="graspPipelinePre" class="small compact-pre" style="max-height:min(380px,42vh);margin:0;">Carico…</pre>
-        </div>
-
-        <details class="diag-acc" style="margin-top:12px;">
-          <summary><strong>JSON job completo</strong> <span class="muted small">/api/arm/job_status</span></summary>
-          <pre id="graspJobDetailPre" class="small compact-pre" style="margin-top:10px;max-height:340px;">—</pre>
-        </details>
-
-        <div class="flow-grid">
-          <div class="flow-card">
-            <h4>1 · Salva scena START</h4>
-            <p class="small muted">Memorizza AprilTag + <code>arm_at_start</code> in <code>data/start_alignment.json</code>.</p>
-            <div class="btn-row" style="margin-top:10px;">
-              <button type="button" class="green" onclick="saveStartPose()">Salva START (AprilTag + arm)</button>
-              <button type="button" onclick="loadStartPose()">Leggi START salvato</button>
-            </div>
-            <p class="small muted" style="margin-top:12px;line-height:1.45;">
-              Posa <strong>ZERO</strong> operativa: usa l'<strong>editor giunti</strong> qui sotto per leggere/muovere/salvare — così il file coincide col braccio reale.
-            </p>
-            <div class="btn-row" style="margin-top:8px;">
-              <button type="button" class="green" onclick="saveTrueZeroPose()">Salva ZERO (corrente)</button>
-              <button type="button" onclick="gotoTrueZeroPose()">Vai a ZERO</button>
-              <button type="button" class="primary-go" onclick="gotoSavedStartPose()">Vai a START</button>
-              <button type="button" onclick="gotoStartFromTrueZero()" title="Percorso completo ZERO salvato → START; usa solo se sei davvero in ZERO.">ZERO → START</button>
-            </div>
-            <pre id="startOpsLog" class="small compact-pre" style="margin-top:10px;">Log salvataggio START…</pre>
-          </div>
-          <div class="flow-card">
-            <h4>2 · Braccio D1 — strumenti</h4>
-            <p class="small muted">Angoli, hold, pose extra (non muove il corpo del cane).</p>
-            <div class="btn-row" style="margin-top:10px;">
-              <button type="button" onclick="armServoSnapshot()">Leggi angoli servo</button>
-              <button type="button" onclick="armSavePoseSnapshot()">Salva pose extra</button>
-              <button type="button" onclick="armHoldPose()">Hold servo</button>
-              <button type="button" onclick="armTeachStub()">Drag/accompagna (stato)</button>
-            </div>
-            <pre id="armPoseLog" class="small compact-pre" style="margin-top:10px;">Stato servo D1…</pre>
-          </div>
-          <div class="flow-card">
-            <h4>3 · Stack sensori</h4>
-            <p class="small muted">Avvia thread camere + LiDAR sulla NX prima di operare.</p>
-            <div class="btn-row" style="margin-top:10px;">
-              <button type="button" class="warn" onclick="nxStackStart()">Avvia camere + LiDAR</button>
-              <button type="button" onclick="nxStackRefresh()">Aggiorna stato stack</button>
-            </div>
-            <pre id="nxStackBox" class="small compact-pre" style="margin-top:10px;">Carico stato…</pre>
-          </div>
-        </div>
-
-        <div class="flow-grid">
-          <div class="flow-card joint-editor-card">
-            <h4>Controllo giunti (slider) — tempo reale + ZERO / START</h4>
-            <p class="small muted" style="margin:0 0 8px;line-height:1.45;">
-              Con <strong>Controllo live</strong> attivo, ogni spostamento cursore invia subito la posa al braccio (DDS rapido, senza spline lenta).
-              <strong>Sposta tutti (smooth)</strong> = movimento interpolato (lento) con pre-hold antigravità — solo per salti grandi.
-              Poi <strong>Salva ZERO</strong> / <strong>Salva START</strong> per memorizzare i gradi mostrati dagli slider.
-            </p>
-            <div class="btn-row" style="margin:0 0 10px;align-items:center;flex-wrap:wrap;gap:10px;">
-              <label class="small" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="checkbox" id="jointLiveEnabled" checked />
-                <strong>Controllo live</strong> (cursore → robot)
-              </label>
-              <span id="jointLiveStatus" class="small muted" style="font-size:11px;">in attesa…</span>
-            </div>
-            <div class="joint-sliders" id="jointSlidersBlock">
-              <div class="joint-slider-row"><span class="joint-lab">J0</span><input type="range" id="jointSlide0" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(0)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV0">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J1</span><input type="range" id="jointSlide1" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(1)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV1">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J2</span><input type="range" id="jointSlide2" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(2)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV2">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J3</span><input type="range" id="jointSlide3" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(3)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV3">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J4</span><input type="range" id="jointSlide4" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(4)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV4">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J5</span><input type="range" id="jointSlide5" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(5)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV5">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">Gr</span><input type="range" id="jointSlide6" min="0" max="90" step="0.25" value="50" oninput="jointSliderLiveInput(6)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV6">50°</span></div>
-            </div>
-            <div class="btn-row" style="margin-top:14px;flex-wrap:wrap;">
-              <button type="button" onclick="jointEditorLoad()">Leggi da robot → slider</button>
-              <button type="button" class="primary-go" onclick="jointEditorGoto()">Sposta tutti (smooth)</button>
-              <button type="button" class="green" onclick="jointEditorSaveZero()">Salva ZERO (slider)</button>
-              <button type="button" class="green" onclick="jointEditorSaveStart()">Salva START (slider + scena)</button>
-            </div>
-            <pre id="jointEditorLog" class="small compact-pre" style="margin-top:10px;max-height:220px;">«Leggi da robot» per allineare gli slider al feedback; con Controllo live i cursori comandano subito il braccio.</pre>
-          </div>
-        </div>
-
-        <p class="small muted" style="margin-top:16px;">
-          Env: <code>GO2_GRASP_TAG_WAIT_S</code>, <code>GO2_GRASP_START_FOLD</code>. Ultimo POST / hold:
-        </p>
-        <pre id="armActionLog" class="small compact-pre" style="margin-top:8px;">Nessuna azione recente.</pre>
-        </div>
-      </div>
-
-      <div id="op-go2" class="op-panel hide-when-drag-active" role="tabpanel" data-op-panel="go2">
-        <p class="small muted">
-          Comandi <strong>Sport</strong> sul quadrupede — <span class="warn">non il braccio D1</span>.
-          Richiede <code>GO2_ENABLE_BASE_MOTION=1</code> sulla NX.
-        </p>
-        <div class="btn-row" style="margin-top:12px;">
-          <button type="button" class="warn" onclick="basePose('crouch')" title="Sport StandDown">Abbassa il cane (crouch)</button>
-          <button type="button" class="warn" onclick="basePose('stand_up')" title="StandUp + BalanceStand">Alza il cane (stand)</button>
-        </div>
-        <pre id="baseDogLog" class="small compact-pre" style="margin-top:12px; border-color:#7c2d12;">Risposta Sport…</pre>
-        <details class="diag-acc" style="margin-top:10px;">
-          <summary>Note Sport (timeout, errori)</summary>
-          <p class="small muted" style="margin:8px 14px 14px;">
-            Se vedi 403: abilita <code>GO2_ENABLE_BASE_MOTION=1</code> e <code>GO2_LOCAL=1</code>. Timeout: <code>GO2_SPORT_RPC_TIMEOUT_S</code>.
-          </p>
-        </details>
-      </div>
-
-      <div id="op-drag" class="op-panel" role="tabpanel" data-op-panel="drag">
-        <div id="dragSessionBlock" class="drag-session-block">
-          <h3 class="flow-h" style="margin-top:0;"><span class="step-num" style="background:#b45309;">✋</span> Drag — accompagna mano</h3>
-          <p class="small muted">
-            <strong>ECHO</strong> (default): ripete sul bus la posa letta <em>ogni ciclo</em> — «smollamento» via funcode 2.
-            <strong>Stop drag</strong> → hold dove sei.
-          </p>
-          <div class="drag-tune-row" style="margin:12px 0 12px;">
-            <label for="dragSweetSpot" class="small" style="display:block;font-weight:700;">Sweet spot — cursore (morbido ↔ reattivo)</label>
-            <p class="small muted" style="margin:4px 0 8px;">
-              Logging NX: <code>data/drag_follow_process.log</code>, <code>data/drag_follow_loop.log</code>, <code>data/drag_follow_diag.jsonl</code>.
-            </p>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-              <span class="small muted" style="white-space:nowrap;">ultra morbido</span>
-              <input type="range" id="dragSweetSpot" min="0" max="100" value="50" step="1" style="flex:1;min-width:140px;" />
-              <span class="small muted" style="white-space:nowrap;">reattivo</span>
-            </div>
-            <pre id="dragSweetSpotPreview" class="small compact-pre" style="margin-top:8px;max-height:168px;font-size:11px;">Muovi il cursore…</pre>
-          </div>
-          <div class="btn-row">
-            <button type="button" class="warn" onclick="dragFollowStart()" title="mode=echo">Avvia drag — ECHO</button>
-            <button type="button" onclick="dragFollowStartPassthrough()">Drag pass-through</button>
-            <button type="button" onclick="dragFollowStartMirrorLegacy()">Mirror classico</button>
-            <button type="button" onclick="dragFollowStop()">Stop drag (+ hold)</button>
-            <button type="button" onclick="dragFollowFetchLog()">Leggi log mirror</button>
-            <button type="button" onclick="dragFollowFetchDiagnostics()">Diagnostica completa</button>
-          </div>
-          <div id="dragFollowBadge" class="muted" style="margin-top:8px;">Stato drag-follow: —</div>
-          <pre id="dragFollowStatus" class="compact-pre" style="margin-top:6px;">Carico stato…</pre>
-          <pre id="dragFollowDiagLog" class="compact-pre" style="margin-top:8px; max-height:160px; font-size:11px;">Log diagnostico: —</pre>
-          <pre id="dragFollowDiagBundle" class="compact-pre" style="margin-top:8px; max-height:280px; font-size:11px;">Bundle diagnostico: —</pre>
-          <p class="small muted" style="margin-top:6px;">File NX: <code>data/drag_follow_loop.log</code>, <code>data/drag_follow_process.log</code></p>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2 style="flex-wrap:wrap;">Diagnostica &amp; test di rete <button type="button" style="margin-left:12px;font-size:13px;padding:7px 14px;" onclick="runAll()">Run All Tests</button> <span id="summary" class="small muted" style="font-weight:400;">Loading...</span></h2>
-      <p class="small muted">Apri una riga per il JSON completo (compatto quando chiuso).</p>
-      <div id="cards" class="diag-stack"></div>
-    </section>
-  </main>
-  <script>
-    /** Prefisso URL se dashboard dietro reverse-proxy (SCRIPT_NAME) o GO2_DASHBOARD_URL_PREFIX=/myprefix */
-    var dashboardApi = (function() {
-      var base = {{ script_root|default('')|tojson }};
-      return function(path) {
-        var p = path || '/';
-        if (p.charAt(0) !== '/') p = '/' + p;
-        if (!base) return p;
-        return base + p;
-      };
-    })();
-    function fetchHint_failedToFetch() {
-      return ' Apri la dashboard dallo stesso indirizzo del server Flask (es. http://<host>:' + {{ dashboard_port|tojson }} + '), non da file locale. Se usi proxy/nginx con path, imposta GO2_DASHBOARD_URL_PREFIX.';
-    }
-    function statusClass(ok) { return ok ? 'ok' : 'bad'; }
-    function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
-    function setArmPoseLog(dataOrMsg) {
-      const el = document.getElementById('armPoseLog');
-      if (!el) return;
-      el.textContent = typeof dataOrMsg === 'string' ? dataOrMsg : JSON.stringify(dataOrMsg, null, 2);
-    }
-    function truncatePreview(obj, max) {
-      try {
-        const s = JSON.stringify(obj);
-        return s.length > max ? s.slice(0, max) + '…' : s;
-      } catch (e) {
-        return String(obj).slice(0, max);
-      }
-    }
-    function renderCard(name, data) {
-      const ok = data && data.ok;
-      const title = name.replaceAll('_', ' ');
-      let badges = '';
-      if (data && data.detected) {
-        badges += Object.entries(data.detected).map(([k, v]) => `<span class="pill ${v ? 'ok' : 'warn'}">${k}</span>`).join('');
-      }
-      if (data && data.ports) {
-        badges += '<span class="pill">' + data.ports.filter(p => p.ok).length + '/' + data.ports.length + ' ports</span>';
-      }
-      if (data && data.common_apis) {
-        badges += '<span class="pill ok">sport apis</span>';
-      }
-      const preview = truncatePreview(data, 220);
-      const mark = ok ? '●' : '○';
-      return `<details class="diag-acc">
-        <summary><span class="${statusClass(ok)}">${mark}</span> <strong>${title}</strong> ${badges}<span class="muted">${preview}</span></summary>
-        <pre>${JSON.stringify(data, null, 2)}</pre>
-      </details>`;
-    }
-    async function refreshServerBoot() {
-      const el = document.getElementById('serverBootBadge');
-      if (!el) return;
-      try {
-        const res = await fetch(dashboardApi('/api/health?_=' + Date.now()), { cache: 'no-store' });
-        const h = await res.json();
-        let t =
-          'Server dashboard · PID ' + (h.pid != null ? h.pid : '?')
-          + ' · processo avviato ' + (h.process_started_at || '—')
-          + ' · <code>diagnostics_dashboard.py</code> sul disco (mtime) ' + (h.dashboard_py_mtime || '—');
-        if (h.reload_recommended) {
-          el.className = 'small warn';
-          el.innerHTML =
-            t + ' — <strong>serve riavvio</strong> (codice aggiornato dopo l\'avvio; '
-            + 'su NX es.: <code>python scripts/deploy_dashboard_to_nx.py</code> o kill PID + <code>python3 diagnostics_dashboard.py</code>).';
-        } else {
-          el.className = 'small muted';
-          el.textContent = t + ' · Nessun deploy più nuovo del processo.';
-        }
-      } catch (e) {
-        el.className = 'small warn';
-        el.textContent = 'Impossibile leggere /api/health: ' + String(e);
-      }
-    }
-    async function loadStatus() {
-      try {
-        const res = await fetch(dashboardApi('/api/status'));
-        const data = await res.json();
-        document.getElementById('summary').textContent = `${data.running ? 'Running...' : 'Updated ' + data.updated_at}: ${data.summary}`;
-        const tests = data.tests || {};
-        document.getElementById('cards').innerHTML = Object.entries(tests).map(([name, value]) => renderCard(name, value)).join('');
-      } catch (e) {
-        const el = document.getElementById('summary');
-        if (el) el.textContent = 'Errore fetch /api/status — controlla console (F12): ' + String(e);
-      }
-    }
-    async function runAll() {
-      await fetch(dashboardApi('/api/run/all'), { method: 'POST' });
-      await loadStatus();
-    }
-    function mirrorApriltagTabCanvasesFromStrip() {
-      const pairs = [
-        { src: 'alwaysBox0', dest: 'camtagBox0' },
-        { src: 'alwaysBox6', dest: 'camtagBox6' },
-      ];
-      pairs.forEach(({ src, dest }) => {
-        const imgEl = document.getElementById(src);
-        const cv = document.getElementById(dest);
-        if (!imgEl || imgEl.tagName !== 'IMG' || !cv || cv.tagName !== 'CANVAS') return;
-        if (!imgEl.naturalWidth) return;
-        const rect = cv.getBoundingClientRect();
-        const w = Math.max(2, Math.floor(rect.width));
-        const h = Math.max(2, Math.floor(rect.height));
-        if (cv.width !== w || cv.height !== h) {
-          cv.width = w;
-          cv.height = h;
-        }
-        const ctx = cv.getContext('2d');
-        ctx.drawImage(imgEl, 0, 0, w, h);
-        cv.classList.remove('bad-frame');
-      });
-      requestAnimationFrame(mirrorApriltagTabCanvasesFromStrip);
-    }
-    function wireApriltagOverlayImgHandlers() {
-      ['alwaysBox0', 'alwaysBox6'].forEach((id) => {
-        const im = document.getElementById(id);
-        if (!im) return;
-        const dup = id === 'alwaysBox0' ? document.getElementById('camtagBox0') : document.getElementById('camtagBox6');
-        im.addEventListener('error', function () {
-          this.classList.add('bad-frame');
-          if (dup) dup.classList.add('bad-frame');
-        });
-        im.addEventListener('load', function () {
-          this.classList.remove('bad-frame');
-          if (dup) dup.classList.remove('bad-frame');
-        });
-      });
-    }
-    async function refreshCameraStatus() {
-      try {
-        const res = await fetch(dashboardApi('/api/cameras/status'));
-        const data = await res.json();
-        let allOk = true;
-        for (const dev of [0, 6]) {
-          const c = (data.cameras || {})[String(dev)] || {};
-          allOk = allOk && !!c.available;
-          const line = `/dev/video${dev} - ${c.label || 'camera'} | ${c.available ? 'OK' : 'warming'} | age=${c.age_ms ?? '-'}ms | started=${c.started ? 'yes' : 'no'}${c.error ? ' | ' + c.error : ''}`;
-          setText(`cam${dev}Status`, line);
-          setText(`alwaysCam${dev}Status`, line);
-        }
-        setText('cameraStatus', allOk ? 'streaming' : 'warming');
-        setText('alwaysCameraStatus', allOk ? 'cam OK' : 'cam warming');
-        const el = document.getElementById('cameraStatus');
-        if (el) el.className = allOk ? 'ok' : 'warn';
-        const elA = document.getElementById('alwaysCameraStatus');
-        if (elA) elA.className = 'pill ' + (allOk ? 'ok' : 'warn');
-      } catch (e) {
-        setText('cameraStatus', 'error');
-        setText('alwaysCameraStatus', 'cam errore');
-        const el = document.getElementById('cameraStatus');
-        if (el) el.className = 'bad';
-        const elA = document.getElementById('alwaysCameraStatus');
-        if (elA) elA.className = 'pill bad';
-      }
-    }
-    const APRIL_TAG_LOG_MAX = 48;
-    let aprilTagLogLines = [];
-    function appendAprilTagLog(data) {
-      const t = new Date().toLocaleTimeString();
-      const ok = !!data.ok;
-      const parts = [];
-      for (const dev of [0, 6]) {
-        const c = (data.candidates || {})[String(dev)] || {};
-        const det = c.tags;
-        const list = (det && det.tags) ? det.tags : [];
-        const err = c.error || (det && det.error);
-        if (err) parts.push('cam' + dev + ': ERR ' + String(err).slice(0, 96));
-        else if (!list.length) parts.push('cam' + dev + ': nessun tag');
-        else parts.push('cam' + dev + ': id ' + list.map((x) => x.id).join(','));
-      }
-      const pipe = data.april_tag_pipeline && data.april_tag_pipeline.per_camera;
-      let pipeLine = '';
-      if (pipe) {
-        const bits = [];
-        for (const dev of [0, 6]) {
-          const p = pipe[String(dev)] || {};
-          const fo = p.frame_ok ? 'frame' : 'NO_FRAME';
-          const sh = p.frame_shape_hw ? (p.frame_shape_hw[0] + 'x' + p.frame_shape_hw[1]) : '-';
-          const age = (p.camera_cache && p.camera_cache.age_ms != null) ? (p.camera_cache.age_ms + 'ms') : '-';
-          bits.push('v' + dev + ':' + fo + ' ' + sh + ' age~' + age);
-        }
-        const aruco = data.april_tag_pipeline.opencv_aruco_module ? 'aruco' : 'NO_ARUCO';
-        pipeLine = ' | pipeline: ' + bits.join(' · ') + ' · ' + aruco;
-      }
-      const line = '[' + t + '] ok=' + ok + ' | ' + parts.join(' · ') + pipeLine;
-      aprilTagLogLines.push(line);
-      if (aprilTagLogLines.length > APRIL_TAG_LOG_MAX) aprilTagLogLines.shift();
-      const el = document.getElementById('aprilTagLog');
-      if (el) el.textContent = aprilTagLogLines.join('\n');
-    }
-    async function refreshBoxPlan() {
-      try {
-        const res = await fetch(dashboardApi('/api/box/plan'));
-        const data = await res.json();
-        const pre = document.getElementById('planSnapshot');
-        if (pre) pre.textContent = JSON.stringify(data, null, 2);
-        const label = data.ok ? 'target ok' : 'cerca tag';
-        setText('boxStatus', label);
-        const bs = document.getElementById('boxStatus');
-        if (bs) bs.className = data.ok ? 'ok' : 'warn';
-        setText('alwaysBoxStatus', label);
-        const bsa = document.getElementById('alwaysBoxStatus');
-        if (bsa) bsa.className = 'pill ' + (data.ok ? 'ok' : 'warn');
-        updateBigTagState(data);
-        updateTagSummaryFromPlan(data);
-        appendAprilTagLog(data);
-      } catch (e) {
-        setText('boxStatus', 'error');
-        setText('alwaysBoxStatus', 'planner errore');
-        const bs = document.getElementById('boxStatus');
-        if (bs) bs.className = 'bad';
-        const bsa = document.getElementById('alwaysBoxStatus');
-        if (bsa) bsa.className = 'pill bad';
-        const t = new Date().toLocaleTimeString();
-        aprilTagLogLines.push('[' + t + '] fetch /api/box/plan fallito: ' + String(e));
-        if (aprilTagLogLines.length > APRIL_TAG_LOG_MAX) aprilTagLogLines.shift();
-        const el = document.getElementById('aprilTagLog');
-        if (el) el.textContent = aprilTagLogLines.join('\n');
-      }
-    }
-    function updateBigTagState(data) {
-      const tagBox = document.getElementById('tagStateBig');
-      const ikBox = document.getElementById('ikStateBig');
-      const gripBox = document.getElementById('gripStateBig');
-      const detBox = document.getElementById('detectorStateBig');
-      const vis = data.visible_summary || {};
-      const s0 = vis['0'] || {};
-      const s6 = vis['6'] || {};
-      const boxSeen = !!data.box_tag_visible_any;
-      const objectSeen = !!data.object_visible_any;
-      const gripSeen = !!data.grip_point_visible_any;
-      const anySeen = !!data.tag_visible_any;
-      const ids = []
-        .concat((s0.ids || []).map((x) => 'cam0:' + x))
-        .concat((s6.ids || []).map((x) => 'cam6:' + x));
-      if (tagBox) {
-        tagBox.className = 'big-state ' + ((boxSeen || objectSeen) ? 'ok' : (anySeen ? 'warn' : 'bad'));
-        tagBox.innerHTML =
-          '<strong>' + (boxSeen ? 'TAG SCATOLA VISTO' : (objectSeen ? 'BOX DETECTED' : (anySeen ? 'SOLO LANDMARK' : 'NESSUNA SCATOLA'))) + '</strong>'
-          + '<span class="small">tag: ' + (ids.length ? ids.join(', ') : 'nessuno')
-          + ' · obj cam0=' + (s0.object_visible ? 'sì' : 'no') + ' cam6=' + (s6.object_visible ? 'sì' : 'no') + '</span>';
-      }
-      if (gripBox) {
-        const gp = data.selected_grip_point || {};
-        const err = gp.approach_error_px || [];
-        const area = gp.box_area_px != null ? gp.box_area_px : '—';
-        gripBox.className = 'big-state ' + (gripSeen ? 'ok' : 'bad');
-        gripBox.innerHTML =
-          '<strong>' + (gripSeen ? 'PUNTO PRESA OK' : 'PUNTO PRESA ASSENTE') + '</strong>'
-          + '<span class="small">src: ' + (gp.source || '—')
-          + ' · center: ' + (gp.grip_center_px ? gp.grip_center_px.join(',') : '—')
-          + ' · err px: ' + (err.length ? err.join(',') : '—')
-          + ' · area: ' + area + '</span>';
-      }
-      if (ikBox) {
-        ikBox.className = 'big-state ' + (data.ok ? 'ok' : 'warn');
-        ikBox.innerHTML =
-          '<strong>' + (data.ok ? 'IK PRONTA' : 'IK NON PRONTA') + '</strong>'
-          + '<span class="small">camera scelta: ' + (data.selected_camera ?? '—') + '</span>';
-      }
-      if (detBox) {
-        const ds = data.object_detector || {};
-        const backend0 = s0.object_backend || '—';
-        const backend6 = s6.object_backend || '—';
-        const hasModel = !!ds.model_exists;
-        detBox.className = 'big-state ' + (objectSeen ? 'ok' : (hasModel ? 'warn' : 'warn'));
-        detBox.innerHTML =
-          '<strong>' + (objectSeen ? 'DETECTOR ATTIVO' : (hasModel ? 'MODELLO PRESENTE / NO BOX' : 'YOLO NON CONFIGURATO')) + '</strong>'
-          + '<span class="small">cam0: ' + backend0 + ' · cam6: ' + backend6
-          + ' · model: ' + (ds.model_path || 'nessuno') + '</span>';
-      }
-    }
-    function updateTagSummaryFromPlan(data) {
-      function htmlFor(dev) {
-        const c = (data.candidates || {})[String(dev)] || {};
-        const det = c.tags;
-        const list = (det && det.tags) ? det.tags : [];
-        const camErr = c.error || (det && det.error);
-        if (camErr) {
-          return '<span class="bad">Camera / planner:</span> ' + String(camErr).slice(0, 200);
-        }
-        if (!list.length) {
-          if (c.object_detection && c.object_detection.ok) {
-            return '<span class="ok">Box detector OK</span> · ' + (c.object_detection.backend || 'detector')
-              + ' · conf ' + (c.object_detection.confidence ?? '—')
-              + ' · grip ' + ((c.grip_point && c.grip_point.grip_center_px) ? c.grip_point.grip_center_px.join(',') : '—');
-          }
-          return '<span class="warn">Nessun AprilTag 0–3 o 5 e nessuna box detection</span> (o camera non pronta).';
-        }
-        const ids = list.map((t) => t.id).join(', ');
-        const ik = c.preview && c.preview.ok;
+def _load_dashboard_html() -> str:
+    """Carica il markup principale da file (evita monolite da migliaia di righe nel .py)."""
+    try:
+        return _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
         return (
-          '<span class="ok">Sì — ' + list.length + ' tag (id: ' + ids + ')</span>'
-          + (ik ? ' · <span class="ok">anteprima IK ok</span>' : ' · <span class="warn">IK non pronto (pose/niente target)</span>')
-          + (c.object_detection && c.object_detection.ok ? ' · detector ' + (c.object_detection.backend || 'ok') : '')
-        );
-      }
-      function one(dev) {
-        const h = htmlFor(dev);
-        const el = document.getElementById('tagSummary' + dev);
-        if (el) el.innerHTML = h;
-        const elA = document.getElementById('alwaysTag' + dev);
-        if (elA) elA.innerHTML = h;
-      }
-      one(0);
-      one(6);
-    }
-    async function refreshArmMotionDiag() {
-      const pre = document.getElementById('armMotionDiagPre');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/diagnose_motion?_=' + Date.now()));
-        const d = await res.json();
-        const hints = d.hints || [];
-        const lines = [];
-        lines.push('GO2_LOCAL=' + (d.go2_local ? '1' : '0'));
-        lines.push('GO2_ENABLE_REAL_ARM (effettivo)=' + (d.real_arm_env ? '1' : '0'));
-        lines.push('Feedback servo DDS: ' + (d.servo_feedback_ok ? 'OK' : 'NO'));
-        lines.push('start_alignment.json: ' + (d.start_alignment_json ? 'presente' : 'manca'));
-        lines.push('true_zero_pose.json: ' + (d.true_zero_json ? 'presente' : 'manca'));
-        lines.push('Ultimo job: ' + (d.last_job_status || '—'));
-        if (d.command_stack) lines.push('command_stack: ' + JSON.stringify(d.command_stack));
-        lines.push('');
-        lines.push('— Motivi / note —');
-        hints.forEach((h) => lines.push('• ' + h));
-        if (pre) pre.textContent = lines.join('\n');
-      } catch (e) {
-        if (pre) pre.textContent = 'Errore /api/arm/diagnose_motion: ' + String(e);
-      }
-    }
-    let uiTuningPostTimer = null;
-    const UI_TUNING_KEYS = ['tag_wait_s', 'visible_plan_wait_s', 'search_max_cycles', 'search_delay_ms', 'plan_delay_ms'];
-    function tuneSliderLabels() {
-      UI_TUNING_KEYS.forEach((k) => {
-        const inp = document.getElementById('tune_' + k);
-        const lab = document.getElementById('tune_' + k + '_v');
-        if (inp && lab) lab.textContent = '(' + inp.value + ')';
-      });
-    }
-    async function loadUiTuning() {
-      const st = document.getElementById('uiTuningStatus');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/ui_tuning?_=' + Date.now()));
-        const j = await res.json();
-        const eff = j.effective || {};
-        UI_TUNING_KEYS.forEach((k) => {
-          const inp = document.getElementById('tune_' + k);
-          if (inp && eff[k] !== undefined) inp.value = String(eff[k]);
-        });
-        tuneSliderLabels();
-        if (st) st.textContent = ' sincronizzato';
-      } catch (e) {
-        if (st) st.textContent = ' errore lettura';
-      }
-    }
-    async function postUiTuningFromSliders() {
-      const st = document.getElementById('uiTuningStatus');
-      const body = {};
-      UI_TUNING_KEYS.forEach((k) => {
-        const inp = document.getElementById('tune_' + k);
-        if (inp) {
-          const v = parseFloat(inp.value);
-          if (!Number.isNaN(v)) body[k] = v;
-        }
-      });
-      try {
-        const res = await fetch(dashboardApi('/api/arm/ui_tuning'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const j = await res.json();
-        tuneSliderLabels();
-        if (st) st.textContent = j.ok ? ' salvato' : (' errori: ' + (j.errors || []).join('; '));
-      } catch (e) {
-        if (st) st.textContent = ' POST fallito';
-      }
-    }
-    function scheduleUiTuningPost() {
-      clearTimeout(uiTuningPostTimer);
-      tuneSliderLabels();
-      uiTuningPostTimer = setTimeout(postUiTuningFromSliders, 350);
-    }
-    async function resetUiTuning() {
-      await fetch(dashboardApi('/api/arm/ui_tuning'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reset: true }),
-      });
-      await loadUiTuning();
-    }
-    async function loadGraspSessionIntoUi() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/grasp_session?_=' + Date.now()));
-        const j = await res.json();
-        const e = j.effective || {};
-        const t = (id, v) => {
-          const el = document.getElementById(id);
-          if (el) el.checked = !!v;
-        };
-        t('gs_trust_wrist', e.trust_wrist_absolute_ik);
-        t('gs_fused_ik', e.use_fused_plan_ik);
-        t('gs_fused_center', e.fused_with_center);
-        t('gs_front_fallback', e.front_camera_fallback_grasp);
-        t('gs_prefer_tag', e.prefer_tag_grip);
-        t('gs_execute_arm', e.grasp_execute_arm);
-      } catch (err) {}
-    }
-    async function applyGraspSessionFromUi() {
-      const st = document.getElementById('graspSessionStatus');
-      const body = {
-        trust_wrist_absolute_ik: !!document.getElementById('gs_trust_wrist')?.checked,
-        use_fused_plan_ik: !!document.getElementById('gs_fused_ik')?.checked,
-        fused_with_center: !!document.getElementById('gs_fused_center')?.checked,
-        front_camera_fallback_grasp: !!document.getElementById('gs_front_fallback')?.checked,
-        prefer_tag_grip: !!document.getElementById('gs_prefer_tag')?.checked,
-        grasp_execute_arm: !!document.getElementById('gs_execute_arm')?.checked,
-      };
-      try {
-        const res = await fetch(dashboardApi('/api/arm/grasp_session'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const j = await res.json();
-        if (st) st.textContent = j.ok ? ' sessione salvata' : (' errori: ' + (j.errors || []).join('; '));
-        await refreshGraspPipeline();
-        await refreshGraspJobPanel();
-      } catch (e) {
-        if (st) st.textContent = ' POST fallito';
-      }
-    }
-    async function resetGraspSessionUi() {
-      const st = document.getElementById('graspSessionStatus');
-      try {
-        await fetch(dashboardApi('/api/arm/grasp_session'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reset: true }),
-        });
-        await loadGraspSessionIntoUi();
-        if (st) st.textContent = ' sessione reset (usa env)';
-        await refreshGraspPipeline();
-        await refreshGraspJobPanel();
-      } catch (e) {
-        if (st) st.textContent = ' reset fallito';
-      }
-    }
-    async function graspAfterCrouch() {
-      const st = document.getElementById('presaSequenceStatus');
-      if (st) st.textContent = 'Crouch + grasp: invio POST…';
-      try {
-        const res = await fetch(dashboardApi('/api/arm/grasp_box/attempt_after_crouch'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settle_s: 1.25 }),
-        });
-        const j = await res.json();
-        if (st) st.textContent = j.message || JSON.stringify(j);
-        setTimeout(refreshGraspJobPanel, 400);
-        setTimeout(refreshGraspJobPanel, 2000);
-      } catch (e) {
-        if (st) st.textContent = 'Errore: ' + String(e);
-      }
-    }
-    async function refreshGraspPipeline() {
-      const pre = document.getElementById('graspPipelinePre');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/grasp_pipeline?_=' + Date.now()));
-        const d = await res.json();
-        const lines = (d.narrative_it || []).join('\n');
-        const compact = {
-          updated_at: d.updated_at,
-          environment: d.environment,
-          grasp_trigger_params: d.grasp_trigger_params,
-          effective_grasp_flags: d.effective_grasp_flags,
-          fusion_plan_ok: d.fusion_plan_ok,
-          fusion_ready_for_execute: d.fusion_ready_for_execute,
-          grip_detection_any: d.grip_detection_any,
-          selected_camera: d.selected_camera,
-          candidates: d.candidates,
-          diagnose_hints: d.diagnose_hints,
-        };
-        if (pre) pre.textContent = lines + '\n\n— JSON compatto —\n' + JSON.stringify(compact, null, 2);
-      } catch (e) {
-        if (pre) pre.textContent = 'Errore /api/arm/grasp_pipeline: ' + String(e);
-      }
-    }
-    async function refreshDetectionNow() {
-      const hint = document.getElementById('detectionPulse');
-      if (hint) hint.textContent = 'aggiornamento…';
-      try {
-        await Promise.all([refreshBoxPlan(), refreshCameraStatus()]);
-        if (hint) {
-          const t = new Date().toLocaleTimeString();
-          hint.textContent = 'aggiornato ' + t;
-          setTimeout(() => {
-            if (hint && hint.textContent === 'aggiornato ' + t) hint.textContent = '';
-          }, 5000);
-        }
-      } catch (e) {
-        if (hint) hint.textContent = 'errore';
-      }
-    }
-    async function refreshGraspJobPanel() {
-      const hint = document.getElementById('graspJobHint');
-      const big = document.getElementById('graspPhaseBig');
-      const pre = document.getElementById('graspJobDetailPre');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/job_status?_=' + Date.now()));
-        const data = await res.json();
-        const st = data.status;
-        const phaseIt = data.phase_label_it || (data.detail || {}).phase_label_it || '';
-        const fullJson = JSON.stringify(data, null, 2);
-        if (pre) pre.textContent = fullJson;
-        const motionBox = document.getElementById('motionStateBig');
-        if (motionBox) {
-        const moving = st === 'running' || st === 'starting';
-          const holding = st === 'idle' && phaseIt && phaseIt.toLowerCase().includes('hold');
-          motionBox.className = 'big-state ' + (moving ? 'warn' : (holding ? 'ok' : 'warn'));
-          motionBox.innerHTML =
-            '<strong>' + (moving ? (st === 'starting' ? 'PREFLIGHT / AVVIO' : 'MOVIMENTO / SEQUENZA ATTIVA') : (holding ? 'HOLD ATTIVO' : 'MOTO FERMO')) + '</strong>'
-            + '<span class="small">' + (phaseIt || st || '—') + '</span>';
-        }
-        const evPre = document.getElementById('graspEventLogPre');
-        if (evPre) {
-          const events = data.events || [];
-          evPre.textContent = events.slice(-28).map((e) => {
-            return '[' + (e.t || '') + '] ' + (e.kind || 'event') + ' · ' + (e.message || '');
-          }).join('\n') || 'Nessun evento grasp ancora.';
-        }
-        if (big) {
-          if (st === 'starting') {
-            big.innerHTML =
-              '<span class="warn">●</span> '
-              + (phaseIt || 'Preflight camere/IK in corso… attendi qualche secondo.');
-          } else if (st === 'running' && phaseIt) {
-            big.innerHTML = '<span class="ok">●</span> ' + phaseIt;
-          } else if (st === 'running') {
-            big.innerHTML = '<span class="warn">●</span> Sequenza in corso… (in attesa di aggiornamento fase)';
-          } else if (st === 'idle') {
-            const pl = phaseIt || ((data.detail || {}).phase_label_it) || '';
-            big.innerHTML = pl
-              ? ('<span class="ok">Pronto</span> — ' + pl)
-              : '<span class="ok">Pronto</span> — puoi avviare una nuova sequenza.';
-          } else if (st === 'completed') {
-            big.innerHTML = '<span class="ok">Completata</span>' + (phaseIt ? ' — ' + phaseIt : '');
-          } else if (st === 'finished_no_ok') {
-            const r = (data.detail || {}).result || {};
-            const why = (r.reason || r.grasp_policy || '').toString();
-            big.innerHTML =
-              '<span class="bad">Terminata senza OK</span>'
-              + (why ? ' — ' + why : '')
-              + ' <span class="small muted">· vedi JSON e pannello «Flusso visione» sopra</span>';
-          } else if (st === 'emergency_hold' || st === 'aborted') {
-            big.innerHTML = '<span class="warn">Stato vecchio («' + st + '»)</span> — aggiorna (F5) o premi «FERMA» di nuovo; dopo deploy dovresti vedere «Pronto».';
-          } else if (st === 'error') {
-            big.innerHTML = '<span class="bad">Errore worker</span> — vedi JSON';
-          } else {
-            big.innerHTML = '<span class="muted">Job: ' + (st || '—') + '</span>';
-          }
-        }
-        if (hint) {
-          let tail = phaseIt || '';
-          if (!tail && data.detail && data.detail.result) {
-            const r = data.detail.result;
-            tail = (r.grasp_policy || r.reason || '').toString().slice(0, 90);
-          }
-          hint.textContent = tail ? st + ' · ' + tail : (st || '—');
-        }
-        const genv = document.getElementById('graspEnvBadge');
-        if (genv && data.environment) {
-          const e = data.environment;
-          const ra = String(e.GO2_ENABLE_REAL_ARM || '').toLowerCase();
-          const raOn = ra === '1' || ra === 'true' || ra === 'yes';
-          const loc = !!e.GO2_LOCAL;
-          genv.innerHTML =
-            '<span class="pill ' + (raOn ? 'ok' : 'bad') + '">REAL_ARM '
-            + (e.GO2_ENABLE_REAL_ARM || '0') + '</span> '
-            + '<span class="pill ' + (loc ? 'ok' : 'warn') + '">GO2_LOCAL '
-            + (loc ? '1' : '0') + '</span> '
-            + '<span class="pill warn">FUSED_IK ' + (e.GO2_GRASP_USE_FUSED_PLAN_IK || '0') + '</span> '
-            + '<span class="pill ' + (String(e.GO2_GRASP_EXECUTE_ARM || '0') === '1' ? 'bad' : 'ok') + '">EXECUTE_ARM '
-            + (e.GO2_GRASP_EXECUTE_ARM || '0') + '</span> '
-            + '<span class="pill warn">FR_FALLBACK ' + (e.GO2_FRONT_CAMERA_FALLBACK_GRASP || '0') + '</span> '
-            + '<span class="pill ' + (String(e.GO2_TRUST_WRIST_ABSOLUTE_IK || '0') === '1' ? 'ok' : 'warn') + '">TRUST_WRIST '
-            + (e.GO2_TRUST_WRIST_ABSOLUTE_IK || '0') + '</span> '
-            + '<span class="pill ' + (String(e.GO2_GRASP_PREFER_TAG_GRIP || '0') === '1' ? 'ok' : 'warn') + '">TAG_GRIP '
-            + (e.GO2_GRASP_PREFER_TAG_GRIP || '0') + '</span>';
-        }
-      } catch (e) {
-        if (hint) hint.textContent = '—';
-        if (big) big.innerHTML = '<span class="bad">Errore lettura job</span>';
-      }
-    }
-    function toggleAlwaysCamDetails() {
-      const strip = document.getElementById('alwaysCamStrip');
-      if (!strip) return;
-      const expanded = strip.classList.toggle('expanded');
-      try { localStorage.setItem('go2_always_cam_expanded', expanded ? '1' : '0'); } catch (err) {}
-    }
-    function openOpTab(id) {
-      const btn = document.querySelector('.op-tab[data-op-tab="' + id + '"]');
-      if (btn) btn.click();
-      const panel = document.getElementById('opPanel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-    function initOpTabs() {
-      const tabs = document.querySelectorAll('.op-tab');
-      function activate(id) {
-        tabs.forEach((btn) => {
-          const on = btn.dataset.opTab === id;
-          btn.classList.toggle('is-active', on);
-          btn.setAttribute('aria-selected', on ? 'true' : 'false');
-        });
-        document.querySelectorAll('[data-op-panel]').forEach((p) => {
-          p.classList.toggle('is-active', p.dataset.opPanel === id);
-        });
-        try {
-          localStorage.setItem('go2_op_tab', id);
-        } catch (err) {}
-      }
-      tabs.forEach((btn) => btn.addEventListener('click', () => activate(btn.dataset.opTab)));
-      let initial = 'camtag';
-      try {
-        const s = localStorage.getItem('go2_op_tab');
-        const legacy = { presa: 'graspseq', visione: 'camtag' };
-        const key = (legacy[s] || s);
-        if (key && document.getElementById('op-' + key)) initial = key;
-      } catch (err) {}
-      activate(initial);
-      window.openOpTab = openOpTab;
-    }
-    async function basePose(mode) {
-      const logEl = document.getElementById('baseDogLog');
-      const modeLabel =
-        mode === 'crouch'
-          ? 'crouch = Abbassa il CANE (Sport StandDown), non il braccio'
-          : mode === 'stand_up'
-            ? 'stand_up = Alza il CANE (StandUp+BalanceStand)'
-            : String(mode);
-      try {
-        if (logEl) logEl.textContent = 'Invio Sport… ' + modeLabel;
-        const res = await fetch(dashboardApi('/api/base/accompany_mode'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: mode || 'stand_up' }),
-          signal: AbortSignal.timeout(60000),
-        });
-        const data = await res.json();
-        const head = modeLabel + '\nHTTP ' + res.status + '\n';
-        if (logEl) logEl.textContent = head + JSON.stringify(data, null, 2);
-        nxStackRefresh();
-      } catch (e) {
-        const msg =
-          e && e.name === 'AbortError'
-            ? 'timeout 60s — Sport RPC troppo lento o rete bloccata (server usa GO2_SPORT_RPC_TIMEOUT_S).'
-            : String(e);
-        if (logEl) logEl.textContent = modeLabel + '\n' + msg;
-      }
-    }
-    async function armServoSnapshot() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/servo_snapshot'));
-        const data = await res.json();
-        setArmPoseLog(data);
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function armSavePoseSnapshot() {
-      const label = window.prompt('Nome pose (opzionale):', 'pose');
-      if (label === null) return;
-      try {
-        const res = await fetch(dashboardApi('/api/arm/save_pose_snapshot'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: label.trim() || 'pose' }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-        nxStackRefresh();
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function armHoldPose() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/hold_pose'), { method: 'POST' });
-        const data = await res.json();
-        setArmPoseLog(data);
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function armTeachStub() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/teach_mode'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enable: true }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function saveTrueZeroPose() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/true_zero'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op: 'save' }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-        refreshArmMotionDiag();
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    const JOINT_SLIDER_BOUNDS = [
-      [-135, 135],
-      [-90, 90],
-      [-90, 90],
-      [-135, 135],
-      [-90, 90],
-      [-135, 135],
-      [0, 90],
-    ];
-    function jointSliderDisplay(i) {
-      const s = document.getElementById('jointSlide' + i);
-      const v = document.getElementById('jointSlideV' + i);
-      if (s && v) v.textContent = parseFloat(s.value).toFixed(1) + '°';
-    }
-    function jointSlidersInitDisplay() {
-      for (let i = 0; i < 7; i++) jointSliderDisplay(i);
-      const st = document.getElementById('jointLiveStatus');
-      const cb = document.getElementById('jointLiveEnabled');
-      if (st) st.textContent = (cb && cb.checked) ? 'Live attivo: sposta i cursori per comandare.' : 'Live disattivato.';
-    }
-    let _jointLiveRaf = 0;
-    function jointSliderLiveInput(i) {
-      jointSliderDisplay(i);
-      const cb = document.getElementById('jointLiveEnabled');
-      const st = document.getElementById('jointLiveStatus');
-      if (!cb || !cb.checked) {
-        if (st) st.textContent = 'Live disattivato.';
-        return;
-      }
-      if (_jointLiveRaf) return;
-      _jointLiveRaf = requestAnimationFrame(function() {
-        _jointLiveRaf = 0;
-        jointSendLivePose();
-      });
-    }
-    function jointSliderLiveFlush() {
-      for (let i = 0; i < 7; i++) jointSliderDisplay(i);
-      const cb = document.getElementById('jointLiveEnabled');
-      if (!cb || !cb.checked) return;
-      if (_jointLiveRaf) {
-        cancelAnimationFrame(_jointLiveRaf);
-        _jointLiveRaf = 0;
-      }
-      jointSendLivePose();
-    }
-    async function jointSendLivePose() {
-      const sd = jointEditorCollectFromSliders();
-      if (!sd) return;
-      const st = document.getElementById('jointLiveStatus');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/joints/live_deg'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ servo_deg: sd }),
-        });
-        const data = await res.json();
-        if (st) {
-          if (data.ok || data.skipped) {
-            st.textContent = 'live OK · ' + new Date().toLocaleTimeString();
-          } else {
-            st.textContent = 'live: ' + (data.reason || ('HTTP ' + res.status));
-          }
-        }
-      } catch (e) {
-        if (st) {
-          const m = String(e);
-          st.textContent = m + (m.indexOf('Failed to fetch') >= 0 ? fetchHint_failedToFetch() : '');
-        }
-      }
-    }
-    function jointEditorCollectFromSliders() {
-      const out = [];
-      for (let i = 0; i < 7; i++) {
-        const s = document.getElementById('jointSlide' + i);
-        if (!s) return null;
-        out.push(parseFloat(s.value));
-      }
-      return out;
-    }
-    async function jointEditorLoad() {
-      const pre = document.getElementById('jointEditorLog');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/servo_snapshot?_=' + Date.now()));
-        const data = await res.json();
-        if (!data.ok || !data.servo_deg) {
-          if (pre) pre.textContent = JSON.stringify(data, null, 2);
-          return;
-        }
-        const sd = data.servo_deg;
-        for (let i = 0; i < 7; i++) {
-          const el = document.getElementById('jointSlide' + i);
-          if (!el) continue;
-          const b = JOINT_SLIDER_BOUNDS[i];
-          let val = parseFloat(sd[i]);
-          if (Number.isNaN(val)) val = 0;
-          val = Math.min(b[1], Math.max(b[0], val));
-          el.value = String(val);
-          jointSliderDisplay(i);
-        }
-        if (pre) pre.textContent = 'Feedback DDS → slider:\n' + JSON.stringify(sd, null, 2);
-      } catch (e) {
-        const m = String(e);
-        if (pre) pre.textContent = m + (m.indexOf('Failed to fetch') >= 0 ? fetchHint_failedToFetch() : '');
-      }
-    }
-    async function jointEditorSaveZero() {
-      const sd = jointEditorCollectFromSliders();
-      if (!sd) return;
-      const pre = document.getElementById('jointEditorLog');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/true_zero'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op: 'save', servo_deg: sd }),
-        });
-        const data = await res.json();
-        if (pre) pre.textContent = JSON.stringify(data, null, 2);
-        setArmPoseLog(data);
-        refreshArmMotionDiag();
-      } catch (e) {
-        if (pre) pre.textContent = String(e);
-      }
-    }
-    async function jointEditorSaveStart() {
-      if (!window.confirm('Salvo START: scena AprilTag + angoli braccio dagli slider. Confermi?')) return;
-      const sd = jointEditorCollectFromSliders();
-      if (!sd) return;
-      const pre = document.getElementById('jointEditorLog');
-      const logStart = document.getElementById('startOpsLog');
-      try {
-        const res = await fetch(dashboardApi('/api/alignment/start_pose'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ servo_deg: sd }),
-        });
-        const data = await res.json();
-        if (pre) pre.textContent = 'Salva START (slider) HTTP ' + res.status + ':\n' + JSON.stringify(data, null, 2);
-        if (logStart) logStart.textContent = JSON.stringify(data, null, 2);
-        refreshArmMotionDiag();
-        nxStackRefresh();
-      } catch (e) {
-        if (pre) pre.textContent = String(e);
-      }
-    }
-    async function jointEditorGoto() {
-      const sd = jointEditorCollectFromSliders();
-      if (!sd) return;
-      if (!window.confirm('Sposta tutti i giunti in modo smooth (interpolato, più lento del live). Confermi?')) return;
-      const pre = document.getElementById('jointEditorLog');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/joints/goto_deg'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ servo_deg: sd }),
-        });
-        const data = await res.json();
-        if (pre) pre.textContent = JSON.stringify(data, null, 2);
-        const logEl = document.getElementById('armActionLog');
-        if (logEl) logEl.textContent = 'goto_deg HTTP ' + res.status + '\n' + JSON.stringify(data, null, 2);
-        refreshArmMotionDiag();
-      } catch (e) {
-        if (pre) pre.textContent = String(e);
-      }
-    }
-    async function gotoTrueZeroPose() {
-      if (!window.confirm('Portare il braccio alla posa ZERO (data/true_zero_pose.json)?')) return;
-      try {
-        const res = await fetch(dashboardApi('/api/arm/true_zero'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op: 'goto_zero' }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-        const logEl = document.getElementById('armActionLog');
-        if (logEl) {
-          const err = !data.ok ? 'ERRORE — nessun movimento o comando rifiutato. Controlla reason / hint sotto.\n' : '';
-          logEl.textContent = err + 'TRUE_ZERO goto_zero HTTP ' + res.status + '\n' + JSON.stringify(data, null, 2);
-        }
-        refreshArmMotionDiag();
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function gotoSavedStartPose() {
-      const logEl = document.getElementById('armActionLog');
-      const startLog = document.getElementById('startOpsLog');
-      const pending = 'Invio comando: Vai a START diretto…';
-      if (logEl) logEl.textContent = pending;
-      if (startLog) startLog.textContent = pending;
-      try {
-        const res = await fetch(dashboardApi('/api/arm/true_zero'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op: 'goto_saved_start' }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-        const msg = 'Vai a START HTTP ' + res.status + '\n' + JSON.stringify(data, null, 2);
-        if (logEl) {
-          const err = !data.ok ? 'ERRORE — START diretto non eseguito. reason=' + (data.reason || 'unknown') + '\n' : '';
-          logEl.textContent = err + msg + '\n\nVerifico subito se da START si vede la scatola…';
-        }
-        if (startLog) startLog.textContent = msg;
-        refreshArmMotionDiag();
-        await refreshDetectionNow();
-        if (logEl) {
-          logEl.textContent += '\nSTART visibility aggiornata: guarda VISIONE / PRESA sopra.';
-        }
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function gotoStartFromTrueZero() {
-      if (!window.confirm('ZERO → START: percorso interpolato verso start_alignment.json. Confermi?')) return;
-      try {
-        const res = await fetch(dashboardApi('/api/arm/true_zero'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ op: 'goto_start' }),
-        });
-        const data = await res.json();
-        setArmPoseLog(data);
-        const logEl = document.getElementById('armActionLog');
-        if (logEl) {
-          const err = !data.ok ? 'ERRORE — nessun movimento o comando rifiutato. Controlla reason / hint sotto.\n' : '';
-          logEl.textContent = err + 'ZERO → START HTTP ' + res.status + '\n' + JSON.stringify(data, null, 2)
-            + '\n\nVerifico subito se da START si vede la scatola…';
-        }
-        refreshArmMotionDiag();
-        await refreshDetectionNow();
-        if (logEl) {
-          logEl.textContent += '\nSTART visibility aggiornata: guarda VISIONE / PRESA sopra (box/tag visto, punto presa, camera scelta).';
-        }
-      } catch (e) {
-        setArmPoseLog(String(e));
-      }
-    }
-    async function refreshDragFollowStatus() {
-      const badge = document.getElementById('dragFollowBadge');
-      const pre = document.getElementById('dragFollowStatus');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/drag_follow'));
-        const data = await res.json();
-        document.body.classList.toggle('drag-follow-running', !!(data && data.running));
-        const mode = (data.params && data.params.mode) || data.mode || '';
-        if (data.running) {
-          const tail = mode === 'mirror'
-            ? (' · η=' + (data.params && data.params.track_eta))
-            : mode === 'passthrough'
-              ? (' · α=' + (data.params && data.params.passthrough_alpha))
-              : mode === 'echo'
-                ? (' · eco · lead=' + (data.params && data.params.echo_base_lead))
-                : '';
-          badge.innerHTML = '<span class="ok">● ATTIVO</span> · ' + (mode || 'drag') + tail
-            + ' · PID ' + (data.pid || '?')
-            + ' · ~' + (data.remaining_s != null ? data.remaining_s : '?') + 's rimasti';
-          badge.className = '';
-          pre.classList.add('live');
-          pre.textContent = JSON.stringify(data, null, 2);
-        } else {
-          badge.innerHTML = '<span class="bad">● FERMO</span>';
-          badge.className = '';
-          pre.classList.remove('live');
-          pre.textContent = JSON.stringify(data, null, 2);
-        }
-      } catch (e) {
-        document.body.classList.remove('drag-follow-running');
-        if (badge) badge.textContent = 'Stato drag-follow: errore rete';
-        if (pre) {
-          pre.textContent = String(e);
-          pre.classList.remove('live');
-        }
-      }
-    }
-    function dragSweetSpotT() {
-      const el = document.getElementById('dragSweetSpot');
-      if (!el) return 0.0;
-      const v = Number(el.value);
-      if (Number.isNaN(v)) return 0.0;
-      // Scala v2: 50 corrisponde al vecchio estremo sinistro/morbido; 0..50 resta ultra-soft.
-      return Math.max(0, Math.min(1, (v - 50) / 50));
-    }
-    function lerpDrag(a, b, t) {
-      return a + (b - a) * t;
-    }
-    function dragFollowEchoFromT(t) {
-      return {
-        hz: Math.round(lerpDrag(7, 52, t)),
-        command_delay_ms: Math.round(lerpDrag(52, 2, t)),
-        echo_base_lead: Math.round(lerpDrag(0.0, 2.85, t) * 1000) / 1000,
-        echo_lead_cap_deg: Math.round(lerpDrag(1.8, 18.0, t) * 10) / 10,
-      };
-    }
-    function dragFollowPassthroughFromT(t) {
-      return {
-        hz: Math.round(lerpDrag(7, 50, t)),
-        command_delay_ms: Math.round(lerpDrag(48, 2, t)),
-        passthrough_alpha: Math.round(lerpDrag(0.1, 1.0, t) * 100) / 100,
-        passthrough_max_step_deg: Math.round(lerpDrag(3.0, 23.0, t) * 10) / 10,
-      };
-    }
-    function dragFollowMirrorFromT(t) {
-      return {
-        hz: Math.round(lerpDrag(7, 42, t)),
-        command_delay_ms: Math.round(lerpDrag(52, 3, t)),
-        track_eta: Math.round(lerpDrag(0.38, 0.945, t) * 1000) / 1000,
-        mirror_max_step_deg: Math.round(lerpDrag(1.0, 12.0, t) * 10) / 10,
-        mirror_base_eta_scale: Math.round(lerpDrag(1.0, 4.85, t) * 100) / 100,
-        mirror_base_cap_scale: Math.round(lerpDrag(1.0, 3.2, t) * 100) / 100,
-      };
-    }
-    function dragFollowSharedStatics() {
-      return {
-        seconds: 300,
-        gain: 0.18,
-        smooth: 0.55,
-        max_step_deg: 0.55,
-        deadband_deg: 0.04,
-        echo_heavy_joint_count: 4,
-        echo_decimals_heavy: 5,
-        echo_decimals_rest: 3,
-        gripper_mirror_scale: 1.0,
-      };
-    }
-    function dragSweetSpotUpdateLabel() {
-      const pre = document.getElementById('dragSweetSpotPreview');
-      if (!pre) return;
-      const t = dragSweetSpotT();
-      const e = dragFollowEchoFromT(t);
-      const p = dragFollowPassthroughFromT(t);
-      const m = dragFollowMirrorFromT(t);
-      const e0 = dragFollowEchoFromT(0), e1 = dragFollowEchoFromT(1);
-      const p0 = dragFollowPassthroughFromT(0), p1 = dragFollowPassthroughFromT(1);
-      const m0 = dragFollowMirrorFromT(0), m1 = dragFollowMirrorFromT(1);
-      const br = String.fromCharCode(10);
-      pre.textContent = [
-        'Scala v2: cursore 50 = vecchio estremo sinistro (molto morbido). 0..50 = ultra morbido.',
-        'ECHO      hz=' + e.hz + '  delay_ms=' + e.command_delay_ms + '  lead=' + e.echo_base_lead + '  lead_cap°=' + e.echo_lead_cap_deg,
-        'PASS-THR  hz=' + p.hz + '  delay_ms=' + p.command_delay_ms + '  α=' + p.passthrough_alpha + '  max_step°=' + p.passthrough_max_step_deg,
-        'MIRROR    hz=' + m.hz + '  delay_ms=' + m.command_delay_ms + '  η=' + m.track_eta + '  max_step°=' + m.mirror_max_step_deg + '  base_η×=' + m.mirror_base_eta_scale,
-        '──────── Estremi effettivi: 50 (vecchio morbido) ⇄ 100 (reattivo) ────────',
-        'ECHO      0→ hz=' + e0.hz + ' delay=' + e0.command_delay_ms + ' lead=' + e0.echo_base_lead + ' cap°=' + e0.echo_lead_cap_deg + '   |   100→ hz=' + e1.hz + ' delay=' + e1.command_delay_ms + ' lead=' + e1.echo_base_lead + ' cap°=' + e1.echo_lead_cap_deg,
-        'PASS      0→ hz=' + p0.hz + ' α=' + p0.passthrough_alpha + ' step°=' + p0.passthrough_max_step_deg + '   |   100→ hz=' + p1.hz + ' α=' + p1.passthrough_alpha + ' step°=' + p1.passthrough_max_step_deg,
-        'MIRROR    0→ η=' + m0.track_eta + ' step°=' + m0.mirror_max_step_deg + ' baseη×=' + m0.mirror_base_eta_scale + '   |   100→ η=' + m1.track_eta + ' step°=' + m1.mirror_max_step_deg + ' baseη×=' + m1.mirror_base_eta_scale,
-      ].join(br);
-      try {
-        localStorage.setItem('go2_drag_sweet_spot_v2', String(Math.round(Number(document.getElementById('dragSweetSpot').value) || 50)));
-      } catch (err) {}
-    }
-    async function dragFollowFetchLog() {
-      const el = document.getElementById('dragFollowDiagLog');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/drag_follow/log?lines=120'));
-        const data = await res.json();
-        el.textContent = data.loop_log || JSON.stringify(data, null, 2);
-      } catch (e) {
-        el.textContent = String(e);
-      }
-    }
-    async function dragFollowFetchDiagnostics() {
-      const el = document.getElementById('dragFollowDiagBundle');
-      try {
-        const res = await fetch(dashboardApi('/api/arm/drag_follow/diagnostics?servo=1&lines_process=80&lines_loop=120&lines_jsonl=60'));
-        const data = await res.json();
-        el.textContent = JSON.stringify(data, null, 2);
-      } catch (e) {
-        el.textContent = String(e);
-      }
-    }
-    async function dragFollowStart() {
-      try {
-        const t = dragSweetSpotT();
-        const res = await fetch(dashboardApi('/api/arm/drag_follow'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign(
-            { enable: true, mode: 'echo' },
-            dragFollowSharedStatics(),
-            dragFollowEchoFromT(t),
-          )),
-        });
-        const data = await res.json();
-        document.getElementById('dragFollowStatus').textContent = JSON.stringify(data, null, 2);
-        await refreshDragFollowStatus();
-        await dragFollowFetchLog();
-        nxStackRefresh();
-      } catch (e) {
-        document.getElementById('dragFollowStatus').textContent = String(e);
-      }
-    }
-    async function dragFollowStartPassthrough() {
-      try {
-        const t = dragSweetSpotT();
-        const res = await fetch(dashboardApi('/api/arm/drag_follow'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign(
-            { enable: true, mode: 'passthrough' },
-            dragFollowSharedStatics(),
-            dragFollowPassthroughFromT(t),
-          )),
-        });
-        const data = await res.json();
-        document.getElementById('dragFollowStatus').textContent = JSON.stringify(data, null, 2);
-        await refreshDragFollowStatus();
-        await dragFollowFetchLog();
-        nxStackRefresh();
-      } catch (e) {
-        document.getElementById('dragFollowStatus').textContent = String(e);
-      }
-    }
-    async function dragFollowStartMirrorLegacy() {
-      try {
-        const t = dragSweetSpotT();
-        const res = await fetch(dashboardApi('/api/arm/drag_follow'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign(
-            { enable: true, mode: 'mirror' },
-            dragFollowSharedStatics(),
-            dragFollowMirrorFromT(t),
-          )),
-        });
-        const data = await res.json();
-        document.getElementById('dragFollowStatus').textContent = JSON.stringify(data, null, 2);
-        await refreshDragFollowStatus();
-        await dragFollowFetchLog();
-        nxStackRefresh();
-      } catch (e) {
-        document.getElementById('dragFollowStatus').textContent = String(e);
-      }
-    }
-    async function dragFollowStop() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/drag_follow'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enable: false }),
-        });
-        const data = await res.json();
-        document.getElementById('dragFollowStatus').textContent = JSON.stringify(data, null, 2);
-        await refreshDragFollowStatus();
-      } catch (e) {
-        document.getElementById('dragFollowStatus').textContent = String(e);
-      }
-    }
-    async function saveStartPose() {
-      try {
-        const res = await fetch(dashboardApi('/api/alignment/start_pose'), { method: 'POST' });
-        const data = await res.json();
-        document.getElementById('startOpsLog').textContent = JSON.stringify(data, null, 2);
-      } catch (e) {
-        document.getElementById('startOpsLog').textContent = String(e);
-      }
-    }
-    async function loadStartPose() {
-      try {
-        const res = await fetch(dashboardApi('/api/alignment/start_pose'));
-        const data = await res.json();
-        document.getElementById('startOpsLog').textContent = JSON.stringify(data, null, 2);
-      } catch (e) {
-        document.getElementById('startOpsLog').textContent = String(e);
-      }
-    }
-    async function nxStackRefresh() {
-      try {
-        const res = await fetch(dashboardApi('/api/nx/stack/status'));
-        const data = await res.json();
-        document.getElementById('nxStackBox').textContent = JSON.stringify(data, null, 2);
-        const loc = data.go2_local;
-        const el = document.getElementById('nxModeBadge');
-        el.textContent = loc ? 'GO2_LOCAL attivo (sensori su questa macchina)' : 'GO2_LOCAL spento — dashboard non sul robot';
-        el.className = 'pill ' + (loc ? 'ok' : 'bad');
-      } catch (e) {
-        document.getElementById('nxStackBox').textContent = String(e);
-      }
-    }
-    async function emergencyHold() {
-      try {
-        const res = await fetch(dashboardApi('/api/arm/emergency_hold'), { method: 'POST' });
-        const data = await res.json();
-        document.getElementById('armActionLog').textContent = JSON.stringify(data, null, 2);
-        const holdOk = !!(data.hold_ok || (data.hold && data.hold.ok));
-        const dragOff = !!(data.drag_follow_stop && data.drag_follow_stop.drag_follow_stopped);
-        let line = '';
-        if (dragOff) line += 'Drag fermato. ';
-        if (holdOk) line += 'FERMA: abort + hold DDS inviati.';
-        else {
-          const why = (data.hold && data.hold.reason) ? String(data.hold.reason) : (data.reason || 'vedi JSON');
-          line += 'Abort sequenza OK ma hold fallito — ' + why.slice(0, 120);
-        }
-        setText('boxStatus', line || 'FERMA eseguito (dettaglio nel log sotto)');
-        const bs = document.getElementById('boxStatus');
-        if (bs) bs.className = holdOk ? 'ok' : 'bad';
-        nxStackRefresh();
-        refreshGraspJobPanel();
-        void refreshDragFollowStatus();
-      } catch (e) {
-        setText('boxStatus', String(e));
-        document.getElementById('boxStatus').className = 'bad';
-      }
-    }
-    function setPresaSequenceStatus(htmlOrText, useHtml) {
-      const el = document.getElementById('presaSequenceStatus');
-      if (!el) return;
-      if (useHtml) el.innerHTML = htmlOrText;
-      else el.textContent = htmlOrText;
-    }
-    async function attemptGrasp() {
-      const logEl = document.getElementById('armActionLog');
-      setPresaSequenceStatus('Invio POST /api/arm/grasp_box/attempt…', false);
-      try {
-        const fetchOptions = {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        };
-        if (window.AbortSignal && typeof AbortSignal.timeout === 'function') {
-          fetchOptions.signal = AbortSignal.timeout(60000);
-        }
-        const res = await fetch(dashboardApi('/api/arm/grasp_box/attempt'), fetchOptions);
-        let data;
-        const raw = await res.text();
-        try {
-          data = raw ? JSON.parse(raw) : {};
-        } catch (je) {
-          const msg = 'Risposta non JSON (HTTP ' + res.status + '): ' + raw.slice(0, 400);
-          setPresaSequenceStatus(msg, false);
-          if (logEl) logEl.textContent = msg;
-          return;
-        }
-        if (logEl) logEl.textContent = JSON.stringify(data, null, 2);
-        if (res.ok && (data.started || data.accepted)) {
-          if (data.accepted && !data.started) {
-            setPresaSequenceStatus(
-              '<span class="ok">● Preflight avviato</span> (HTTP 202) — il server calcola tag/IK in background. '
-                + 'Controlla sotto <strong>fase</strong> e <code>/api/arm/job_status</code>; passa a «sequenza» quando il preflight è OK.',
-              true
-            );
-          } else {
-            setPresaSequenceStatus(
-              '<span class="ok">● Sequenza avviata</span> — resta su questa scheda per la <strong>fase</strong> in tempo reale. '
-                + 'Camere/tag: scheda <strong>Camere &amp; AprilTag</strong>.',
-              true
-            );
-          }
-          setText('boxStatus', data.accepted && !data.started ? 'preflight (async)' : 'presa avviata (background)');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = 'warn';
-        } else if (res.status === 403 && (data.reason || '').indexOf('GRASP_EXECUTE') >= 0) {
-          setPresaSequenceStatus(
-            '<span class="bad">Grasp disabilitato</span> — sul processo Flask serve <code>GO2_GRASP_EXECUTE_ARM=1</code> '
-              + '(lo script <code>nx_start_dashboard.sh</code> del deploy lo imposta). Riavvia la dashboard sulla NX o export prima di <code>python3 diagnostics_dashboard.py</code>.',
-            true
-          );
-          setText('boxStatus', 'blocked execute_arm');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = 'bad';
-        } else if (res.status === 409 && data.reason === 'preflight_tag_or_ik_not_ready') {
-          const nar = (data.preflight && data.preflight.narrative_it) ? data.preflight.narrative_it.slice(0, 4).join(' · ') : '';
-          setPresaSequenceStatus(
-            '<span class="warn">Preflight non OK</span> — servono tag scatola 0–3 visibili e piano IK pronto. '
-              + (nar ? ('Dettaglio: ' + nar.slice(0, 220) + '… ') : '')
-              + 'Apri scheda <strong>Camere &amp; AprilTag</strong> e «Pipeline presa».',
-            true
-          );
-          setText('boxStatus', 'preflight blocked');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = 'warn';
-        } else if (res.status === 409 && (data.reason === 'grasp_preflight_already_in_flight')) {
-          setPresaSequenceStatus(
-            '<span class="warn">Preflight già avviato</span> — attendi qualche secondo (vedi fase sotto) o premi «FERMA — hold» per annullare.',
-            true
-          );
-          setText('boxStatus', 'preflight già in volo');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = 'warn';
-        } else if (res.status === 409) {
-          setPresaSequenceStatus(
-            '<span class="warn">Sequenza già in corso</span> — attendi il completamento o premi «FERMA — hold».',
-            true
-          );
-          setText('boxStatus', 'presa già in corso');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = 'warn';
-        } else {
-          const why = data.reason || data.message || JSON.stringify(data);
-          setPresaSequenceStatus('Rifiutato o errore server: ' + String(why).slice(0, 280), false);
-          setText('boxStatus', data.attempted_motion ? 'motion sent' : 'blocked');
-          const bs = document.getElementById('boxStatus');
-          if (bs) bs.className = data.attempted_motion ? 'ok' : 'warn';
-        }
-        nxStackRefresh();
-        refreshGraspJobPanel();
-      } catch (e) {
-        const msg =
-          e && e.name === 'TimeoutError'
-            ? 'Timeout 60s sulla richiesta POST — server/processo Flask bloccato? Controlla journal sulla NX.'
-            : ('Rete o eccezione: ' + String(e));
-        setPresaSequenceStatus(msg, false);
-        if (logEl) logEl.textContent = msg;
-      }
-    }
-    function drawLidar(points) {
-      const canvas = document.getElementById('lidarCanvas');
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0,0,w,h);
-      const cx = w/2, cy = h/2;
-      const maxR = Math.min(w,h)*0.46;
-      ctx.strokeStyle = '#1e3a8a'; ctx.lineWidth = 1;
-      for (let r=0.2; r<=1; r+=0.2) { ctx.beginPath(); ctx.arc(cx,cy,maxR*r,0,Math.PI*2); ctx.stroke(); }
-      for (let a=0; a<360; a+=30) {
-        const rad=(a-90)*Math.PI/180;
-        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(rad)*maxR, cy+Math.sin(rad)*maxR); ctx.stroke();
-      }
-      ctx.fillStyle = '#94a3b8'; ctx.fillRect(cx-4, cy-4, 8, 8);
-      for (const p of points || []) {
-        const az = p[0], dist = p[1], refl = p[2];
-        const rad = (az - 90) * Math.PI / 180;
-        const rr = Math.min(dist / 30, 1) * maxR;
-        const x = cx + Math.cos(rad) * rr;
-        const y = cy + Math.sin(rad) * rr;
-        const hue = Math.min(160, 35 + refl * .6);
-        ctx.fillStyle = `hsl(${hue}, 90%, 58%)`;
-        ctx.fillRect(x, y, 2.2, 2.2);
-      }
-    }
-    async function refreshLidar() {
-      try {
-        const res = await fetch(dashboardApi('/api/lidar/frame'));
-        const data = await res.json();
-        drawLidar(data.points || []);
-        const stats = data.stats || {};
-        setText('lidarStatus', data.ok ? 'streaming' : 'no points');
-        document.getElementById('lidarStatus').className = data.ok ? 'ok' : 'bad';
-        setText('lidarMeta', `packets=${data.packets || 0} visible=${stats.visible_points || 0} analyzed=${stats.total_points_analyzed || 0} range=${stats.min_m ?? '-'}..${stats.max_m ?? '-'}m avg=${stats.avg_m ?? '-'}m source=${JSON.stringify(data.sources || {})}`);
-      } catch (e) {
-        setText('lidarStatus', 'error');
-        document.getElementById('lidarStatus').className = 'bad';
-      }
-    }
-    initOpTabs();
-    jointSlidersInitDisplay();
-    wireApriltagOverlayImgHandlers();
-    (function initAlwaysCamStrip() {
-      try {
-        const expanded = localStorage.getItem('go2_always_cam_expanded') === '1';
-        const strip = document.getElementById('alwaysCamStrip');
-        if (strip && expanded) strip.classList.add('expanded');
-        const q = '?nc=' + Date.now();
-        const m0 = document.getElementById('alwaysCam0');
-        const m6 = document.getElementById('alwaysCam6');
-        if (m0) m0.src = '/stream/robot/camera/0.mjpg' + q;
-        if (m6) m6.src = '/stream/robot/camera/6.mjpg' + q;
-        const tagPairs = [
-          ['alwaysBox0', '0'],
-          ['alwaysBox6', '6'],
-        ];
-        tagPairs.forEach(([id, dev]) => {
-          const te = document.getElementById(id);
-          if (te) te.src = '/stream/robot/camera/' + dev + '/tags.mjpg' + q;
-        });
-      } catch (err) {}
-    })();
-    refreshGraspJobPanel();
-    loadStatus();
-    refreshServerBoot();
-    nxStackRefresh();
-    (function initDragSweetSpot() {
-      const el = document.getElementById('dragSweetSpot');
-      if (!el) return;
-      try {
-        const s = localStorage.getItem('go2_drag_sweet_spot_v2');
-        if (s !== null && s !== '') {
-          const n = parseInt(s, 10);
-          if (!Number.isNaN(n)) el.value = String(Math.max(0, Math.min(100, n)));
-        }
-      } catch (err) {}
-      el.addEventListener('input', dragSweetSpotUpdateLabel);
-      el.addEventListener('change', dragSweetSpotUpdateLabel);
-      dragSweetSpotUpdateLabel();
-    })();
-    refreshDragFollowStatus();
-    fetch(dashboardApi('/api/cameras/warmup'), { method: 'POST' }).catch(() => {});
-    mirrorApriltagTabCanvasesFromStrip();
-    refreshCameraStatus();
-    refreshLidar();
-    refreshBoxPlan();
-    refreshArmMotionDiag();
-    loadUiTuning();
-    loadGraspSessionIntoUi();
-    refreshGraspPipeline();
-    UI_TUNING_KEYS.forEach((k) => {
-      const inp = document.getElementById('tune_' + k);
-      if (!inp) return;
-      inp.addEventListener('input', scheduleUiTuningPost);
-      inp.addEventListener('change', postUiTuningFromSliders);
-    });
-    setInterval(loadStatus, 5000);
-    setInterval(refreshServerBoot, 12000);
-    setInterval(refreshDragFollowStatus, 900);
-    setInterval(refreshCameraStatus, 1200);
-    setInterval(refreshLidar, 900);
-    setInterval(refreshBoxPlan, 1600);
-    setInterval(refreshGraspJobPanel, 900);
-    setInterval(refreshArmMotionDiag, 2200);
-    setInterval(refreshGraspPipeline, 3000);
-  </script>
-</body>
-</html>
-"""
+            "<!doctype html><html><head><meta charset=\"utf-8\"/><title>Dashboard</title></head>"
+            f"<body><pre>Template mancante o illeggibile {_DASHBOARD_HTML_PATH}:\n{exc!r}</pre></body></html>"
+        )
+
+
+def _get_dashboard_html() -> str:
+    """Markup della dashboard: ricarica da disco se ``dashboard.html`` cambia (no riavvio Flask)."""
+    global _DASHBOARD_HTML_CACHE_MT, _DASHBOARD_HTML_CACHE_TEXT
+    try:
+        mtime = float(_DASHBOARD_HTML_PATH.stat().st_mtime)
+    except OSError:
+        return _load_dashboard_html()
+    if _DASHBOARD_HTML_CACHE_MT != mtime or not _DASHBOARD_HTML_CACHE_TEXT:
+        _DASHBOARD_HTML_CACHE_TEXT = _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+        _DASHBOARD_HTML_CACHE_MT = mtime
+    return _DASHBOARD_HTML_CACHE_TEXT
 
 
 @APP.route("/favicon.ico")
@@ -6452,7 +5270,7 @@ def index() -> Response:
     url_prefix = os.environ.get("GO2_DASHBOARD_URL_PREFIX", "").strip().rstrip("/")
     script_root = url_prefix or ((request.script_root or "").rstrip("/"))
     html = render_template_string(
-        HTML,
+        _get_dashboard_html(),
         go2_host=GO2_HOST,
         xt16_host=XT16_HOST,
         servo_arm_host=SERVO_ARM_HOST,
@@ -6462,11 +5280,6 @@ def index() -> Response:
         script_root=script_root,
     )
     return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
-
-
-@APP.route("/api/status")
-def api_status() -> Any:
-    return jsonify(get_status())
 
 
 @APP.route("/api/lidar/frame")
@@ -6538,22 +5351,30 @@ def stream_robot_camera_tagsmjpeg(device: int) -> Response:
         period = max(period, 0.12)
 
     def generate():
-        last: bytes | None = None
-        first_wait_s = float(os.environ.get("GO2_MJPEG_FIRST_FRAME_WAIT_S", "1.8"))
+        last_cam: bytes | None = None
+        last_sent: bytes | None = None
         while True:
-            image = _apriltag_overlay_jpeg_bytes(device)
-            if image is None and last is None:
-                # Non lasciare il browser con riquadro nero: mostra raw finché l'overlay tag non è pronto.
-                image = robot_camera_jpeg(device) if not GO2_LOCAL else CAMERA_CACHE.get_jpeg(device, wait_s=first_wait_s)
-            if image is None:
-                image = last
-            if image is not None:
-                last = image
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Cache-Control: no-store\r\n\r\n" + image + b"\r\n"
-                )
+            jpg = _camera_jpeg_for_mjpeg(device, last_cam)
+            if jpg is not None:
+                last_cam = jpg
+            if jpg is None:
+                jpg = last_cam
+            if jpg is None:
+                if last_sent is not None:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Cache-Control: no-store\r\n\r\n" + last_sent + b"\r\n"
+                    )
+                time.sleep(period)
+                continue
+            image = _jpeg_apply_apriltag_if_possible(jpg)
+            last_sent = image
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Cache-Control: no-store\r\n\r\n" + image + b"\r\n"
+            )
             time.sleep(period)
 
     return Response(
@@ -6571,7 +5392,18 @@ def stream_robot_camera_tagsmjpeg(device: int) -> Response:
 def api_cameras_status() -> Any:
     if GO2_LOCAL:
         CAMERA_CACHE.start()
-    return jsonify({"ok": True, "mode": "local-cache" if GO2_LOCAL else "ssh-snapshot", "cameras": CAMERA_CACHE.stats()})
+    payload: dict[str, Any] = {
+        "ok": True,
+        "go2_local": bool(GO2_LOCAL),
+        "mode": "local-cache" if GO2_LOCAL else "ssh-snapshot",
+        "cameras": CAMERA_CACHE.stats(),
+    }
+    if GO2_LOCAL and cv2 is not None:
+        payload["v4l_index_by_logical"] = {str(d): _v4l_index_for_logical_camera(d) for d in CAMERA_DEVICES}
+        auto_m = usb_auto_v4l_mapping()
+        if auto_m:
+            payload["v4l_usb_auto_map"] = {str(k): int(v) for k, v in sorted(auto_m.items())}
+    return jsonify(payload)
 
 
 @APP.route("/api/cameras/warmup", methods=["POST"])
@@ -6597,9 +5429,12 @@ def api_box_plan() -> Any:
         det_status = detector_status()
         for device in (0, 6):
             cache_row = (CAMERA_CACHE.stats().get(str(device)) if GO2_LOCAL else None)
+            v4l_idx = _v4l_index_for_logical_camera(device)
             frame = frame_from_camera(device)
             per_cam_pipeline[str(device)] = {
-                "dev_path": f"/dev/video{device}",
+                "logical_device": device,
+                "v4l_index": v4l_idx,
+                "dev_path": f"/dev/video{v4l_idx}",
                 "frame_ok": frame is not None,
                 "frame_shape_hw": (list(frame.shape[:2]) if frame is not None else None),
                 "camera_cache": cache_row,
@@ -6607,13 +5442,21 @@ def api_box_plan() -> Any:
             if frame is None:
                 candidates[str(device)] = {
                     "ok": False,
-                    "error": f"camera /dev/video{device} unavailable",
+                    "error": (
+                        f"camera logical {device} ({CAMERA_DEVICES.get(device, 'unknown')}) "
+                        f"unavailable at /dev/video{v4l_idx}"
+                    ),
                     "camera_label": CAMERA_DEVICES.get(device, "unknown"),
                 }
                 continue
             object_det = detect_box_object(frame)
             prefer_tag = _effective_grasp_bool("prefer_tag_grip", "GO2_GRASP_PREFER_TAG_GRIP")
-            result = plan_from_frame(frame, object_detection=object_det, prefer_tag_grip=prefer_tag)
+            result = plan_from_frame(
+                frame,
+                object_detection=object_det,
+                prefer_tag_grip=prefer_tag,
+                logical_camera_device=device,
+            )
             result["camera_device"] = device
             result["camera_label"] = CAMERA_DEVICES.get(device, "unknown")
             wrist_abs_trust = _effective_grasp_bool("trust_wrist_absolute_ik", "GO2_TRUST_WRIST_ABSOLUTE_IK")
@@ -6705,7 +5548,7 @@ def api_box_plan() -> Any:
             "command_stack": command_stack_status(),
             "note": (
                 "tag25h9: box IDs 0..3 use edge length 19 mm default (BOX_TAG_SIZE_M); "
-                "ID 5 landmark above XT16 uses 61 mm (REFERENCE_TAG_SIZE_M). "
+                "ID 5 landmark above XT16 uses 60 mm default (REFERENCE_TAG_SIZE_M / LIDAR_LANDMARK_TAG_SIZE_M). "
                 "Pose/range per tag uses tag_edge_length_m. IK preview averages box tags only. "
                 "Each tag includes diagonal_px / mean_edge_px (larger ≈ closer). "
                 "Perpendicular grasp normal to tag plane is not implemented yet — preview uses fixed base offsets."
@@ -6739,6 +5582,1353 @@ def api_arm_diagnose_motion() -> Any:
 def api_arm_grasp_pipeline() -> Any:
     """Debug flusso visione → IK → motion: leggibile dalla UI senza avviare il grasp."""
     return jsonify(grasp_pipeline_status())
+
+
+# Ultimo landmark tag5 (XT-16) **grezzo** valido: evita salti quando ``scene_3d?fast=1`` salta il piano visione.
+_SCENE3D_TAG5_LM_CACHE: dict[str, Any] = {"xyz": None, "mono": 0.0}
+# EMA sul centro mostrato (sfera/cilindro) per attenuare jitter tra camere / frame.
+_SCENE3D_TAG5_EMA: dict[str, Any] = {"xyz": None}
+
+
+def _scene3d_tag5_xyz_display_smoothed(tag5_raw: list[float] | None) -> list[float] | None:
+    """EMA sul landmark; se ``tag5_raw`` è None resta l'ultimo valore smussato se c'è."""
+    prev = _SCENE3D_TAG5_EMA.get("xyz")
+    if tag5_raw is None:
+        if isinstance(prev, list) and len(prev) >= 3:
+            return [float(prev[i]) for i in range(3)]
+        return None
+    alpha = float(os.environ.get("GO2_SCENE3D_TAG5_EMA_ALPHA", "0.38"))
+    try:
+        raw3 = [float(tag5_raw[i]) for i in range(3)]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if prev is None or not isinstance(prev, list) or len(prev) < 3:
+        out = list(raw3)
+    else:
+        out = [alpha * raw3[i] + (1.0 - alpha) * float(prev[i]) for i in range(3)]
+    _SCENE3D_TAG5_EMA["xyz"] = out
+    return out
+
+
+def _merged_apriltag_rows_from_plan(plan_blob: dict[str, Any]) -> list[dict[str, Any]]:
+    """Unisce stime da camera 0 (polso) e 6 (front). L'ordine è arbitrario; ``tags_for_viewer`` deduplica per id."""
+    from box_grasp_planner import apriltag_tag_estimates_base_m
+
+    out: list[dict[str, Any]] = []
+    cands = plan_blob.get("candidates")
+    if not isinstance(cands, dict):
+        return out
+    for key in ("0", "6"):
+        c = cands.get(key)
+        if not isinstance(c, dict):
+            continue
+        pwrap = c.get("poses")
+        if isinstance(pwrap, dict):
+            out.extend(apriltag_tag_estimates_base_m(pwrap))
+    return out
+
+
+def _pick_stable_reference_tag_xyz(
+    rows: list[dict[str, Any]], *, ref_id: int
+) -> list[float] | None:
+    """Landmark (es. tag5 su XT-16): preferisci stima da camera polso ``logical_camera_device==0``, altrimenti ``range_m`` minimo."""
+    cand: list[dict[str, Any]] = []
+    rid = int(ref_id)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            if int(r.get("id", -1)) != rid:
+                continue
+        except (TypeError, ValueError):
+            continue
+        bx = r.get("base_xyz_m")
+        if not isinstance(bx, list) or len(bx) < 3:
+            continue
+        try:
+            _ = [float(bx[i]) for i in range(3)]
+        except (TypeError, ValueError):
+            continue
+        cand.append(r)
+    if not cand:
+        return None
+    for r in cand:
+        try:
+            if int(r.get("logical_camera_device", -1)) == 0:
+                bx = r["base_xyz_m"]
+                return [float(bx[i]) for i in range(3)]
+        except (TypeError, ValueError):
+            continue
+
+    def _rng(rr: dict[str, Any]) -> float:
+        try:
+            return float(rr.get("range_m") or 999.0)
+        except (TypeError, ValueError):
+            return 999.0
+
+    best = min(cand, key=_rng)
+    bx = best["base_xyz_m"]
+    return [float(bx[i]) for i in range(3)]
+
+
+def _dedupe_apriltag_rows_for_viewer(
+    rows: list[dict[str, Any]],
+    *,
+    reference_tag_id: int,
+    depth_logical_cam: int = 6,
+    wrist_logical_cam: int = 0,
+) -> list[dict[str, Any]]:
+    """Una stima per ``id`` per Three.js: scatola 0–3 preferisce RealSense (6), landmark ``reference_tag_id`` dal polso (0).
+
+    Il piano unisce ancora tutte le righe in ``apriltag_tag_estimates_base_m``; qui evitiamo due sfere
+    per lo stesso id (polso vede 5 e 0–3, fronte vede soprattutto 0–3).
+    """
+    from box_grasp_planner import BOX_TAG_IDS
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            tid = int(r.get("id", -1))
+        except (TypeError, ValueError):
+            continue
+        bx = r.get("base_xyz_m")
+        if not isinstance(bx, list) or len(bx) < 3:
+            continue
+        try:
+            _ = [float(bx[i]) for i in range(3)]
+        except (TypeError, ValueError):
+            continue
+        groups.setdefault(tid, []).append(r)
+
+    def _rng(rr: dict[str, Any]) -> float:
+        try:
+            return float(rr.get("range_m") or 999.0)
+        except (TypeError, ValueError):
+            return 999.0
+
+    def _idev(rr: dict[str, Any]) -> int | None:
+        v = rr.get("logical_camera_device")
+        if isinstance(v, (int, float)):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    ref = int(reference_tag_id)
+    out: list[dict[str, Any]] = []
+    for tid in sorted(groups.keys(), key=lambda x: (x < 0, x)):
+        cand = groups[tid]
+        chosen: dict[str, Any] | None = None
+        if tid == ref:
+            for r in cand:
+                if _idev(r) == wrist_logical_cam:
+                    chosen = r
+                    break
+            if chosen is None:
+                chosen = min(cand, key=_rng)
+        elif tid in BOX_TAG_IDS:
+            for r in cand:
+                if _idev(r) == depth_logical_cam:
+                    chosen = r
+                    break
+            if chosen is None:
+                for r in cand:
+                    if _idev(r) == wrist_logical_cam:
+                        chosen = r
+                        break
+            if chosen is None:
+                chosen = min(cand, key=_rng)
+        else:
+            chosen = min(cand, key=_rng)
+        if chosen is not None:
+            out.append(dict(chosen))
+    return out
+
+
+def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
+    """JSON per vista 3D: catena FK, vis_geometry, scene_graph; IK/target da /api/box/plan se non fast.
+
+    geometry_fast: salta api_box_plan (pesante su NX) — utile durante gli slider «Allinea vista 3D».
+    """
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    import numpy as np
+
+    from arm_kinematics_d1_template import (
+        ARM_FOLD_POSE,
+        DEPTH_CAMERA_ARM_BASE_M,
+        depth_camera_optical_axis_unit_arm_base,
+        fk_chain_positions,
+        fk_d1_joint_locals_m,
+        fk_tool_tip,
+        fk_wrist_camera_center_m,
+        fk_wrist_camera_view_axis_unit_m,
+        nominal_object_along_depth_optical_arm_m,
+    )
+    from box_grasp_planner import (
+        REFERENCE_TAG_ID_LIDAR_FRAME,
+        REFERENCE_TAG_SIZE_M,
+        apriltag_tag_estimates_base_m,
+        tag5_calibration_offset_arm_base_m,
+    )
+
+    vg = _vis_geometry_effective()
+    payload: dict[str, Any] = {
+        "ok": True,
+        "frame": "arm_base",
+        "axes_hint": {
+            "x": "avanti (davanti al cane)",
+            "y": "sinistra",
+            "z": "su",
+            "unit": "m",
+            "three_js_note": "Viewer: asse Three.js Y su ≈ robot Z; mapping applicato lato client.",
+        },
+        "vis_geometry_effective": {k: round(float(v), 6) for k, v in vg.items()},
+    }
+    wrist_off: np.ndarray | None = None
+    wo = (vg["wrist_local_dx"], vg["wrist_local_dy"], vg["wrist_local_dz"])
+    if any(abs(wo[i]) > 1e-12 for i in range(3)):
+        wrist_off = np.array(wo, dtype=float)
+
+    q_fb: list[float] | None = None
+    cur = _read_d1_servo_angles()
+    if cur is not None and len(cur) >= 6:
+        q_fb = [math.radians(float(cur[i])) for i in range(6)]
+        payload["servo_feedback_ok"] = True
+        payload["joints_deg"] = [round(float(cur[i]), 3) for i in range(min(7, len(cur)))]
+        payload["chain_xyz_m"] = fk_chain_positions(q_fb)
+        tip = fk_tool_tip(q_fb)
+        payload["tool_tip_xyz_m"] = [round(float(tip[i]), 5) for i in range(3)]
+    else:
+        payload["servo_feedback_ok"] = False
+
+    q_vis = [float(x) for x in (q_fb if q_fb is not None else ARM_FOLD_POSE)]
+
+    _mount_nom = np.array([0.15, 0.0, 0.06], dtype=float)
+    _viz_arm_d = np.array(
+        [
+            float(vg["viz_arm_mount_dx_m"]),
+            float(vg["viz_arm_mount_dy_m"]),
+            float(vg["viz_arm_mount_dz_m"]),
+        ],
+        dtype=float,
+    )
+    _mount_bl_list = [round(float(x), 5) for x in (_mount_nom + _viz_arm_d)]
+    _depth_vis_arm = np.asarray(DEPTH_CAMERA_ARM_BASE_M, dtype=float) + np.array(
+        [
+            float(vg["viz_front_cam_dx_m"]),
+            float(vg["viz_front_cam_dy_m"]),
+            float(vg["viz_front_cam_dz_m"]),
+        ],
+        dtype=float,
+    )
+
+    def _ab_to_bl(p: list[float] | Any) -> list[float]:
+        a = [float(np.asarray(p, dtype=float)[i]) for i in range(3)]
+        return [round(a[i] + _mount_bl_list[i], 5) for i in range(3)]
+
+    _d_ax = depth_camera_optical_axis_unit_arm_base()
+    cam_sites: dict[str, Any] = {
+        "mjcf_ref": "unitree_mujoco/unitree_robots/go2_d1/go2_d1_d1mesh.xml",
+        "logical_6_go2_front": {
+            "label": "MJCF depth_camera (base_link)",
+            "pos_arm_base_m": [round(float(_depth_vis_arm[i]), 5) for i in range(3)],
+            "view_axis_unit_m": [round(float(_d_ax[i]), 5) for i in range(3)],
+        },
+        "logical_0_wrist": None,
+    }
+    wc = fk_wrist_camera_center_m(q_vis, wrist_off)
+    wv = fk_wrist_camera_view_axis_unit_m(q_vis, wrist_off)
+    wc_mjcf = fk_wrist_camera_center_m(q_vis, None)
+    wv_mjcf = fk_wrist_camera_view_axis_unit_m(q_vis, None)
+    cam_sites["logical_0_wrist"] = {
+        "label": "wrist_camera (FK + offset slider locale; q_vis = feedback o fold)",
+        "pos_arm_base_m": [round(float(wc[i]), 5) for i in range(3)],
+        "view_axis_unit_m": [round(float(wv[i]), 5) for i in range(3)],
+        "mjcf_pos_arm_base_m": [round(float(wc_mjcf[i]), 5) for i in range(3)],
+        "mjcf_view_axis_unit_m": [round(float(wv_mjcf[i]), 5) for i in range(3)],
+    }
+    payload["mujoco_camera_sites_arm_m"] = cam_sites
+    plan_blob: dict[str, Any] = {}
+    if geometry_fast:
+        payload["geometry_fast_preview"] = True
+    else:
+        try:
+            plan_blob = json.loads(api_box_plan().get_data(as_text=True))
+        except Exception as exc:
+            plan_blob = {}
+            payload["plan_parse_error"] = repr(exc)
+    sel = plan_blob.get("selected") if isinstance(plan_blob.get("selected"), dict) else {}
+    est_rows: list[dict[str, Any]] = []
+    if not geometry_fast and isinstance(plan_blob.get("candidates"), dict):
+        est_rows = _merged_apriltag_rows_from_plan(plan_blob)
+    if not est_rows:
+        poses_blob = sel.get("poses") if isinstance(sel.get("poses"), dict) else {}
+        if isinstance(poses_blob, dict):
+            est_rows = apriltag_tag_estimates_base_m(poses_blob)
+    payload["apriltag_tag_estimates_base_m"] = est_rows
+
+    tag5_raw: list[float] | None = _pick_stable_reference_tag_xyz(
+        est_rows, ref_id=REFERENCE_TAG_ID_LIDAR_FRAME
+    )
+    if tag5_raw is None and geometry_fast:
+        hold_s = float(os.environ.get("GO2_SCENE3D_TAG5_STALE_HOLD_S", "12.0"))
+        cached = _SCENE3D_TAG5_LM_CACHE.get("xyz")
+        t0 = float(_SCENE3D_TAG5_LM_CACHE.get("mono") or 0.0)
+        if isinstance(cached, list) and len(cached) >= 3 and (time.monotonic() - t0) < hold_s:
+            tag5_raw = [float(cached[i]) for i in range(3)]
+    if tag5_raw is not None:
+        _SCENE3D_TAG5_LM_CACHE["xyz"] = [float(tag5_raw[i]) for i in range(3)]
+        _SCENE3D_TAG5_LM_CACHE["mono"] = time.monotonic()
+
+    tag5_xyz = _scene3d_tag5_xyz_display_smoothed(tag5_raw)
+
+    markers: dict[str, Any] = {
+        "tag5_estimated_m": None
+        if tag5_xyz is None
+        else [round(tag5_xyz[i], 5) for i in range(3)],
+        "arm_mount_m": None,
+        "front_camera_from_tag5_m": None,
+        "mjcf_depth_camera_m": [round(float(_depth_vis_arm[i]), 5) for i in range(3)],
+        "mjcf_wrist_camera_m": None,
+        "wrist_camera_display_m": None,
+        "object_nominal_along_mjcf_optical_arm_m": None,
+        "mjcf_depth_optical_axis_unit_arm_m": [round(float(_d_ax[i]), 5) for i in range(3)],
+        "note": "Mount/camera front da tag5+slider legacy; polso = FK.",
+    }
+    if tag5_xyz is not None:
+        markers["arm_mount_m"] = [
+            round(tag5_xyz[0] + vg["arm_vs_tag5_x"], 5),
+            round(tag5_xyz[1] + vg["arm_vs_tag5_y"], 5),
+            round(tag5_xyz[2] + vg["arm_vs_tag5_z"], 5),
+        ]
+        markers["front_camera_from_tag5_m"] = [
+            round(tag5_xyz[0] + vg["front_vs_tag5_x"], 5),
+            round(tag5_xyz[1] + vg["front_vs_tag5_y"], 5),
+            round(tag5_xyz[2] + vg["front_vs_tag5_z"], 5),
+        ]
+    markers["mjcf_wrist_camera_m"] = [
+        round(float(fk_wrist_camera_center_m(q_vis, None)[i]), 5) for i in range(3)
+    ]
+    markers["wrist_camera_display_m"] = [
+        round(float(fk_wrist_camera_center_m(q_vis, wrist_off)[i]), 5) for i in range(3)
+    ]
+    _nom_obj_ab = nominal_object_along_depth_optical_arm_m()
+    markers["object_nominal_along_mjcf_optical_arm_m"] = [
+        round(float(_nom_obj_ab[i]), 5) for i in range(3)
+    ]
+    payload["vis_geometry_markers_arm_m"] = markers
+
+    chain_mm: dict[str, Any] | None = None
+    if (
+        tag5_xyz is not None
+        and markers.get("arm_mount_m")
+        and markers.get("front_camera_from_tag5_m")
+        and markers.get("tag5_estimated_m")
+    ):
+        t5l = markers["tag5_estimated_m"]
+        aml = markers["arm_mount_m"]
+        fcl = markers["front_camera_from_tag5_m"]
+
+        def _dist3(a: list[float], b: list[float]) -> float:
+            return float(
+                math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+            )
+
+        av = (vg["arm_vs_tag5_x"], vg["arm_vs_tag5_y"], vg["arm_vs_tag5_z"])
+        fv = (vg["front_vs_tag5_x"], vg["front_vs_tag5_y"], vg["front_vs_tag5_z"])
+        chain_mm = {
+            "tag5_to_arm_mount_mm": round(_dist3(t5l, aml) * 1000.0, 1),
+            "tag5_to_front_camera_model_mm": round(_dist3(t5l, fcl) * 1000.0, 1),
+            "arm_mount_to_front_camera_model_mm": round(_dist3(aml, fcl) * 1000.0, 1),
+            "slider_arm_vs_norm_mm": round(
+                math.sqrt(av[0] ** 2 + av[1] ** 2 + av[2] ** 2) * 1000.0, 1
+            ),
+            "slider_front_vs_norm_mm": round(
+                math.sqrt(fv[0] ** 2 + fv[1] ** 2 + fv[2] ** 2) * 1000.0, 1
+            ),
+            "arm_base_origin_to_tag5_mm": round(_dist3([0.0, 0.0, 0.0], t5l) * 1000.0, 1),
+            "note_it": "+X avanti: metriche mount/tag/camera da slider legacy tag5.",
+        }
+        mjdf = markers.get("mjcf_depth_camera_m")
+        if isinstance(mjdf, list) and len(mjdf) >= 3:
+            chain_mm["mjcf_depth_to_tag5_mm"] = round(_dist3(mjdf, t5l) * 1000.0, 1)
+            chain_mm["mjcf_depth_to_slider_front_mm"] = round(_dist3(mjdf, fcl) * 1000.0, 1)
+    payload["vis_geometry_chain_mm"] = chain_mm
+    # Riepilogo calibrazione: stessi ``base_xyz_m`` del planner; offset file tag5 **solo** su id landmark (5).
+    ca_vis: dict[str, Any] = {
+        "planner_viewer_tag_positions_aligned": True,
+        "note_it": (
+            "Le posizioni tag in Three.js usano ``tags_for_viewer``: una riga per id — tag scatola 0–3 da "
+            "RealSense (6) se c'è, altrimenti polso (0); landmark id 5 dal polso. ``apriltag_tag_estimates_base_m`` "
+            "resta l'unione completa (debug). Offset file tag5 solo su id 5."
+        ),
+        "tag5_offset_file_present": TAG5_CALIB_PATH.is_file(),
+        "nominal_tag5_env_configured": _nominal_tag5_arm_base_from_env() is not None,
+        "tag5_calibration_enabled": os.environ.get("GO2_TAG5_CALIBRATION_ENABLE", "1"),
+        "tag5_visible_in_plan": tag5_xyz is not None,
+        "mjcf_depth_to_tag5_mm": None if chain_mm is None else chain_mm.get("mjcf_depth_to_tag5_mm"),
+        "mjcf_depth_to_slider_front_mm": None if chain_mm is None else chain_mm.get("mjcf_depth_to_slider_front_mm"),
+        "align_hint_it": (
+            "Se il tag5 è visibile nel piano: riduci «MJCF depth ↔ tag5» (mm) muovendo i cursori "
+            "«Camera frontale» / rotazioni frustum finché cono viola e sfera rossa sono coerenti con la telecamera reale."
+            if tag5_xyz is not None
+            else "Inquadra il landmark tag 5 (polso o RealSense) e aggiorna la vista 3D per vedere la metrica depth↔tag5."
+        ),
+        "three_js_autotune_it": (
+            "Il viewer aggiorna **sfera rossa tag5**, **cilindro XT-16** e **pinza FK (magenta)** da `scene_3d` dopo "
+            "calibrazione / plan: non sono slider manuali. Affina solo mount/corpo/cam con i preset geometria se la mesh "
+            "STL non coincide con i giunti (spesso placeholder Empty_Link)."
+        ),
+    }
+    payload["calibration_visual_alignment"] = ca_vis
+
+    _nom_dep = float(os.environ.get("GO2_OBJECT_NOMINAL_DEPTH_ALONG_OPTICAL_M", "0.20"))
+    _nom_vec = np.asarray(nominal_object_along_depth_optical_arm_m(_nom_dep), dtype=float)
+    _cam_vec = np.asarray(_depth_vis_arm, dtype=float)
+    _delta = _nom_vec - _cam_vec
+    payload["nominal_object_depth_along_optical_m"] = round(_nom_dep, 5)
+    payload["mjcf_depth_optical_selfcheck_mm"] = {
+        "chord_depth_to_nominal_mm": round(float(np.linalg.norm(_delta) * 1000.0), 3),
+        "projection_on_optical_axis_mm": round(float(np.dot(_delta, _d_ax) * 1000.0), 3),
+        "expected_projection_mm": round(_nom_dep * 1000.0, 3),
+    }
+
+    silhouette_anchor: list[float] | None = None
+    if tag5_xyz is not None:
+        silhouette_anchor = [round(tag5_xyz[i], 5) for i in range(3)]
+    else:
+        nom = _nominal_tag5_arm_base_from_env()
+        if nom is not None and len(nom) >= 3:
+            silhouette_anchor = [round(float(nom[i]), 5) for i in range(3)]
+    payload["go2_silhouette_anchor_arm_m"] = silhouette_anchor
+
+    tgt = sel.get("target") if isinstance(sel.get("target"), dict) else {}
+    raw_target: list[float] | None = None
+    if tgt.get("ok") and isinstance(tgt.get("base_xyz_m"), list) and len(tgt["base_xyz_m"]) >= 3:
+        b = tgt["base_xyz_m"]
+        raw_target = [round(float(b[i]), 5) for i in range(3)]
+        payload["object_target_base_xyz_m"] = raw_target
+    disp_t = _scene3d_target_ema_update(
+        raw_target,
+        float(vg["target_ema_alpha"]),
+        freeze_on_missing=geometry_fast,
+    )
+    if disp_t is not None:
+        payload["object_target_base_xyz_m_display"] = disp_t
+    preview = sel.get("preview") if isinstance(sel.get("preview"), dict) else {}
+    if preview.get("ok") and isinstance(preview.get("plan"), list):
+        traj_targets: list[list[float]] = []
+        traj_tips: list[list[float]] = []
+        ghost_chains: list[list[list[float]]] = []
+        stages: list[str | None] = []
+        for st in preview["plan"]:
+            if not isinstance(st, dict):
+                continue
+            stages.append(str(st.get("stage") or ""))
+            txyz = st.get("target_xyz_m")
+            if isinstance(txyz, list) and len(txyz) >= 3:
+                traj_targets.append([round(float(txyz[i]), 5) for i in range(3)])
+            ftip = st.get("fk_tip_xyz_m")
+            if isinstance(ftip, list) and len(ftip) >= 3:
+                traj_tips.append([round(float(ftip[i]), 5) for i in range(3)])
+            jr = st.get("joints_rad")
+            if isinstance(jr, list) and len(jr) >= 6:
+                try:
+                    q = [float(jr[i]) for i in range(6)]
+                    ghost_chains.append(fk_chain_positions(q))
+                except Exception:
+                    pass
+        payload["ik_trajectory"] = {
+            "targets_xyz_m": traj_targets,
+            "fk_tool_xyz_m": traj_tips,
+            "ghost_chains_m": ghost_chains,
+            "stages": stages,
+        }
+    sc = plan_blob.get("selected_camera")
+    if sc is not None:
+        payload["selected_camera"] = sc
+    tags_sel = ((sel or {}).get("tags") or {}).get("tags") or []
+    tid_seen = sorted({int(t.get("id", -1)) for t in tags_sel})
+    gp = (sel or {}).get("grip_point") if isinstance(sel, dict) else {}
+    if not isinstance(gp, dict):
+        gp = {}
+    payload["vision_snapshot"] = {
+        "planner_ok": bool(plan_blob.get("ok")) if not geometry_fast else False,
+        "logical_camera_used": sc,
+        "tag_ids_in_selected_frame": tid_seen,
+        "grip_point_ok": bool(gp.get("ok")),
+        "grip_source": gp.get("source"),
+        "target_ok": bool(tgt.get("ok")) if isinstance(tgt, dict) else False,
+        "preview_ik_ok": bool((sel.get("preview") or {}).get("ok")) if sel else False,
+        "geometry_fast_preview": bool(geometry_fast),
+        "hint": (
+            "Anteprima geometria senza /api/box/plan (slider)."
+            if geometry_fast
+            else "Aggiornato con /api/box/plan (CameraCache). Nessun file log locale sul PC: questo è il riassunto percepito."
+        ),
+    }
+    off_t5 = tag5_calibration_offset_arm_base_m()
+    tag5_lm: dict[str, Any] = {
+        "reference_tag_id": 5,
+        "mount": "Landmark AprilTag 5 sopra XT-16.",
+        "frames": "Frame base braccio = arm_link00; mount→base_link +(0.15,0,0.06)+slider.",
+        "nominal_arm_base_m": _nominal_tag5_arm_base_from_env(),
+        "offset_applied_m": off_t5,
+        "d1_mesh_online_refs": [
+            "https://support.unitree.com/home/en/developer/D1Arm_services",
+            "https://www.unitree.com/D1-T/",
+            "https://github.com/unitreerobotics/unitree_ros/issues/116",
+        ],
+    }
+    if TAG5_CALIB_PATH.is_file():
+        try:
+            tag5_lm["saved"] = json.loads(TAG5_CALIB_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            tag5_lm["saved_read_error"] = True
+    payload["tag5_xt16_landmark"] = tag5_lm
+
+    _eps_x = 1e-4
+    arm_link00_m = [0.0, 0.0, 0.0]
+    cro: dict[str, Any] = {
+        "frame_note_it": "+X avanti. Slider vista: corpo Go2, mount braccio, camera muso.",
+        "arm_link00_xyz_m": arm_link00_m,
+        "tag5_xyz_m": markers.get("tag5_estimated_m"),
+        "front_camera_slider_xyz_m": markers.get("front_camera_from_tag5_m"),
+        "object_target_xyz_m": raw_target,
+        "ok_arm_behind_xt16_front_ahead_object": None,
+    }
+    _t5m = markers.get("tag5_estimated_m")
+    _fcm = markers.get("front_camera_from_tag5_m")
+    if _t5m is not None and _fcm is not None and raw_target is not None and len(raw_target) >= 3:
+        x0 = float(arm_link00_m[0])
+        x5 = float(_t5m[0])
+        xf = float(_fcm[0])
+        xo = float(raw_target[0])
+        cro["ok_arm_behind_xt16_front_ahead_object"] = bool(
+            x0 <= x5 + _eps_x and x5 <= xf + _eps_x and xf <= xo + _eps_x
+        )
+        cro["delta_x_tag5_minus_arm_m"] = round(x5 - x0, 5)
+        cro["delta_x_front_minus_tag5_m"] = round(xf - x5, 5)
+        cro["delta_x_object_minus_front_m"] = round(xo - xf, 5)
+    payload["chain_order_plus_x"] = cro
+
+    # Rilettura servo subito prima della FK viewer: ``api_box_plan()`` può richiedere secondi; senza
+    # questo ``q_vis`` restava la snapshot di inizio richiesta. Un poll ``scene_3d`` full che completa
+    # dopo un ``?fast=1`` sovrascriveva Three.js con giunti più vecchi del braccio reale.
+    _curv = _read_d1_servo_angles()
+    if _curv is not None and len(_curv) >= 6:
+        q_fb = [math.radians(float(_curv[i])) for i in range(6)]
+        q_vis = [float(x) for x in q_fb]
+        payload["servo_feedback_ok"] = True
+        payload["joints_deg"] = [round(float(_curv[i]), 3) for i in range(min(7, len(_curv)))]
+        payload["chain_xyz_m"] = fk_chain_positions(q_fb)
+        _tipv = fk_tool_tip(q_fb)
+        payload["tool_tip_xyz_m"] = [round(float(_tipv[i]), 5) for i in range(3)]
+    else:
+        q_fb = None
+        q_vis = [float(x) for x in ARM_FOLD_POSE]
+        payload["servo_feedback_ok"] = False
+        payload.pop("joints_deg", None)
+        payload.pop("chain_xyz_m", None)
+        payload.pop("tool_tip_xyz_m", None)
+    _wc_live = fk_wrist_camera_center_m(q_vis, wrist_off)
+    _wv_live = fk_wrist_camera_view_axis_unit_m(q_vis, wrist_off)
+    _wc_mj = fk_wrist_camera_center_m(q_vis, None)
+    _wv_mj = fk_wrist_camera_view_axis_unit_m(q_vis, None)
+    mcs = payload.get("mujoco_camera_sites_arm_m")
+    if isinstance(mcs, dict):
+        mcs["logical_0_wrist"] = {
+            "label": "wrist_camera (FK + offset slider locale; q_vis = feedback o fold)",
+            "pos_arm_base_m": [round(float(_wc_live[i]), 5) for i in range(3)],
+            "view_axis_unit_m": [round(float(_wv_live[i]), 5) for i in range(3)],
+            "mjcf_pos_arm_base_m": [round(float(_wc_mj[i]), 5) for i in range(3)],
+            "mjcf_view_axis_unit_m": [round(float(_wv_mj[i]), 5) for i in range(3)],
+        }
+    markers["mjcf_wrist_camera_m"] = [
+        round(float(fk_wrist_camera_center_m(q_vis, None)[i]), 5) for i in range(3)
+    ]
+    markers["wrist_camera_display_m"] = [
+        round(float(fk_wrist_camera_center_m(q_vis, wrist_off)[i]), 5) for i in range(3)
+    ]
+
+    # --- Viewer 3D: base_link + mesh (mount e camera muso regolabili da slider viz_*) ---
+    _mount_bl = _mount_bl_list
+    tip_v = fk_tool_tip(q_vis)
+    _ch_bl = fk_chain_positions(q_vis)
+    _jmark_bias = (
+        float(vg["viz_joint_markers_dx_m"]),
+        float(vg["viz_joint_markers_dy_m"]),
+        float(vg["viz_joint_markers_dz_m"]),
+    )
+    payload["scene_graph"] = {
+        "frame": "base_link",
+        "arm_mount_xyz_m": [round(float(x), 5) for x in _mount_bl],
+        "arm_base_to_base_link_offset_m": [round(float(x), 5) for x in _mount_bl],
+        "d1_joint_locals_m": fk_d1_joint_locals_m(q_vis),
+        "d1_joint_centers_base_link_m": [
+            _ab_to_bl(
+                [
+                    round(float(_ch_bl[i][j]) + _jmark_bias[j], 5)
+                    for j in range(3)
+                ]
+            )
+            for i in range(1, 7)
+        ],
+        "d1_mesh_visual_offsets_m": _d1_urdf_visual_offsets_list(),
+        "tool_tip_xyz_m": [round(float(tip_v[i]), 5) for i in range(3)],
+        "pose_is_feedback": bool(q_fb is not None),
+        "go2_body_offset_base_link_m": [
+            round(float(vg["viz_go2_tx_m"]), 5),
+            round(float(vg["viz_go2_ty_m"]), 5),
+            round(float(vg["viz_go2_tz_m"]), 5),
+        ],
+    }
+    def _rows_to_tags_view(rows_src: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        tv: list[dict[str, Any]] = []
+        for row in rows_src:
+            if not isinstance(row, dict):
+                continue
+            try:
+                tid = int(row.get("id", -1))
+            except (TypeError, ValueError):
+                continue
+            bx = row.get("base_xyz_m")
+            cx = row.get("camera_xyz_m")
+            tv.append(
+                {
+                    "id": tid,
+                    "base_xyz_m": bx if isinstance(bx, list) and len(bx) >= 3 else None,
+                    "base_xyz_base_link_m": _ab_to_bl(bx) if isinstance(bx, list) and len(bx) >= 3 else None,
+                    "camera_xyz_m": cx if isinstance(cx, list) and len(cx) >= 3 else None,
+                    "logical_camera_device": row.get("logical_camera_device"),
+                }
+            )
+        return tv
+
+    est_full: list[dict[str, Any]] = list(payload.get("apriltag_tag_estimates_base_m") or [])
+    rows_viewer = _dedupe_apriltag_rows_for_viewer(
+        est_full,
+        reference_tag_id=REFERENCE_TAG_ID_LIDAR_FRAME,
+    )
+    tags_frustum = _rows_to_tags_view(est_full)
+    tags_view = _rows_to_tags_view(rows_viewer)
+    payload["tags_for_viewer"] = tags_view
+
+    vc_bl: dict[str, Any] = {
+        "depth_front_arm_base_m": [round(float(_depth_vis_arm[i]), 5) for i in range(3)],
+        "depth_front_base_link_m": _ab_to_bl(_depth_vis_arm.tolist()),
+    }
+    wc_vis = fk_wrist_camera_center_m(q_vis, wrist_off)
+    vc_bl["wrist_arm_base_m"] = [round(float(wc_vis[i]), 5) for i in range(3)]
+    vc_bl["wrist_base_link_m"] = _ab_to_bl(wc_vis)
+    payload["viewer_cameras_base_link_m"] = vc_bl
+
+    _wv_axis_vis = fk_wrist_camera_view_axis_unit_m(q_vis, wrist_off)
+
+    def _frustum_axis_correct_arm_base(ax: np.ndarray, rx_d: float, ry_d: float, rz_d: float) -> np.ndarray:
+        """R = Rz·Ry·Rx (gradi), applicato al versore nel frame arm_link00 (parallelo a base_link)."""
+        rx, ry, rz = math.radians(float(rx_d)), math.radians(float(ry_d)), math.radians(float(rz_d))
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=float)
+        Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=float)
+        Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        R = Rz @ Ry @ Rx
+        out = R @ np.asarray(ax, dtype=float).reshape(3)
+        n = float(np.linalg.norm(out))
+        if n < 1e-12:
+            return np.asarray(ax, dtype=float).reshape(3)
+        return (out / n).astype(float)
+
+    _d_ax_corr = _frustum_axis_correct_arm_base(
+        _d_ax,
+        vg["frustum_depth_rx_deg"],
+        vg["frustum_depth_ry_deg"],
+        vg["frustum_depth_rz_deg"],
+    )
+    _wv_axis_corr = _frustum_axis_correct_arm_base(
+        _wv_axis_vis,
+        vg["frustum_wrist_rx_deg"],
+        vg["frustum_wrist_ry_deg"],
+        vg["frustum_wrist_rz_deg"],
+    )
+    _fr_near = 0.02
+    _depth_far_m = float(vg["frustum_depth_far_m"])
+    _wrist_far_m = float(vg["frustum_wrist_far_m"])
+
+    def _tags_bl_rows(dev: int) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for r in tags_frustum:
+            if not isinstance(r, dict):
+                continue
+            try:
+                if int(r.get("logical_camera_device", 10**9)) != int(dev):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            bx = r.get("base_xyz_base_link_m")
+            if isinstance(bx, list) and len(bx) >= 3:
+                rows.append(r)
+        return rows
+
+    def _look_at_bl_from_tags(rows: list[dict[str, Any]], id_order: tuple[int, ...]) -> list[float] | None:
+        for tid in id_order:
+            for r in rows:
+                try:
+                    if int(r.get("id", -1)) != int(tid):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                b = r.get("base_xyz_base_link_m")
+                if not isinstance(b, list) or len(b) < 3:
+                    continue
+                return [float(b[i]) for i in range(3)]
+        return None
+
+    def _unit_toward(from_bl: list[float], to_bl: list[float]) -> np.ndarray | None:
+        v = np.asarray(to_bl, dtype=float).reshape(3) - np.asarray(from_bl, dtype=float).reshape(3)
+        n = float(np.linalg.norm(v))
+        if n < 1e-5:
+            return None
+        return (v / n).astype(float)
+
+    _d_center_bl = _ab_to_bl(_depth_vis_arm.tolist())
+    rows6 = _tags_bl_rows(6)
+    look_d = _look_at_bl_from_tags(rows6, (0, 1, 2, 3, REFERENCE_TAG_ID_LIDAR_FRAME))
+    if look_d is None:
+        look_d = _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)])
+    _d_axis_geo = _unit_toward(_d_center_bl, look_d)
+    if _d_axis_geo is not None:
+        _d_ax_final = _frustum_axis_correct_arm_base(
+            _d_axis_geo,
+            vg["frustum_depth_rx_deg"],
+            vg["frustum_depth_ry_deg"],
+            vg["frustum_depth_rz_deg"],
+        )
+    else:
+        _d_ax_final = _d_ax_corr
+
+    _w_center_bl = _ab_to_bl(wc_vis.tolist())
+    rows0 = _tags_bl_rows(0)
+    look_w = _look_at_bl_from_tags(rows0, (0, 1, 2, 3))
+    if look_w is None:
+        look_w = _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)])
+    _w_axis_geo = _unit_toward(_w_center_bl, look_w)
+    if _w_axis_geo is not None:
+        _w_ax_final = _frustum_axis_correct_arm_base(
+            _w_axis_geo,
+            vg["frustum_wrist_rx_deg"],
+            vg["frustum_wrist_ry_deg"],
+            vg["frustum_wrist_rz_deg"],
+        )
+    else:
+        _w_ax_final = _wv_axis_corr
+
+    payload["scene_camera_frusta_base_link"] = {
+        "depth_mjcf": {
+            "label": "depth_camera (MJCF go2_d1_d1mesh.xml)",
+            "center_m": _ab_to_bl(_depth_vis_arm.tolist()),
+            "axis_unit_m": [round(float(_d_ax_final[i]), 5) for i in range(3)],
+            "fovy_deg": 62.0,
+            "aspect": 4.0 / 3.0,
+            "near_m": round(_fr_near, 4),
+            "far_m": round(_depth_far_m, 4),
+            "axis_correction_deg_arm_base": {
+                "rx": round(float(vg["frustum_depth_rx_deg"]), 2),
+                "ry": round(float(vg["frustum_depth_ry_deg"]), 2),
+                "rz": round(float(vg["frustum_depth_rz_deg"]), 2),
+            },
+        },
+        "wrist": {
+            "label": "wrist_camera (FK + offset slider; asse come arm_kinematics)",
+            "center_m": _ab_to_bl(wc_vis),
+            "axis_unit_m": [round(float(_w_ax_final[i]), 5) for i in range(3)],
+            "fovy_deg": 70.0,
+            "aspect": 4.0 / 3.0,
+            "near_m": round(_fr_near, 4),
+            "far_m": round(_wrist_far_m, 4),
+            "axis_correction_deg_arm_base": {
+                "rx": round(float(vg["frustum_wrist_rx_deg"]), 2),
+                "ry": round(float(vg["frustum_wrist_ry_deg"]), 2),
+                "rz": round(float(vg["frustum_wrist_rz_deg"]), 2),
+            },
+        },
+    }
+
+    lm: dict[str, Any] = {
+        "depth_camera_mjcf_m": _ab_to_bl(_depth_vis_arm.tolist()),
+        "wrist_camera_mjcf_m": _ab_to_bl(wc_vis),
+        "xt16_tag_m": None,
+        "front_camera_slider_m": None,
+        "object_nominal_20cm_base_link_m": _ab_to_bl(_nom_obj_ab.tolist()),
+        # Punto presa (frame arm_base) convertito per il viewer Three.js (sfere in base_link).
+        "object_grasp_target_display_base_link_m": None
+        if disp_t is None
+        else _ab_to_bl([float(disp_t[i]) for i in range(3)]),
+    }
+    for row in tags_view:
+        if int(row.get("id", -1)) != 5:
+            continue
+        bx = row.get("base_xyz_base_link_m")
+        if isinstance(bx, list) and len(bx) >= 3:
+            lm["xt16_tag_m"] = [round(float(bx[i]), 5) for i in range(3)]
+            lm["xt16_tag_source"] = "vision"
+            break
+    if lm["xt16_tag_m"] is None:
+        nom5 = _nominal_tag5_arm_base_from_env()
+        if nom5 is not None and len(nom5) >= 3:
+            lm["xt16_tag_m"] = _ab_to_bl(nom5)
+            lm["xt16_tag_source"] = "env"
+        else:
+            depth_m = float(os.environ.get("GO2_TAG5_FALLBACK_DEPTH_ALONG_OPTICAL_M", "0.42"))
+            pt = np.asarray(_depth_vis_arm, dtype=float) + depth_m * np.asarray(_d_ax_corr, dtype=float)
+            lm["xt16_tag_m"] = _ab_to_bl([round(float(pt[i]), 5) for i in range(3)])
+            lm["xt16_tag_source"] = "depth_cone_ray"
+    fcs = markers.get("front_camera_from_tag5_m")
+    if isinstance(fcs, list) and len(fcs) >= 3:
+        lm["front_camera_slider_m"] = _ab_to_bl(fcs)
+    tip_arm = fk_tool_tip(q_vis)
+    lm["tool_tip_base_link_m"] = _ab_to_bl([round(float(tip_arm[i]), 5) for i in range(3)])
+    _tag_half = float(REFERENCE_TAG_SIZE_M) * 0.5
+    _cyl_h = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_HEIGHT_M", "0.06"))
+    _cyl_r = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_RADIUS_M", "0.045"))
+    xtlm = lm.get("xt16_tag_m")
+    if isinstance(xtlm, list) and len(xtlm) >= 3:
+        tx, ty, tz = float(xtlm[0]), float(xtlm[1]), float(xtlm[2])
+        cz = tz - _tag_half - _cyl_h / 2.0
+        lm["xt16_lidar_cylinder_base_link_m"] = {
+            "center_m": [round(tx, 5), round(ty, 5), round(cz, 5)],
+            "radius_m": round(_cyl_r, 6),
+            "height_m": round(_cyl_h, 6),
+            "axis_unit_m": [0.0, 0.0, 1.0],
+            "tag_plane_half_m": round(_tag_half, 5),
+            "note_it": "Simbolo XT-16: cilindro Ø9 cm × h 6 cm, AprilTag 5 sul piano superiore (assi base_link, Z su).",
+        }
+    payload["viewer_landmarks_base_link_m"] = lm
+
+    _d1m = _d1_stl_disk_summary()
+    payload["d1_mesh_assets"] = _d1m
+    payload["viewer_3d_warnings"] = []
+    if _d1m.get("looks_like_placeholder"):
+        payload["viewer_3d_warnings"].append(
+            "Mesh D1: i file STL sul server sembrano placeholder (Empty_Link tipici a ~0.5–1 KiB, pochi triangoli = un box). "
+            "Non è un errore di Three.js: sostituisci i file in "
+            "unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes/ con il set del SDK Unitree o "
+            "da un clone tipo github.com/JeewanthaSadaruwan/unitree-D1-550-Robot-ARM "
+            "poi esegui: python scripts/sync_d1_meshes_from_package.py <.../d1_550_description/meshes> ."
+        )
+
+    payload["scene_mesh"] = {
+        "manifest": _scene_mesh_manifest(),
+        "api_pattern": "/api/arm/scene_meshes/<go2|d1>/<filename>",
+    }
+    payload["viewer_geometry_notes_it"] = (
+        "Camera frontale depth MJCF: sfera viola; slider Δ fino a ±400 mm. "
+        "Camera polso: MJCF 0.02,0,0.05 m su arm_link06 + slider «Polso locale» (default ≈ pinza +30 mm in Z link). "
+        "Pinza (tool tip): sfera magenta da FK. "
+        "XT-16: cilindro grigio sotto la sfera rossa tag 5 (h 6 cm, Ø 9 cm). "
+        "Tag 5: da visione / offset file / nominale env; se no, fallback lungo cono depth."
+    )
+
+    return payload
+
+
+def _calibration_flow_payload() -> dict[str, Any]:
+    """Contenuto UI per la calibrazione landmark tag5 + coerenza viewer/planner."""
+    path = TAG5_CALIB_PATH
+    saved_summary: dict[str, Any] | None = None
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            saved_summary = {
+                "updated_at": raw.get("updated_at"),
+                "logical_camera_device": raw.get("logical_camera_device"),
+                "offset_arm_base_m": raw.get("offset_arm_base_m"),
+            }
+        except (OSError, json.JSONDecodeError):
+            saved_summary = {"read_error": True}
+    nominal = _nominal_tag5_arm_base_from_env()
+    return {
+        "ok": True,
+        "markers_explained_it": {
+            "tag5_xt16": (
+                "AprilTag **25h9 ID 5** fisso sul robot (vicino XT-16): **un solo** landmark sul corpo basta per "
+                "**correggere** la mappa tvec camera → frame base braccio (`data/tag5_calibration_arm_base.json`). "
+                "Non servono altri ArUco/AprilTag **sul cane** né che **entrambe** le telecamere lo vedano: per il POST "
+                "«Salva offset» basta **una** camera nitida (di solito **polso / video0**)."
+            ),
+            "arm_link00_nominal_it": (
+                "**arm_link00** è il frame **base braccio** (origine al primo giunto D1), non il muso del Go2: assi in metri, "
+                "**+X** verso la testa del cane. Il **nominale** del centro tag 5 è la tua stima di dove cade quel punto nel "
+                "mondo reale in quel frame (CAD, metro, oppure confronto con la **scena 3D** dopo aver messo braccio/cilindro "
+                "XT-16 come li vedi dal vivo, poi «Salva offset» corregge l’errore della euristica tvec)."
+            ),
+            "dual_probe_optional": (
+                "**GET …/tag5_calibration?dual_probe=1** è **solo diagnostica**: se nello stesso istante **video0** e "
+                "**video6** inquadrano **lo stesso** ID 5, confronta due stime euristiche in base (mm di disaccordo). "
+                "**Non** scrive file, **non** calibra extrinseci separati per camera e **non** sostituisce il POST da "
+                "**una** camera di riferimento (tipicamente polso)."
+            ),
+            "box_tags_0_3": (
+                "Tag **0–3** sulla **scatola**: servono a dove prendere l’oggetto; non sostituiscono il landmark sul robot."
+            ),
+            "cross_camera_geometry_it": (
+                "Per offset **diversi** su **polso (0)** e **RealSense (6)** quando **entrambe** vedono lo **stesso** "
+                "AprilTag (anche su scatola / oggetto): **POST /api/arm/tag_calibration_shared_dual** con `tag_id`, "
+                "`nominal_arm_base_m`, opz. `tag_edge_length_m`. Scrive `offset_by_logical_camera_device_m` nello stesso "
+                "JSON della calibrazione tag5. La profondità RealSense «tag→suolo» non è ancora integrata nel server."
+            ),
+        },
+        "dynamic": {
+            "nominal_tag5_arm_base_m": nominal,
+            "nominal_configured": nominal is not None,
+            "tag5_offset_file_present": path.is_file(),
+            "saved_calibration_summary": saved_summary,
+            "tag5_calibration_enable_env": os.environ.get("GO2_TAG5_CALIBRATION_ENABLE", "1"),
+        },
+        "steps_it": [
+            {
+                "n": 1,
+                "title": "Nominale centro tag 5 in arm_link00 (base braccio)",
+                "body": (
+                    "Coordinate **in metri** nell’origine **arm_link00** (primo giunto), **+X** avanti sul cane: è **diverso** "
+                    "dal solo allineamento mesh Three.js. Il nominale descrive dove sta il **centro fisico** del tag 5 "
+                    "rispetto al braccio (misura/CAD, o confronto visivo con la scena 3D + cilindro XT-16). "
+                    "Dopo aver impostato un nominale plausibile, «Salva offset» misura l’errore della euristica tvec→base "
+                    "e lo corregge per planner e viewer."
+                ),
+            },
+            {
+                "n": 2,
+                "title": "Inquadra il tag 5 (di solito solo il polso)",
+                "body": (
+                    "Serve **un** frame nitido con ID **5** rilevato. Sul Go2+D1 spesso **solo la camera polso (0)** "
+                    "vede il landmark sul corpo; la RealSense (6) può **non** inquadrarlo: va bene lo stesso. "
+                    "Nel POST senza `camera_device`, il server prova **0 poi 6**; conviene scegliere **0** esplicitamente. "
+                    "**dual_probe** ha senso **solo** se in quell’istante **entrambe** le camere vedono **lo stesso** tag 5 "
+                    "(raro); altrimenti ignorarlo. **Non** calibra la geometria relativa tra le due telecamere."
+                ),
+            },
+            {
+                "n": 3,
+                "title": "Salva offset tag 5 (XT-16) su disco",
+                "body": (
+                    "Scrive `offset_arm_base_m = nominale − euristica(tvec)` in `data/tag5_calibration_arm_base.json` "
+                    "(tipicamente da **camera 0**). Vale come **fallback** per ogni camera se non esiste una voce "
+                    "specifica in `offset_by_logical_camera_device_m`. **Planner** e **Three.js** usano "
+                    "`camera_tvec_to_base_xyz` con priorità offset **per-device** quando presente."
+                ),
+            },
+            {
+                "n": 4,
+                "title": "Allineamento visivo telecamere nel viewer",
+                "body": (
+                    "Regola slider **Camera frontale**, **Corpo Go2**, rotazioni **frustum** nel pannello geometria: "
+                    "obiettivo è che **cono viola** + **sfera viola** corrispondano alla RealSense reale, mentre la "
+                    "**sfera rossa** (tag5 stimato) resti geometricamente plausibile. "
+                    "Usa `mjcf_depth_to_tag5_mm` in `scene_3d` → `vis_geometry_chain_mm` come metrica. "
+                    "**Geometria tra polso e muso:** dopo il passo 6 (offset per-device) gli slider servono soprattutto "
+                    "per il **modello MJCF** nel viewer; il planner userà gli offset salvati per 0 e 6."
+                ),
+            },
+            {
+                "n": 5,
+                "title": "Tag 0–3 sulla scatola (dimensione e IK)",
+                "body": (
+                    "Verifica **BOX_TAG_SIZE_M** (default 19 mm) = lato stampato del tag sulla scatola. "
+                    "Il target presa in base braccio usa la **stessa** mappa `camera_tvec_to_base_xyz` usata per il tag 5; "
+                    "calibrazione + viewer devono essere plausibili prima che l’IK «prenda bene» la scatola."
+                ),
+            },
+            {
+                "n": 6,
+                "title": "Stesso AprilTag visibile da polso e RealSense (offset per camera)",
+                "body": (
+                    "Quando **video0** e **video6** inquadrano **lo stesso** tag (anche su oggetto / scatola, non serve a terra): "
+                    "**POST /api/arm/tag_calibration_shared_dual** con `tag_id`, `nominal_arm_base_m` (centro tag in arm_link00, m) "
+                    "e opz. `tag_edge_length_m` se l’ID non è tra 0–3 o 5. "
+                    "Scrive `offset_by_logical_camera_device_m` nel JSON accanto a `offset_arm_base_m` del tag 5. "
+                    "La distanza tag→suolo con **depth** RealSense non è ancora calcolata nel server (solo nota in risposta)."
+                ),
+            },
+        ],
+        "env_hints": {
+            "GO2_TAG5_NOMINAL_ARM_BASE_M": "es. 0.42,0.0,0.14",
+            "GO2_TAG5_CALIBRATION_ENABLE": "1 (default) oppure 0 per disattivare il file offset",
+            "dual_probe": "GET /api/arm/tag5_calibration?dual_probe=1",
+            "shared_dual_tag": "POST /api/arm/tag_calibration_shared_dual",
+        },
+    }
+
+
+@APP.route("/api/arm/calibration_flow", methods=["GET"])
+def api_arm_calibration_flow() -> Any:
+    return jsonify(_calibration_flow_payload())
+
+
+@APP.route("/api/arm/scene_3d", methods=["GET"])
+def api_arm_scene_3d() -> Any:
+    try:
+        fast = request.args.get("fast", "").strip().lower() in ("1", "true", "yes")
+        resp = jsonify(_arm_scene_3d_payload(geometry_fast=fast))
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
+    except Exception as exc:
+        return jsonify({"ok": False, "error": repr(exc)}), 500
+
+
+def _tag5_dual_camera_probe_payload() -> dict[str, Any]:
+    """Solo se **entrambe** le camere rilevano l'AprilTag 5 nello stesso giro: confronto euristiche base braccio.
+
+    Non calibra extrinseci 0↔6; spesso sul corpo il tag 5 è visibile solo dal polso — allora questo endpoint
+    restituisce disaccordo alto o metà campi nulli: comportamento atteso, ignorare o non chiamare dual_probe.
+    """
+    import numpy as np
+
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from box_grasp_planner import (
+        REFERENCE_TAG_ID_LIDAR_FRAME,
+        _camera_tvec_to_base_heuristic_xyz,
+        camera_tvec_to_base_xyz,
+        plan_from_frame,
+    )
+
+    devices: dict[str, Any] = {}
+    heur_pairs: list[tuple[int, list[float]]] = []
+    cal_pairs: list[tuple[int, list[float]]] = []
+
+    for dev in (0, 6):
+        key = f"V4L2_{dev}"
+        frame = frame_from_camera(dev)
+        if frame is None:
+            devices[key] = {"logical_device": dev, "frame_ok": False, "error": "no_frame"}
+            continue
+        pl = plan_from_frame(frame, object_detection=None, logical_camera_device=dev)
+        poses_wrap = pl.get("poses") or {}
+        pose_list = poses_wrap.get("poses") if isinstance(poses_wrap, dict) else poses_wrap
+        if not isinstance(pose_list, list):
+            pose_list = []
+        cam_xyz: list[float] | None = None
+        for p in pose_list:
+            try:
+                if int(p.get("id", -1)) != REFERENCE_TAG_ID_LIDAR_FRAME:
+                    continue
+                c = p.get("camera_xyz_m")
+                if isinstance(c, list) and len(c) >= 3:
+                    cam_xyz = [float(c[0]), float(c[1]), float(c[2])]
+                break
+            except (TypeError, ValueError):
+                continue
+        if cam_xyz is None:
+            devices[key] = {"logical_device": dev, "frame_ok": True, "tag5_seen": False}
+            continue
+        h = _camera_tvec_to_base_heuristic_xyz(cam_xyz)
+        b = camera_tvec_to_base_xyz(cam_xyz, logical_camera_device=dev)
+        devices[key] = {
+            "logical_device": dev,
+            "frame_ok": True,
+            "tag5_seen": True,
+            "tag5_camera_xyz_m": [round(x, 5) for x in cam_xyz],
+            "heuristic_arm_base_m": [round(float(x), 5) for x in h],
+            "calibrated_arm_base_m": [round(float(x), 5) for x in b],
+        }
+        heur_pairs.append((dev, h))
+        cal_pairs.append((dev, b))
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "reference_tag_id": REFERENCE_TAG_ID_LIDAR_FRAME,
+        "devices": devices,
+    }
+
+    def _dist_mm(pairs: list[tuple[int, list[float]]]) -> float | None:
+        if len(pairs) < 2:
+            return None
+        a = np.asarray(pairs[0][1], dtype=float)
+        b = np.asarray(pairs[1][1], dtype=float)
+        return round(float(np.linalg.norm(a - b) * 1000.0), 2)
+
+    hm = _dist_mm(heur_pairs)
+    cm = _dist_mm(cal_pairs)
+    if hm is not None:
+        out["heuristic_disagreement_mm"] = hm
+    if cm is not None:
+        out["calibrated_disagreement_mm"] = cm
+    out["interpretation_it"] = (
+        "La funzione `_camera_tvec_to_base_heuristic_xyz` è **unica** per tutte le camere: non modella "
+        "intrinseci/extrinseci separati per device. Due viste dello stesso tag 5 producono quasi sempre "
+        "stime base diverse finché non combini: (1) POST offset da **una** camera di riferimento (di solito polso), "
+        "(2) slider viewer RealSense + `vis_geometry_chain_mm` in `/api/arm/scene_3d`."
+    )
+    return out
+
+
+@APP.route("/api/arm/tag5_calibration", methods=["GET", "POST", "DELETE"])
+def api_arm_tag5_calibration() -> Any:
+    """
+    Calibrazione offset tvec→base usando AprilTag 5 (fisso su XT-16).
+    POST: legge frame, trova tag 5, calcola offset = nominal - euristica (senza offset precedente).
+    Richiede ``GO2_TAG5_NOMINAL_ARM_BASE_M`` o JSON ``nominal_tag5_arm_base_m``.
+
+    GET ``?dual_probe=1``: confronta tag 5 su ``/dev/video0`` e ``/dev/video6`` (nessuna scrittura su disco).
+    """
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from box_grasp_planner import REFERENCE_TAG_ID_LIDAR_FRAME, make_tag5_calibration_record, plan_from_frame
+
+    path = TAG5_CALIB_PATH
+    if request.method == "GET":
+        if request.args.get("dual_probe", "").lower() in ("1", "true", "yes", "on"):
+            try:
+                return jsonify(_tag5_dual_camera_probe_payload())
+            except Exception as exc:
+                return jsonify({"ok": False, "error": repr(exc)}), 500
+        out: dict[str, Any] = {
+            "ok": True,
+            "path": str(path),
+            "nominal_env_m": _nominal_tag5_arm_base_from_env(),
+            "enable_env": os.environ.get("GO2_TAG5_CALIBRATION_ENABLE", "1"),
+        }
+        if path.is_file():
+            try:
+                out["saved"] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                out["read_error"] = repr(exc)
+        out["guide_url"] = "/api/arm/calibration_flow"
+        return jsonify(out)
+
+    if request.method == "DELETE":
+        try:
+            if path.is_file():
+                path.unlink()
+            return jsonify({"ok": True, "cleared": True})
+        except OSError as exc:
+            return jsonify({"ok": False, "error": repr(exc)}), 500
+
+    body = request.get_json(silent=True) or {}
+    nominal: list[float] | None = None
+    n_body = body.get("nominal_tag5_arm_base_m")
+    if isinstance(n_body, list) and len(n_body) >= 3:
+        try:
+            nominal = [float(n_body[0]), float(n_body[1]), float(n_body[2])]
+        except (TypeError, ValueError):
+            nominal = None
+    if nominal is None:
+        nominal = _nominal_tag5_arm_base_from_env()
+    if not nominal or len(nominal) < 3:
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Imposta il centro tag 5 nel frame base braccio (m): env "
+                    "GO2_TAG5_NOMINAL_ARM_BASE_M=x,y,z oppure POST JSON nominal_tag5_arm_base_m."
+                ),
+            }
+        ), 400
+
+    prefer_dev = body.get("camera_device")
+    dev_order: list[int] = []
+    if prefer_dev is not None:
+        try:
+            dev_order.append(int(prefer_dev))
+        except (TypeError, ValueError):
+            pass
+    for d in (0, 6):
+        if d not in dev_order:
+            dev_order.append(d)
+
+    found: tuple[int, list[float]] | None = None
+    for dev in dev_order:
+        frame = frame_from_camera(dev)
+        if frame is None:
+            continue
+        pl = plan_from_frame(frame, object_detection=None, logical_camera_device=dev)
+        poses_blob = pl.get("poses") or {}
+        for p in poses_blob.get("poses") or []:
+            if int(p.get("id", -1)) == REFERENCE_TAG_ID_LIDAR_FRAME:
+                cam = p.get("camera_xyz_m")
+                if isinstance(cam, list) and len(cam) >= 3:
+                    found = (dev, [float(cam[0]), float(cam[1]), float(cam[2])])
+                    break
+        if found:
+            break
+
+    if not found:
+        return jsonify(
+            {"ok": False, "error": "AprilTag 5 non rilevato (provati dispositivi V4L2 0 e 6)."}
+        ), 400
+
+    dev, cam_xyz = found
+    rec = make_tag5_calibration_record(nominal, cam_xyz, logical_camera_device=dev)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(old.get("offset_by_logical_camera_device_m"), dict):
+                rec["offset_by_logical_camera_device_m"] = old["offset_by_logical_camera_device_m"]
+            if isinstance(old.get("dual_shared_tag_calib"), dict):
+                rec["dual_shared_tag_calib"] = old["dual_shared_tag_calib"]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    path.write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    return jsonify(
+        {
+            "ok": True,
+            "saved": rec,
+            "camera_logical_device_used": dev,
+            "next_steps_it": [
+                "Aggiorna la vista 3D: la sfera rossa (tag5) e i tag scatola usano lo stesso offset del planner.",
+                "Allinea cono/sfera viola RealSense con i cursori «Camera frontale» / frustum (vedi calibration_visual_alignment in scene_3d).",
+            ],
+        }
+    )
+
+
+def _v4l_for_log(logical: int) -> int:
+    try:
+        return int(_v4l_index_for_logical_camera(int(logical)))
+    except Exception:
+        return int(logical)
+
+
+@APP.route("/api/arm/tag_calibration_shared_dual", methods=["GET", "POST"])
+def api_arm_tag_calibration_shared_dual() -> Any:
+    """
+    Offset ``tvec→base`` **separati** per ``logical_camera_device`` 0 e 6 usando lo **stesso**
+    AprilTag (es. su scatola) visibile da **entrambe** le camere nello stesso momento.
+
+    Non integra ancora la profondità RealSense verso «terra»: solo solvePnP + euristica + offset.
+    """
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from box_grasp_planner import TRACKED_TAG_IDS, _camera_tvec_to_base_heuristic_xyz, tvec_camera_m_for_tag_id
+
+    path = TAG5_CALIB_PATH
+
+    if request.method == "GET":
+        out: dict[str, Any] = {"ok": True, "path": str(path)}
+        if path.is_file():
+            try:
+                d = json.loads(path.read_text(encoding="utf-8"))
+                out["saved"] = d
+                ob = d.get("offset_by_logical_camera_device_m")
+                out["has_per_device_offsets"] = isinstance(ob, dict) and len(ob) > 0
+            except (OSError, json.JSONDecodeError) as exc:
+                out["read_error"] = repr(exc)
+        out["hint_it"] = (
+            "POST con tag_id, nominal_arm_base_m [x,y,z] in arm_link00, opz. tag_edge_length_m se l'ID non è 0–3 o 5. "
+            "Richiede frame da video0 e video6 con **lo stesso** tag rilevato."
+        )
+        return jsonify(out)
+
+    body = request.get_json(silent=True) or {}
+    try:
+        tag_id = int(body.get("tag_id", -1))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "tag_id intero richiesto"}), 400
+    if tag_id < 0 or tag_id > 491:
+        return jsonify({"ok": False, "error": "tag_id fuori range"}), 400
+
+    n_body = body.get("nominal_arm_base_m")
+    if not isinstance(n_body, list) or len(n_body) < 3:
+        return jsonify({"ok": False, "error": "nominal_arm_base_m: lista di 3 numeri (m) in arm_link00"}), 400
+    try:
+        nominal = [float(n_body[0]), float(n_body[1]), float(n_body[2])]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "nominal_arm_base_m non numerici"}), 400
+
+    raw_devs = body.get("logical_devices")
+    if isinstance(raw_devs, list) and raw_devs:
+        devices: list[int] = []
+        for x in raw_devs:
+            try:
+                d = int(x)
+            except (TypeError, ValueError):
+                continue
+            if d in (0, 6) and d not in devices:
+                devices.append(d)
+    else:
+        devices = [0, 6]
+    if len(devices) < 2:
+        return jsonify({"ok": False, "error": "Servono due logical_devices tra 0 e 6 (default [0,6])"}), 400
+
+    tag_edge_m = body.get("tag_edge_length_m")
+    edge_f: float | None = None
+    if tag_edge_m is not None:
+        try:
+            edge_f = float(tag_edge_m)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "tag_edge_length_m non numerico"}), 400
+        if edge_f <= 0 or edge_f > 0.5:
+            return jsonify({"ok": False, "error": "tag_edge_length_m implausibile (0–0.5 m)"}), 400
+    elif int(tag_id) not in TRACKED_TAG_IDS:
+        return jsonify(
+            {
+                "ok": False,
+                "error": f"tag_id {tag_id} non in {sorted(TRACKED_TAG_IDS)}: imposta tag_edge_length_m (lato tag in m)",
+            }
+        ), 400
+
+    overs: dict[int, float] | None = {int(tag_id): float(edge_f)} if edge_f is not None else None
+
+    per_dev: dict[str, Any] = {}
+    offsets: dict[int, list[float]] = {}
+    for dev in devices:
+        frame = frame_from_camera(dev)
+        if frame is None:
+            return jsonify({"ok": False, "error": f"Nessun frame da logical camera {dev}"}), 400
+        tvec = tvec_camera_m_for_tag_id(frame, tag_id, tag_edge_length_overrides=overs)
+        if tvec is None:
+            return jsonify(
+                {"ok": False, "error": f"AprilTag {tag_id} non rilevato su /dev/video{_v4l_for_log(dev)} (logical {dev})"}
+            ), 400
+        h = _camera_tvec_to_base_heuristic_xyz(tvec)
+        off = [float(nominal[i]) - float(h[i]) for i in range(3)]
+        offsets[int(dev)] = off
+        per_dev[str(dev)] = {
+            "tag_camera_xyz_m": [round(tvec[i], 6) for i in range(3)],
+            "heuristic_base_before_m": [round(h[i], 6) for i in range(3)],
+            "offset_arm_base_m": [round(off[i], 6) for i in range(3)],
+        }
+
+    merged: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            merged = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            merged = {}
+    obm = dict(merged.get("offset_by_logical_camera_device_m") or {})
+    for dev, off in offsets.items():
+        obm[str(int(dev))] = [round(float(off[i]), 6) for i in range(3)]
+    merged["offset_by_logical_camera_device_m"] = obm
+    merged["dual_shared_tag_calib"] = {
+        "tag_id": int(tag_id),
+        "nominal_arm_base_m": [round(float(nominal[i]), 6) for i in range(3)],
+        "logical_devices": [int(d) for d in devices],
+        "per_device": per_dev,
+        "tag_edge_length_m": None if edge_f is None else round(edge_f, 6),
+        "updated_at": now_iso(),
+        "depth_to_ground_note_it": (
+            "Distanza tag→suolo con **profondità** RealSense non è calcolata qui: servirebbe depth allineato al RGB "
+            "nel pixel del tag + modello piano suolo / Z suolo noto in base braccio (integrazione futura)."
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    return jsonify(
+        {
+            "ok": True,
+            "saved_path": str(path),
+            "offset_by_logical_camera_device_m": obm,
+            "dual_shared_tag_calib": merged["dual_shared_tag_calib"],
+            "next_steps_it": [
+                "Ricarica /api/box/plan e scene_3d: le pose da video0 e video6 useranno gli offset rispettivi.",
+                "Mantieni anche la calibrazione tag 5 (XT-16) con POST /api/arm/tag5_calibration dal polso.",
+            ],
+        }
+    )
 
 
 _ALLOWED_UI_TUNING: dict[str, tuple[float, float]] = {
@@ -6798,6 +6988,206 @@ def api_arm_ui_tuning() -> Any:
             "defaults": defaults,
         }
     )
+
+
+@APP.route("/api/arm/vis_geometry", methods=["GET", "POST"])
+def api_arm_vis_geometry() -> Any:
+    """Slider sessione: geometria vista 3D (tag5, camera front, polso, EMA, frustum display)."""
+    defaults = _vis_geometry_defaults_dict()
+    if request.method == "GET":
+        with VIS_GEOMETRY_TUNING_LOCK:
+            over = dict(VIS_GEOMETRY_TUNING)
+        return jsonify({"ok": True, "effective": {**defaults, **over}, "overrides": over, "defaults": defaults})
+    body = request.get_json(silent=True) or {}
+    if body.get("reset"):
+        with VIS_GEOMETRY_TUNING_LOCK:
+            VIS_GEOMETRY_TUNING.clear()
+        try:
+            if VIS_GEOMETRY_JSON_PATH.is_file():
+                VIS_GEOMETRY_JSON_PATH.unlink()
+        except OSError:
+            pass
+        with _SCENE3D_TARGET_DISPLAY_LOCK:
+            _SCENE3D_TARGET_DISPLAY_STATE["ema_m"] = None
+        return jsonify({"ok": True, "cleared": True, "effective": _vis_geometry_defaults_dict(), "defaults": defaults})
+    changed: dict[str, float] = {}
+    errs: list[str] = []
+    persist = body.get("persist", True)
+    if persist is None or isinstance(persist, str):
+        persist = str(persist).lower() not in {"0", "false", "no", "off"}
+    else:
+        persist = bool(persist)
+    with VIS_GEOMETRY_TUNING_LOCK:
+        for key, (lo, hi) in _ALLOWED_VIS_GEOMETRY.items():
+            if key not in body:
+                continue
+            try:
+                raw = float(body[key])
+            except (TypeError, ValueError):
+                errs.append(f"{key}: valore non numerico")
+                continue
+            v = max(lo, min(hi, raw))
+            VIS_GEOMETRY_TUNING[key] = v
+            changed[key] = v
+        over = dict(VIS_GEOMETRY_TUNING)
+    if not errs and persist:
+        _save_vis_geometry_to_disk()
+    return jsonify(
+        {
+            "ok": not errs,
+            "errors": errs,
+            "changed": changed,
+            "effective": {**defaults, **over},
+            "defaults": defaults,
+            "persisted_path": "data/vis_geometry_tuning.json" if persist else None,
+            "persisted_to_disk": bool(persist and not errs),
+        }
+    )
+
+
+@APP.route("/api/arm/vis_geometry/presets", methods=["GET"])
+def api_vis_geometry_presets_list() -> Any:
+    """Elenco preset nominati (file ``data/vis_geometry_presets.json``)."""
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+    presets_obj = raw.get("presets") or {}
+    if not isinstance(presets_obj, dict):
+        presets_obj = {}
+    items: list[dict[str, Any]] = []
+    for name in sorted(presets_obj.keys(), key=lambda x: str(x).lower()):
+        entry = presets_obj.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        vals = entry.get("values")
+        nk = len(vals) if isinstance(vals, dict) else 0
+        items.append({"name": name, "saved_at": entry.get("saved_at"), "n_keys": nk})
+    return jsonify({"ok": True, "presets": items, "path": "data/vis_geometry_presets.json"})
+
+
+@APP.route("/api/arm/vis_geometry/presets/save", methods=["POST"])
+def api_vis_geometry_presets_save() -> Any:
+    """Salva lo stato effettivo corrente (tutti i parametri consentiti) come preset nominato."""
+    body = request.get_json(silent=True) or {}
+    name = _sanitize_preset_name(body.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "nome non valido (1–80 caratteri)"}), 400
+    overwrite = bool(body.get("overwrite"))
+    snap = _vis_geometry_preset_snapshot_effective()
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+        presets_obj = raw.setdefault("presets", {})
+        if not isinstance(presets_obj, dict):
+            presets_obj = {}
+            raw["presets"] = presets_obj
+        if name in presets_obj and not overwrite:
+            return jsonify({"ok": False, "error": "preset già esistente", "hint": "overwrite: true"}), 409
+        presets_obj[name] = {
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "values": snap,
+        }
+        if not _vis_geometry_presets_write_dict(raw):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "impossibile scrivere data/vis_geometry_presets.json (permessi o disco)",
+                    "path": "data/vis_geometry_presets.json",
+                }
+            ), 500
+    return jsonify(
+        {
+            "ok": True,
+            "name": name,
+            "n_keys": len(snap),
+            "path": "data/vis_geometry_presets.json",
+            "message_it": f"preset «{name}» scritto su disco ({len(snap)} parametri)",
+        }
+    )
+
+
+@APP.route("/api/arm/vis_geometry/presets/load", methods=["POST"])
+def api_vis_geometry_presets_load() -> Any:
+    """Carica un preset nel tuning corrente (opzionale persist su ``vis_geometry_tuning.json``)."""
+    body = request.get_json(silent=True) or {}
+    name = _sanitize_preset_name(body.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "nome non valido"}), 400
+    persist = body.get("persist", True)
+    if isinstance(persist, str):
+        persist = persist.lower() not in {"0", "false", "no", "off"}
+    else:
+        persist = bool(persist)
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+        entry = (raw.get("presets") or {}).get(name)
+    if not isinstance(entry, dict):
+        pk = (
+            sorted(str(k) for k in (raw.get("presets") or {}).keys())
+            if isinstance(raw.get("presets"), dict)
+            else []
+        )
+        _LOG_VIS.warning(
+            "vis_geometry presets/load 404 name=%r preset_keys=%s file=%s",
+            name,
+            pk[:40],
+            VIS_GEOMETRY_PRESETS_PATH,
+        )
+        return jsonify({"ok": False, "error": "preset non trovato", "preset_keys": pk}), 404
+    vals = entry.get("values")
+    if not isinstance(vals, dict):
+        return jsonify({"ok": False, "error": "preset corrotto (values)"}), 400
+    errs = _vis_geometry_apply_preset_values(vals)
+    with _SCENE3D_TARGET_DISPLAY_LOCK:
+        _SCENE3D_TARGET_DISPLAY_STATE["ema_m"] = None
+    if persist and not errs:
+        _save_vis_geometry_to_disk()
+    defaults = _vis_geometry_defaults_dict()
+    with VIS_GEOMETRY_TUNING_LOCK:
+        over = dict(VIS_GEOMETRY_TUNING)
+    apply_ok = len(errs) == 0
+    _LOG_VIS.warning(
+        "vis_geometry presets/load name=%r persist=%s apply_ok=%s n_err=%s wrist_dx=%s wrist_dz=%s file=%s",
+        name,
+        persist,
+        apply_ok,
+        len(errs),
+        round(float(over.get("wrist_local_dx", defaults["wrist_local_dx"])), 6),
+        round(float(over.get("wrist_local_dz", defaults["wrist_local_dz"])), 6),
+        VIS_GEOMETRY_PRESETS_PATH,
+    )
+    return jsonify(
+        {
+            "ok": apply_ok,
+            "errors": errs,
+            "name": name,
+            "effective": {**defaults, **over},
+            "persisted_to_disk": bool(persist and not errs),
+        }
+    )
+
+
+@APP.route("/api/arm/vis_geometry/presets/remove", methods=["POST"])
+def api_vis_geometry_presets_remove() -> Any:
+    body = request.get_json(silent=True) or {}
+    name = _sanitize_preset_name(body.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "nome non valido"}), 400
+    with VIS_GEOMETRY_PRESETS_LOCK:
+        raw = _vis_geometry_presets_read_dict()
+        presets_obj = raw.get("presets") or {}
+        if not isinstance(presets_obj, dict):
+            return jsonify({"ok": False, "error": "file preset vuoto"}), 404
+        if name not in presets_obj:
+            return jsonify({"ok": False, "error": "preset non trovato"}), 404
+        del presets_obj[name]
+        if not _vis_geometry_presets_write_dict(raw):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "impossibile aggiornare data/vis_geometry_presets.json dopo rimozione",
+                    "path": "data/vis_geometry_presets.json",
+                }
+            ), 500
+    return jsonify({"ok": True, "removed": name})
 
 
 @APP.route("/api/arm/emergency_hold", methods=["POST"])
@@ -6964,7 +7354,7 @@ def api_arm_grasp_box_attempt_after_crouch() -> Any:
     with ARM_OPERATION_LOCK:
         _arm_job_update(
             "starting",
-            {"phase_label_it": "Accucciata Go2, poi preflight grasp…"},
+            {"phase_label_it": "Accucciata Go2, poi preflight grasp…", "progress_step": 0},
         )
     threading.Thread(
         target=_grasp_crouch_then_preflight_worker,
@@ -7018,7 +7408,7 @@ def api_arm_grasp_box_attempt() -> Any:
     with ARM_OPERATION_LOCK:
         _arm_job_update(
             "starting",
-            {"phase_label_it": "Preflight camere/IK (asincrono)…"},
+            {"phase_label_it": "Preflight camere/IK (asincrono)…", "progress_step": 0},
         )
     threading.Thread(
         target=_grasp_preflight_and_start,
@@ -7073,21 +7463,13 @@ def api_test(name: str) -> Any:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("GO2_DASHBOARD_PORT", "5050"))
-    host = GO2_DASHBOARD_BIND
-    print(f"Starting Go2 diagnostics dashboard on http://{host}:{port} (GO2_LOCAL={GO2_LOCAL})")
+    # Questo file è il modulo che espone ``APP`` e tutta la logica; l'HTTP server si avvia solo da
+    # ``scripts/serve_dashboard_modular.py`` (o dal deploy NX che lo invoca).
     print(
-        f"GO2_ENABLE_REAL_ARM={os.environ.get('GO2_ENABLE_REAL_ARM', '0')} | "
-        f"GO2_ENABLE_BASE_MOTION={os.environ.get('GO2_ENABLE_BASE_MOTION', '0')} "
-        "(base_motion must be 1 on NX for Sport Stand up / Crouch)."
+        "Non avviare questo file direttamente.\n"
+        "  python scripts/serve_dashboard_modular.py\n"
+        "Sulla NX dopo deploy: lo script remoto usa già il modular.\n",
+        file=sys.stderr,
+        flush=True,
     )
-    print("Arm motion requires GO2_ENABLE_REAL_ARM=1 and bin/d1_arm_* on this host.")
-    warmup_realtime_feeds()
-    set_status({
-        "updated_at": now_iso(),
-        "running": True,
-        "summary": "Dashboard online; warming cameras and running diagnostics in background...",
-        "tests": {},
-    })
-    threading.Thread(target=background_run, daemon=True).start()
-    APP.run(host=host, port=port, debug=False, threaded=True)
+    raise SystemExit(2)
