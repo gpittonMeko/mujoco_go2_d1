@@ -1,0 +1,91 @@
+================================================================================
+Go2 — App «STA» / «solo rete» e CycloneDDS (Jetson) — troubleshooting laboratorio
+================================================================================
+
+1) APP UNITREE: «network only» / STA / STA-T / «Network anomaly»
+--------------------------------------------------------------------------------
+- **STA (locale, STA-L)**: il Go2 è client del tuo Wi‑Fi; il telefono deve essere sulla
+  **stessa LAN** (stesso SSID). Se il telefono è su 4G o altra rete → l’app non
+  raggiunge il cane.
+- **STA-T (remote, cloud)**: controllo via **TURN Unitree** (account nel cloud).
+  Messaggi tipo **«Network anomaly»** spesso = signaling cloud/TURN non completa
+  (robot non risulta «online» per Unitree, token, firewall UDP, regione sbagliata).
+  Non è lo stesso problema della sola LAN 192.168.123.x.
+- Se sei bloccato in STA-T: prova **AP del cane** (hotspot diretto) oppure **STA-L**
+  con IP sulla LAN locale; vedi anche `python scripts/pc_go2_webrtc_crouch.py --ap`.
+- Protezione termica / fault: il firmware può rifiutare servizi; l’app può mostrare
+  errori di rete anche se il problema non è l’IP — raffreddare e riprovare.
+
+Documentazione generica Wi‑Fi app:
+  https://www.docs.quadruped.de/projects/go2/html/controller.html
+Download app:
+  https://www.unitree.com/app/go2
+
+2) CYCLONEDDS + unitree_sdk2_python su NVIDIA Jetson (segfault / crash)
+--------------------------------------------------------------------------------
+Sintomi osservati in laboratorio: SIGSEGV (-11) in cyclonedds/pub.py durante RPC
+(MotionSwitcher / Sport). Issue aperti upstream:
+
+  https://github.com/unitreerobotics/unitree_sdk2_python/issues/88
+  https://github.com/unitreerobotics/unitree_sdk2_python/issues/53
+
+Azioni consigliate (in ordine):
+
+  A) **libddsc sbagliata (molto comune):** il wheel ``cyclonedds`` in ``~/.local`` carica
+     ``libddsc.so.0`` da ``/usr/local/lib`` mentre la build coerente è in
+     ``$HOME/cyclonedds/install/lib`` → **SIGSEGV** in ``cyclonedds/pub.py``.
+     Il deploy imposta automaticamente ``CYCLONEDDS_HOME`` + ``LD_LIBRARY_PATH``
+     verso ``~/cyclonedds/install`` se quella directory esiste.
+     Verifica: ``ldd $(python3 -c 'import cyclonedds._clayer as c; print(c.__file__)') | grep libddsc``
+     deve puntare a ``.../cyclonedds/install/lib/...``.
+
+  B) Compilare la libreria C CycloneDDS 0.10.x e reinstallare il binding Python contro
+     quella build (esempio commenti in issue #53), poi:
+       export CYCLONEDDS_HOME=$HOME/cyclonedds/install
+       export CMAKE_PREFIX_PATH=$CYCLONEDDS_HOME:${CMAKE_PREFIX_PATH}
+       cd ~/unitree_sdk2_python && pip3 install --user -e .
+
+  C) Se sulla Jetson gira ROS 2 Humble con Cyclone sul domain 0, può interferire con
+     l’SDK (issue #13). Prova a esportare prima di lanciare la dashboard:
+       export ROS_DOMAIN_ID=1
+     (solo se usi ROS2 contemporaneamente.)
+
+  D) Forzare un solo path Python (opzionale in nx_dashboard_env.sh):
+       export UNITREE_SDK2_PYTHON=/home/unitree/unitree_sdk2_python
+     (percorso assoluto alla cartella che CONTIENE la sottocartella unitree_sdk2py/)
+
+3) Gestire il cane SENZA app (finché l’app non va)
+--------------------------------------------------------------------------------
+Rete **192.168.123.x** (come Quick Start Go2 SDK Unitree): il **computer di bordo**
+del Go2 è tipicamente **192.168.123.161** (non usare .161 sul PC: sul PC metti
+es. **.222**). La **signaling WebRTC** (porte **9991** / **8081**) è spesso sul
+**MCU / di bordo (.161)**, non sul **gateway/router (.1)** — se `--ip 192.168.123.1`
+fallisce, prova subito:
+
+    python scripts/pc_go2_webrtc_crouch.py --probe --ip 192.168.123.161
+    python scripts/pc_go2_webrtc_crouch.py --ip 192.168.123.161
+
+Su Windows, dalla root del repo (scheda Wi‑Fi sul cane / stessa 123):
+
+    powershell -ExecutionPolicy Bypass -File scripts/go2_lab_connect.ps1
+
+- **WebRTC dal PC** (stesso protocollo dell’app, bypass Cyclone sulla Jetson):
+    pip install unitree-webrtc-connect
+    python scripts/pc_go2_webrtc_crouch.py --ip auto
+    # auto = multicast Unitree, poi gateway, poi scan host tipici (.161, .18, …)
+  oppure in **AP** del cane (subnet diversa: vedi ``ipconfig`` / ``--ap-ip``):
+    python scripts/pc_go2_webrtc_crouch.py --ap
+  L’IP va all’host che **apre TCP 9991** (signaling), non “a caso” al solo gateway.
+- Dashboard HTTP sulla Jetson (rete 192.168.123.x): crouch/stand se DDS è stabile.
+- CLI sulla Jetson (processo separato):
+    cd /home/unitree/go2_visual_dashboard && source scripts/nx_dashboard_env.sh
+    python3 scripts/go2_accompany.py crouch
+- Snapshot da PC con SSH:
+    python scripts/nx_sport_dds_snapshot.py
+
+4) LED rossi / termica
+--------------------------------------------------------------------------------
+- Spegnere, ventilare, verificare batteria e temperatura ambiente.
+- Codici dettagliati: app Unitree quando la connessione torna, o assistenza Unitree.
+
+================================================================================
