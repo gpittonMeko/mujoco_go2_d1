@@ -3379,6 +3379,14 @@ def _read_d1_servo_angles_with_diag() -> tuple[list[float] | None, dict[str, Any
         stderr = (result.stderr or "").strip()
         if stderr:
             diag["stderr_tail"] = stderr[-900:]
+            if "symbol lookup error" in stderr or "undefined symbol" in stderr:
+                diag["reason"] = "HELPER_RUNTIME_LINK_ERROR"
+                diag["fix_it"] = (
+                    "Il binario ``d1_arm_feedback_helper`` non è compatibile con le librerie DDS/iceoryx sul sistema "
+                    "(es. ``free_iox_chunk``). Ricompila **sulla NX** con lo stesso ``UNITREE_SDK2`` del runtime: "
+                    "``bash scripts/build_d1_arm_helpers.sh``; poi ``ldd bin/d1_arm_feedback_helper``."
+                )
+                return None, diag
         stdout = result.stdout or ""
         for line in stdout.splitlines():
             if line.startswith("servo_count="):
