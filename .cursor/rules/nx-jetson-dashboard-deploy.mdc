@@ -1,0 +1,21 @@
+---
+description: Dopo modifiche alla dashboard o script copiati sulla Jetson, eseguire il deploy SSH sulla NX.
+globs: "**/diagnostics_dashboard.py,**/go2_dashboard/**/*.py,**/scripts/serve_dashboard_modular.py,**/deploy_dashboard_to_nx.py,**/box_grasp_planner.py,**/arm_kinematics_d1_template.py,**/go2_accompany.py,**/d1_drag_follow_experimental.py"
+alwaysApply: true
+---
+
+# Deploy dashboard sulla NX (obbligatorio a fine lavoro)
+
+L’utente si aspetta che **l’agente** esegua il deploy, non che riceva solo istruzioni.
+
+- **Comando** (dalla root del repo, su PC con rete verso la Jetson):
+
+  `python scripts/deploy_dashboard_to_nx.py`
+
+- **Quando:** dopo aver modificato `diagnostics_dashboard.py` o uno degli script copiati dal deploy (`REMOTE_PUSH_FILES` in quello script), oppure `deploy_dashboard_to_nx.py` stesso, **prima di considerare il task completato** lancia il deploy (se la rete/SSH verso `192.168.123.18` è raggiungibile). Se la rete non è disponibile, indica l’errore e che l’utente dovrà rilanciare il deploy in laboratorio.
+
+- **Verifica opzionale** dal PC: `python scripts/verify_dashboard_http.py http://192.168.123.18:5050`
+
+- **Preset geometria:** il file `data/vis_geometry_presets.json` sulla NX **non** viene sovrascritto dal deploy se esiste già (preset di laboratorio). Per forzare la copia dal repo: sul PC `set GO2_DEPLOY_OVERWRITE_PRESETS=1` (PowerShell) poi `python scripts/deploy_dashboard_to_nx.py`.
+
+Non limitarti a descrivere i passi: **esegui** il deploy quando le condizioni sono soddisfatte.

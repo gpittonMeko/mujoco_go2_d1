@@ -11,6 +11,7 @@ import statistics
 import platform
 import queue
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -993,7 +994,7 @@ def grasp_session_effective_flags() -> dict[str, Any]:
 def _vis_geometry_defaults_dict() -> dict[str, float]:
     default_alpha = float(os.environ.get("GO2_SCENE3D_TARGET_EMA_ALPHA", "0.28"))
     # Mount mesh braccio in viewer (``viz_arm_mount_*``): default −200 mm in +X base_link (indietro) rispetto al nominale MJCF (0.15,0,0.06).
-    # Polso: default ``wrist_local_*`` somma al MJCF 0.02,0,0.05 → ~0.07,0,0.03 (camera ~30 mm sopra pinza locale).
+    # Polso: MJCF nominale ``wrist_camera`` 0.02,0,+0.03 in link6 (~3 cm sopra polso); slider ``wrist_local_*`` solo rifinitura.
     return {
         "arm_vs_tag5_x": -0.20,
         "arm_vs_tag5_y": 0.0,
@@ -1001,9 +1002,9 @@ def _vis_geometry_defaults_dict() -> dict[str, float]:
         "front_vs_tag5_x": 0.20,
         "front_vs_tag5_y": 0.0,
         "front_vs_tag5_z": -0.08,
-        "wrist_local_dx": 0.05,
+        "wrist_local_dx": 0.0,
         "wrist_local_dy": 0.0,
-        "wrist_local_dz": -0.02,
+        "wrist_local_dz": 0.0,
         "target_ema_alpha": default_alpha,
         "viz_go2_tx_m": 0.0,
         "viz_go2_ty_m": 0.0,
@@ -1023,8 +1024,8 @@ def _vis_geometry_defaults_dict() -> dict[str, float]:
         "frustum_wrist_rx_deg": 0.0,
         "frustum_wrist_ry_deg": 0.0,
         "frustum_wrist_rz_deg": 0.0,
-        "frustum_depth_far_m": 0.32,
-        "frustum_wrist_far_m": 0.32,
+        "frustum_depth_far_m": 0.62,
+        "frustum_wrist_far_m": 0.58,
     }
 
 
@@ -1174,16 +1175,9 @@ def _sanitize_preset_name(name: object) -> str | None:
 def _builtin_vis_geometry_preset_2_values() -> dict[str, float]:
     """Preset «2» incorporato se ``data/vis_geometry_presets.json`` non lo definisce.
 
-    Offset polso: MJCF + delta ≈ camera sopra pinza (~30 mm in Z locale rispetto a tool).
+    Geometria nominale camera polso/MJCF in ``arm_kinematics_d1_template``; slider polso a zero.
     """
     base = dict(_vis_geometry_defaults_dict())
-    base.update(
-        {
-            "wrist_local_dx": 0.05,
-            "wrist_local_dy": 0.0,
-            "wrist_local_dz": -0.02,
-        }
-    )
     out: dict[str, float] = {}
     for key, (lo, hi) in _ALLOWED_VIS_GEOMETRY.items():
         try:
@@ -3186,6 +3180,7 @@ def _run_d1_messages(
     *,
     ignore_abort: bool = False,
     post_hold: bool | None = None,
+    hold_between_chunks: bool | None = None,
 ) -> dict[str, Any]:
     helper = PROJECT_ROOT / "bin" / "d1_arm_command"
     if not helper.exists():
@@ -3201,6 +3196,12 @@ def _run_d1_messages(
         chunks = [messages]
     outs: list[str] = []
     errs: list[str] = []
+    if hold_between_chunks is None:
+        hold_between_chunks = os.environ.get("GO2_D1_HOLD_BETWEEN_CHUNKS", "1").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
     for idx, chunk in enumerate(chunks):
         if ARM_GRASP_ABORT.is_set() and not ignore_abort:
             return {
@@ -3213,18 +3214,29 @@ def _run_d1_messages(
                 "helper_stderr": "\n".join(errs)[-2000:],
             }
         stdin = "\n".join(json.dumps(msg, separators=(",", ":")) for msg in chunk) + "\n"
-        result = subprocess.run(
-            [str(helper), str(GO2_DDS_DOMAIN), str(delay_ms)],
+        result = _d1_arm_command_subprocess_run(
+            str(helper),
+            int(GO2_DDS_DOMAIN),
+            int(delay_ms),
+            stdin,
             cwd=str(PROJECT_ROOT),
-            input=stdin,
-            capture_output=True,
-            text=True,
-            timeout=max(12.0, (delay_ms / 1000.0 + 0.4) * len(chunk)),
+            timeout_s=max(12.0, (delay_ms / 1000.0 + 0.4) * len(chunk)),
         )
         outs.append(result.stdout)
         errs.append(result.stderr)
         if result.returncode != 0:
             break
+        # Tra un subprocess e l'altro i servo possono cedere: rileggi posa e ripeti hold breve
+        # così il chunk successivo parte dal feedback reale (meno scatti).
+        if (
+            hold_between_chunks
+            and idx + 1 < len(chunks)
+            and os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() in {"1", "true", "yes"}
+        ):
+            publish_d1_hold_current(
+                repeats=max(5, int(os.environ.get("D1_INTER_CHUNK_HOLD_REPEATS", "10"))),
+                delay_ms=max(38, int(os.environ.get("D1_INTER_CHUNK_HOLD_DELAY_MS", "48"))),
+            )
     out = {
         "ok": result.returncode == 0,
         "topic": "rt/arm_Command",
@@ -3267,7 +3279,9 @@ def publish_d1_hold_current(*, repeats: int | None = None, delay_ms: int | None 
         angles = {f"angle{idx}": round(float(cur[idx]), 3) for idx in range(7)}
         angles["mode"] = 1
         messages.append({"seq": seq + 1 + i, "address": 1, "funcode": 2, "data": angles})
-    result = _run_d1_messages(messages, delay_ms=max(40, dms), ignore_abort=True)
+    result = _run_d1_messages(
+        messages, delay_ms=max(40, dms), ignore_abort=True, hold_between_chunks=False
+    )
     return {
         **result,
         "mode": "hold_current_pose",
@@ -3343,57 +3357,116 @@ def _read_d1_servo_angles_stable(samples: int | None = None, delay_s: float | No
     return last
 
 
-def _read_d1_servo_angles_with_diag() -> tuple[list[float] | None, dict[str, Any]]:
-    """Esegue ``bin/d1_arm_feedback_helper`` (DDS ``current_servo_angle``). Ritorna angoli + dict motivo se fallisce."""
+def _d1_servo_feedback_subprocess_run(
+    exec_argv: list[str],
+    *,
+    cwd: str,
+    timeout_s: float,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Esegue helper C++/Python lettura servo.
+
+    Su Linux (NX): ``source scripts/nx_dashboard_env.sh`` prima di ``exec`` così ``CYCLONEDDS_HOME`` /
+    ``LD_LIBRARY_PATH`` coincidono con Sport. Senza questo, il wheel ``cyclonedds`` può caricare un
+    ``libddsc`` incoerente e ``Topic(PubServoInfo_)`` fallisce mentre ``rt/lowstate`` funziona.
+    """
+    env_sh = PROJECT_ROOT / "scripts" / "nx_dashboard_env.sh"
+    if os.name != "nt" and env_sh.is_file():
+        inner = " ".join(shlex.quote(a) for a in exec_argv)
+        script = (
+            f"cd {shlex.quote(str(cwd))} && . {shlex.quote(str(env_sh))} && exec {inner}"
+        )
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    return subprocess.run(
+        exec_argv,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        env=os.environ.copy(),
+    )
+
+
+def _d1_arm_command_subprocess_run(
+    helper: str,
+    domain: int,
+    delay_ms: int,
+    stdin: str,
+    *,
+    cwd: str,
+    timeout_s: float,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Pubblica su ``rt/arm_Command`` via ``d1_arm_command``. Stesso wrapper del feedback:
+    ``source nx_dashboard_env.sh`` così ``LD_LIBRARY_PATH`` / iceoryx coincidono con Sport.
+    """
+    env_sh = PROJECT_ROOT / "scripts" / "nx_dashboard_env.sh"
+    if os.name != "nt" and env_sh.is_file():
+        script = (
+            f"cd {shlex.quote(cwd)} && . {shlex.quote(str(env_sh))} && "
+            f"exec {shlex.quote(helper)} {int(domain)} {int(delay_ms)}"
+        )
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=cwd,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    return subprocess.run(
+        [helper, str(int(domain)), str(int(delay_ms))],
+        cwd=cwd,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        env=os.environ.copy(),
+    )
+
+
+# Lettura servo via subprocess+DDS è costosa (secondi). Il viewer Three.js chiama ``/api/arm/scene_3d?fast=1`` ~5 Hz:
+# senza cache ogni richiesta rilancia il helper → niente tempo reale e CPU saturata.
+_D1_SERVO_FB_CV = threading.Condition()
+_D1_SERVO_FB_STATE: dict[str, Any] = {
+    "mono": 0.0,
+    "angles": None,
+    "diag": {},
+    "refreshing": False,
+    "fail_mono": 0.0,
+    "fail_diag": {},
+}
+
+
+def _read_d1_servo_angles_uncached() -> tuple[list[float] | None, dict[str, Any]]:
+    """Legge angoli servo D1: prima ``bin/d1_arm_feedback_helper`` (C++), poi ``scripts/d1_arm_servo_read_python.py`` (Python / stesso DDS di Sport)."""
     helper = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+    py_reader = PROJECT_ROOT / "scripts" / "d1_arm_servo_read_python.py"
     listen_s = max(1, int(os.environ.get("D1_FEEDBACK_HELPER_LISTEN_S", "3")))
     timeout_s = float(os.environ.get("D1_FEEDBACK_HELPER_TIMEOUT_S", "14"))
     domain = int(GO2_DDS_DOMAIN)
-    diag: dict[str, Any] = {
+    base: dict[str, Any] = {
         "project_root": str(PROJECT_ROOT),
         "helper_path": str(helper),
         "helper_exists": helper.is_file(),
         "helper_executable": bool(helper.is_file() and os.access(helper, os.X_OK)),
+        "python_reader_path": str(py_reader),
+        "python_reader_exists": py_reader.is_file(),
         "dds_domain": domain,
         "listen_s": listen_s,
         "timeout_subprocess_s": timeout_s,
         "go2_local": bool(GO2_LOCAL),
     }
-    if not helper.is_file():
-        diag["reason"] = "MISSING_BINARY"
-        diag["fix_it"] = "Sulla NX: cd cartella dashboard/repo && bash scripts/build_d1_arm_helpers.sh (serve Unitree SDK2)."
-        return None, diag
-    cmd = [str(helper), str(domain), str(listen_s)]
-    diag["argv"] = cmd
-    try:
-        t0 = time.perf_counter()
-        result = subprocess.run(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        diag["duration_s"] = round(time.perf_counter() - t0, 3)
-        diag["returncode"] = int(result.returncode)
-        stderr = (result.stderr or "").strip()
-        if stderr:
-            diag["stderr_tail"] = stderr[-900:]
-            if "symbol lookup error" in stderr or "undefined symbol" in stderr:
-                diag["reason"] = "HELPER_RUNTIME_LINK_ERROR"
-                diag["fix_it"] = (
-                    "Il binario ``d1_arm_feedback_helper`` non è compatibile con le librerie DDS/iceoryx sul sistema "
-                    "(es. ``free_iox_chunk``). Ricompila **sulla NX** con lo stesso ``UNITREE_SDK2`` del runtime: "
-                    "``bash scripts/build_d1_arm_helpers.sh``; poi ``ldd bin/d1_arm_feedback_helper``."
-                )
-                return None, diag
-        stdout = result.stdout or ""
-        for line in stdout.splitlines():
-            if line.startswith("servo_count="):
-                diag["dds_counts_line"] = line.strip()
-                break
+
+    def _parse_servo_stdout(stdout: str) -> tuple[list[float] | None, str | None]:
         latest: list[float] | None = None
-        for line in stdout.splitlines():
+        for line in (stdout or "").splitlines():
             if line.startswith("servo_angles "):
                 parts = line.split()[1:]
                 if len(parts) >= 7:
@@ -3401,31 +3474,221 @@ def _read_d1_servo_angles_with_diag() -> tuple[list[float] | None, dict[str, Any
                         latest = [float(v) for v in parts[:7]]
                     except ValueError:
                         latest = None
-        if latest is not None:
-            diag["reason"] = "OK"
-            return latest, diag
-        diag["reason"] = "NO_SERVO_ANGLES_LINE"
-        st = stdout.strip()
-        diag["stdout_tail"] = st[-900:] if st else None
-        diag["fix_it"] = (
-            f"In {listen_s}s nessun topic DDS `current_servo_angle` (PubServoInfo). "
-            "Servizio braccio Unitree acceso? Prova GO2_DDS_DOMAIN se non usi dominio 0. "
-            f"Manuale: `{helper} {domain} {listen_s}` e controlla servo_count."
-        )
-        return None, diag
-    except subprocess.TimeoutExpired as exc:
-        diag["reason"] = "HELPER_TIMEOUT"
-        diag["fix_it"] = "Aumenta D1_FEEDBACK_HELPER_TIMEOUT_S o verifica blocchi DDS."
-        if exc.stdout:
-            diag["stdout_tail"] = str(exc.stdout)[-500:]
-        if exc.stderr:
-            diag["stderr_tail"] = str(exc.stderr)[-500:]
-        return None, diag
-    except Exception as exc:
-        diag["reason"] = "SUBPROCESS_FAILED"
-        diag["error"] = repr(exc)
-        diag["fix_it"] = "Controlla permessi esecuzione su bin/d1_arm_feedback_helper e librerie Unitree (ldd)."
-        return None, diag
+        return latest, None
+
+    def _merge_stderr(d: dict[str, Any], stderr: str) -> None:
+        st = (stderr or "").strip()
+        if st:
+            d["stderr_tail"] = st[-900:]
+
+    def _run_cpp() -> tuple[list[float] | None, dict[str, Any]]:
+        d: dict[str, Any] = dict(base)
+        d["backend"] = "cpp_subprocess"
+        if not helper.is_file():
+            d["reason"] = "MISSING_BINARY"
+            d["fix_it"] = "Sulla NX: bash scripts/build_d1_arm_helpers.sh oppure usa fallback Python (automatico)."
+            return None, d
+        if not os.access(helper, os.X_OK):
+            d["reason"] = "HELPER_NOT_EXECUTABLE"
+            d["fix_it"] = "chmod +x bin/d1_arm_feedback_helper"
+            return None, d
+        cmd = [str(helper), str(domain), str(listen_s)]
+        d["argv"] = cmd
+        try:
+            t0 = time.perf_counter()
+            result = _d1_servo_feedback_subprocess_run(
+                cmd, cwd=str(PROJECT_ROOT), timeout_s=timeout_s
+            )
+            d["duration_s"] = round(time.perf_counter() - t0, 3)
+            d["returncode"] = int(result.returncode)
+            stderr = (result.stderr or "").strip()
+            _merge_stderr(d, stderr)
+            if stderr and ("symbol lookup error" in stderr or "undefined symbol" in stderr):
+                d["reason"] = "HELPER_RUNTIME_LINK_ERROR"
+                d["fix_it"] = (
+                    "Ricompila ``d1_arm_feedback_helper`` sulla NX (``bash scripts/build_d1_arm_helpers.sh``) "
+                    "oppure usa lettura Python (fallback automatico)."
+                )
+                return None, d
+            stdout = result.stdout or ""
+            for line in stdout.splitlines():
+                if line.startswith("servo_count="):
+                    d["dds_counts_line"] = line.strip()
+                    break
+            latest, _ = _parse_servo_stdout(stdout)
+            if latest is not None:
+                d["reason"] = "OK"
+                return latest, d
+            d["reason"] = "NO_SERVO_ANGLES_LINE"
+            st = stdout.strip()
+            d["stdout_tail"] = st[-900:] if st else None
+            d["fix_it"] = (
+                f"In {listen_s}s nessun topic DDS `current_servo_angle` (PubServoInfo). "
+                "Braccio acceso? Prova GO2_DDS_DOMAIN / GO2_DDS_INTERFACE come per Sport."
+            )
+            return None, d
+        except subprocess.TimeoutExpired as exc:
+            d["reason"] = "HELPER_TIMEOUT"
+            d["fix_it"] = "Aumenta D1_FEEDBACK_HELPER_TIMEOUT_S o verifica DDS."
+            if exc.stdout:
+                d["stdout_tail"] = str(exc.stdout)[-500:]
+            if exc.stderr:
+                d["stderr_tail"] = str(exc.stderr)[-500:]
+            return None, d
+        except Exception as exc:
+            d["reason"] = "SUBPROCESS_FAILED"
+            d["error"] = repr(exc)
+            return None, d
+
+    def _run_python() -> tuple[list[float] | None, dict[str, Any]]:
+        d: dict[str, Any] = dict(base)
+        d["backend"] = "python_subprocess"
+        if not py_reader.is_file():
+            d["reason"] = "MISSING_PYTHON_READER"
+            d["fix_it"] = "Deploy aggiornato: manca scripts/d1_arm_servo_read_python.py"
+            return None, d
+        cmd = [sys.executable, str(py_reader), str(domain), str(listen_s)]
+        d["argv"] = cmd
+        try:
+            t0 = time.perf_counter()
+            result = _d1_servo_feedback_subprocess_run(
+                cmd, cwd=str(PROJECT_ROOT), timeout_s=timeout_s
+            )
+            d["duration_s"] = round(time.perf_counter() - t0, 3)
+            d["returncode"] = int(result.returncode)
+            _merge_stderr(d, (result.stderr or "").strip())
+            stdout = result.stdout or ""
+            for line in stdout.splitlines():
+                if line.startswith("servo_count="):
+                    d["dds_counts_line"] = line.strip()
+                    break
+            latest, _ = _parse_servo_stdout(stdout)
+            if latest is not None:
+                d["reason"] = "OK"
+                return latest, d
+            d["reason"] = "NO_SERVO_ANGLES_LINE_PYTHON"
+            st = stdout.strip()
+            d["stdout_tail"] = st[-900:] if st else None
+            d["fix_it"] = (
+                "Python DDS: nessun campione PubServoInfo su ``current_servo_angle`` / ``rt/current_servo_angle``. "
+                "Stesso ``GO2_DDS_DOMAIN`` e ``GO2_DDS_INTERFACE`` di Sport (eth0)."
+            )
+            return None, d
+        except subprocess.TimeoutExpired as exc:
+            d["reason"] = "PYTHON_READER_TIMEOUT"
+            if exc.stdout:
+                d["stdout_tail"] = str(exc.stdout)[-500:]
+            if exc.stderr:
+                d["stderr_tail"] = str(exc.stderr)[-500:]
+            return None, d
+        except Exception as exc:
+            d["reason"] = "PYTHON_SUBPROCESS_FAILED"
+            d["error"] = repr(exc)
+            return None, d
+
+    pref = os.environ.get("D1_SERVO_FEEDBACK_BACKEND", "auto").strip().lower()
+    h_ok = helper.is_file() and os.access(helper, os.X_OK)
+    if pref in ("python", "py"):
+        order = ["python"]
+    elif pref in ("cpp", "binary", "helper", "c++"):
+        order = ["cpp"] if h_ok else ["python"]
+    else:
+        order = ["cpp", "python"] if h_ok else ["python"]
+
+    last: dict[str, Any] = dict(base)
+    last["backends_tried"] = list(order)
+    for kind in order:
+        if kind == "cpp":
+            angles, diag = _run_cpp()
+        else:
+            angles, diag = _run_python()
+        last.update(diag)
+        if angles is not None:
+            diag["backends_tried"] = list(order)
+            return angles, diag
+    last.setdefault("reason", "ALL_BACKENDS_FAILED")
+    last["fix_it"] = (
+        "Né C++ né Python hanno ricevuto PubServoInfo. Verifica ``GO2_DDS_INTERFACE`` (es. eth0), dominio DDS, "
+        "servizio braccio Unitree attivo."
+    )
+    return None, last
+
+
+def _read_d1_servo_angles_with_diag() -> tuple[list[float] | None, dict[str, Any]]:
+    """Wrapper con cache TTL + un solo refresh in volo (Coordinamento tra richieste HTTP parallele)."""
+    pos_ttl = float(os.environ.get("D1_SERVO_FEEDBACK_CACHE_TTL_S", "0.25"))
+    neg_ttl = float(os.environ.get("D1_SERVO_FEEDBACK_NEGATIVE_CACHE_S", "2.0"))
+    bypass = os.environ.get("D1_SERVO_FEEDBACK_BYPASS_CACHE", "").strip().lower() in {"1", "true", "yes"}
+
+    def _hit_positive(now: float) -> tuple[list[float], dict[str, Any]] | None:
+        ang = _D1_SERVO_FB_STATE.get("angles")
+        t0 = float(_D1_SERVO_FB_STATE.get("mono") or 0.0)
+        if isinstance(ang, list) and len(ang) >= 6 and (now - t0) < pos_ttl:
+            d = dict(_D1_SERVO_FB_STATE.get("diag") or {})
+            d["cache_hit"] = True
+            d["cache_age_s"] = round(now - t0, 4)
+            return list(ang), d
+        return None
+
+    def _hit_negative(now: float) -> tuple[list[float] | None, dict[str, Any]] | None:
+        fm = float(_D1_SERVO_FB_STATE.get("fail_mono") or 0.0)
+        fd = _D1_SERVO_FB_STATE.get("fail_diag")
+        if neg_ttl > 0 and isinstance(fd, dict) and fd and (now - fm) < neg_ttl:
+            d = dict(fd)
+            d["cache_hit"] = True
+            d["negative_cache"] = True
+            d["cache_age_s"] = round(now - fm, 4)
+            return None, d
+        return None
+
+    if not bypass:
+        with _D1_SERVO_FB_CV:
+            now = time.monotonic()
+            if pos_ttl > 0:
+                hp = _hit_positive(now)
+                if hp is not None:
+                    return hp
+            if neg_ttl > 0:
+                hn = _hit_negative(now)
+                if hn is not None:
+                    return hn
+
+    with _D1_SERVO_FB_CV:
+        while bool(_D1_SERVO_FB_STATE.get("refreshing")):
+            _D1_SERVO_FB_CV.wait(timeout=35.0)
+        now2 = time.monotonic()
+        if not bypass:
+            if pos_ttl > 0:
+                hp2 = _hit_positive(now2)
+                if hp2 is not None:
+                    return hp2
+            if neg_ttl > 0:
+                hn2 = _hit_negative(now2)
+                if hn2 is not None:
+                    return hn2
+        _D1_SERVO_FB_STATE["refreshing"] = True
+
+    angles: list[float] | None = None
+    diag: dict[str, Any] = {}
+    try:
+        angles, diag = _read_d1_servo_angles_uncached()
+    except BaseException:
+        with _D1_SERVO_FB_CV:
+            _D1_SERVO_FB_STATE["refreshing"] = False
+            _D1_SERVO_FB_CV.notify_all()
+        raise
+    with _D1_SERVO_FB_CV:
+        _D1_SERVO_FB_STATE["refreshing"] = False
+        if angles is not None:
+            _D1_SERVO_FB_STATE["angles"] = list(angles)
+            _D1_SERVO_FB_STATE["diag"] = dict(diag)
+            _D1_SERVO_FB_STATE["mono"] = time.monotonic()
+        else:
+            _D1_SERVO_FB_STATE["fail_diag"] = dict(diag)
+            _D1_SERVO_FB_STATE["fail_mono"] = time.monotonic()
+        _D1_SERVO_FB_CV.notify_all()
+
+    return angles, diag
 
 
 def _read_d1_servo_angles() -> list[float] | None:
@@ -3477,7 +3740,35 @@ def _arm_at_start_snapshot() -> dict[str, Any]:
     return out
 
 
-def _goto_saved_start_arm_pose(*, ignore_disable_env: bool = False) -> dict[str, Any]:
+def _grasp_prelude_fast_align() -> bool:
+    return os.environ.get("GO2_GRASP_FAST_START_ALIGN", "1").lower() in {"1", "true", "yes"}
+
+
+def _grasp_start_align_max_step_deg() -> list[float]:
+    """Passi servo più grandi durante grasp→START (meno punti interpolati, meno «cede» tra i chunk)."""
+    base = D1_START_ALIGN_MAX_STEP_DEG
+    if not _grasp_prelude_fast_align():
+        return base
+    fast = _parse_step_deg_list(
+        os.environ.get("D1_GRASP_START_ALIGN_MAX_STEP_DEG"),
+        [4.5, 2.4, 2.2, 3.2, 4.5, 4.8, 8.0],
+    )
+    return [max(float(a), float(b)) for a, b in zip(fast, base)]
+
+
+def _grasp_fold_max_step_deg() -> list[float]:
+    """Solo sequenza grasp (fold): passi più grandi se ``GO2_GRASP_FAST_START_ALIGN``."""
+    base = D1_FOLD_MAX_STEP_DEG
+    if not _grasp_prelude_fast_align():
+        return base
+    fast = _parse_step_deg_list(
+        os.environ.get("D1_GRASP_FOLD_MAX_STEP_DEG"),
+        [4.2, 2.2, 2.0, 2.8, 4.2, 4.5, 7.5],
+    )
+    return [max(float(a), float(b)) for a, b in zip(fast, base)]
+
+
+def _goto_saved_start_arm_pose(*, ignore_disable_env: bool = False, prelude_for_grasp: bool = False) -> dict[str, Any]:
     """
     Riporta il braccio alla posizione servo in ``data/start_alignment.json``.
     Nella sequenza grasp è disabilitabile con ``GO2_GRASP_GOTO_SAVED_START=0``;
@@ -3509,13 +3800,18 @@ def _goto_saved_start_arm_pose(*, ignore_disable_env: bool = False) -> dict[str,
     stages = [{"stage": "goto_saved_start_align", "joints_rad": [float(v) for v in jr[:6]]}]
     prehold = None
     if os.environ.get("D1_START_PREHOLD", "1").lower() in {"1", "true", "yes"}:
+        rep = int(os.environ.get("D1_START_PREHOLD_REPEATS", "10"))
+        if prelude_for_grasp and _grasp_prelude_fast_align():
+            cap = int(os.environ.get("GO2_GRASP_START_PREHOLD_CAP", "6"))
+            rep = min(rep, max(3, cap))
         prehold = publish_d1_hold_current(
-            repeats=int(os.environ.get("D1_START_PREHOLD_REPEATS", "10")),
+            repeats=rep,
             delay_ms=int(os.environ.get("D1_START_PREHOLD_DELAY_MS", "55")),
         )
     try:
         delay_ms = int(os.environ.get("D1_START_ALIGN_DELAY_MS", str(D1_SEARCH_COMMAND_DELAY_MS)))
-        messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=D1_START_ALIGN_MAX_STEP_DEG)
+        max_steps = _grasp_start_align_max_step_deg() if prelude_for_grasp else D1_START_ALIGN_MAX_STEP_DEG
+        messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=max_steps)
         result = _run_d1_messages(messages, delay_ms=max(120, delay_ms), post_hold=True)
         out = {
             **result,
@@ -3552,7 +3848,7 @@ def _goto_fold_arm_pose() -> dict[str, Any]:
     stages = [{"stage": "goto_fold_compact", "joints_rad": jr}]
     try:
         delay_ms = int(os.environ.get("D1_FOLD_DELAY_MS", str(D1_SEARCH_COMMAND_DELAY_MS)))
-        messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=D1_FOLD_MAX_STEP_DEG)
+        messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=_grasp_fold_max_step_deg())
         result = _run_d1_messages(messages, delay_ms=max(120, delay_ms))
         return {**result, "skipped": False, "sent_stages": sent, "pose": "ARM_FOLD_POSE"}
     except Exception as exc:
@@ -3986,9 +4282,11 @@ def _front_camera_scan_hints(front_plan: dict[str, Any]) -> dict[str, Any]:
             "max_box_tag_diagonal_px": None,
         }
     box_diags = [
-        float(t["diagonal_px"])
+        d
         for t in tags
-        if int(t.get("id", -1)) in _BOX_TAG_IDS_HINT and t.get("diagonal_px") is not None
+        if int(t.get("id", -1)) in _BOX_TAG_IDS_HINT
+        for d in (_scalar_diagonal_px(t.get("diagonal_px")),)
+        if d is not None
     ]
     max_box_diag_px = max(box_diags) if box_diags else None
     centers = [tag.get("center_px", [cx, cy]) for tag in tags]
@@ -4177,15 +4475,36 @@ def _wrist_plan_executable(wrist_plan: dict[str, Any]) -> bool:
     return bool(wrist_plan.get("ok") and pv.get("ok") and (pv.get("plan") or []))
 
 
+def _scalar_diagonal_px(val: Any) -> float | None:
+    """AprilTag payload expected scalar; tolerate list/tuple (e.g. legacy [du, dv])."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, (list, tuple)):
+        if len(val) == 0:
+            return None
+        if len(val) >= 2 and all(isinstance(x, (int, float)) for x in val[:2]):
+            return float(math.hypot(float(val[0]), float(val[1])))
+        try:
+            return float(val[0])
+        except (TypeError, ValueError):
+            return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
 def _max_box_diagonal_px_wrist(wrist_plan: dict[str, Any]) -> float | None:
     tags = (wrist_plan.get("tags") or {}).get("tags") or []
     diags: list[float] = []
     for t in tags:
         if int(t.get("id", -1)) not in BOX_TAG_IDS_IK:
             continue
-        d = t.get("diagonal_px")
+        d = _scalar_diagonal_px(t.get("diagonal_px"))
         if d is not None:
-            diags.append(float(d))
+            diags.append(d)
     return max(diags) if diags else None
 
 
@@ -4248,9 +4567,11 @@ def _wrist_camera_center_hints(wrist_plan: dict[str, Any], frame_hw: tuple[float
     wrist_trim_deg = max(-12.0, min(12.0, -ny * 11.0 * ny_s))
     shoulder_trim_deg = max(-4.5, min(4.5, -ny * 3.5 * ny_s))
     diags = [
-        float(t["diagonal_px"])
+        d
         for t in tags
-        if int(t.get("id", -1)) in BOX_TAG_IDS_IK and t.get("diagonal_px") is not None
+        if int(t.get("id", -1)) in BOX_TAG_IDS_IK
+        for d in (_scalar_diagonal_px(t.get("diagonal_px")),)
+        if d is not None
     ]
     return {
         "has_tags": True,
@@ -4457,7 +4778,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
     _grasp_live_phase("Fold braccio — posizione compatta", progress_step=2)
     fold_raw = _goto_fold_arm_pose()
     _grasp_live_phase("Riallineamento braccio alla posa START salvata…", progress_step=3)
-    prelude_raw = _goto_saved_start_arm_pose()
+    prelude_raw = _goto_saved_start_arm_pose(prelude_for_grasp=True)
     wait_tags = _wait_for_apriltag_detection()
     alignment_prelude: dict[str, Any] = {
         "goto_fold": fold_raw,
@@ -4506,6 +4827,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
     first_plan = _wait_for_visible_plan()
     last_front_plan = _camera_candidate(first_plan, 6) if _camera_candidate(first_plan, 6).get("ok") else None
     fused_confirm_count = 0
+    fused_confirm_need = max(1, min(int(os.environ.get("GO2_GRASP_FUSED_CONFIRM_FRAMES", "2")), 6))
     fused_env = _effective_grasp_bool("use_fused_plan_ik", "GO2_GRASP_USE_FUSED_PLAN_IK")
     wrist_policy = _grasp_wrist_policy()
     last_valid_execute: dict[str, Any] | None = None
@@ -4529,19 +4851,6 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                 attempted_motion=_attempted_from_log(),
                 alignment_prelude=alignment_prelude,
             )
-        _grasp_live_phase(
-            f"Avvicinamento / ricerca — ciclo {cycle + 1} di {mc} (muovo polso verso tag)",
-            progress_step=6,
-            cycle=cycle + 1,
-            max_cycles=mc,
-            live_grip_visible=bool(grip_vis),
-            live_wrist_box_tags=bool(box_vis),
-            live_diagonal_px=round(float(md_px), 1) if md_px is not None else None,
-            live_loss_streak=int(loss_streak),
-            live_center_norm=round(float(center_hints.get("norm")), 4)
-            if center_hints.get("norm") is not None
-            else None,
-        )
         plan = _box_plan_snapshot()
         wrist_plan = _camera_candidate(plan, 0)
         front_plan = _camera_candidate(plan, 6)
@@ -4567,6 +4876,27 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                 loss_streak = 0
             else:
                 loss_streak = loss_streak + 1 if last_valid_execute is not None else 0
+
+        cn_raw = center_hints.get("norm")
+        live_cn: float | None
+        if cn_raw is None:
+            live_cn = None
+        elif isinstance(cn_raw, (list, tuple)) and len(cn_raw) >= 2:
+            live_cn = round(math.hypot(float(cn_raw[0]), float(cn_raw[1])), 4)
+        else:
+            live_cn = round(float(cn_raw), 4)
+
+        _grasp_live_phase(
+            f"Avvicinamento / ricerca — ciclo {cycle + 1} di {mc} (muovo polso verso tag)",
+            progress_step=6,
+            cycle=cycle + 1,
+            max_cycles=mc,
+            live_grip_visible=bool(grip_vis),
+            live_wrist_box_tags=bool(box_vis),
+            live_diagonal_px=round(float(md_px), 1) if md_px is not None else None,
+            live_loss_streak=int(loss_streak),
+            live_center_norm=live_cn,
+        )
 
         log.append({
             "cycle": cycle,
@@ -4681,7 +5011,7 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
                 fused_confirm_count += 1
             else:
                 fused_confirm_count = 0
-            if fused_confirm_count >= 2:
+            if fused_confirm_count >= fused_confirm_need:
                 if not _sleep_abortable(0.15):
                     return _grasp_abort_return(
                         log=log,
@@ -5653,6 +5983,24 @@ _SCENE3D_TAG5_LM_CACHE: dict[str, Any] = {"xyz": None, "mono": 0.0}
 # EMA sul centro mostrato (sfera/cilindro) per attenuare jitter tra camere / frame.
 _SCENE3D_TAG5_EMA: dict[str, Any] = {"xyz": None}
 
+# Stato display-only: centro tag 5 in ``base_link`` per viewer (sfera + cilindro XT-16).
+_VIEWER_XT16_TAG_BL_EMA: dict[str, Any] = {"xyz": None}
+
+
+def _smooth_viewer_xt16_tag_base_link(raw: list[float] | None) -> list[float] | None:
+    """EMA sul centro tag 5 in ``base_link`` per sfera/cilindro XT-16 nel viewer (meno glitch frame-to-frame)."""
+    if raw is None or len(raw) < 3:
+        return raw
+    alpha = float(os.environ.get("GO2_VIEWER_XT16_TAG_EMA_ALPHA", "0.28"))
+    prev = _VIEWER_XT16_TAG_BL_EMA.get("xyz")
+    cur = [float(raw[i]) for i in range(3)]
+    if not isinstance(prev, list) or len(prev) < 3:
+        _VIEWER_XT16_TAG_BL_EMA["xyz"] = list(cur)
+        return [round(x, 5) for x in cur]
+    sm = [alpha * cur[i] + (1.0 - alpha) * float(prev[i]) for i in range(3)]
+    _VIEWER_XT16_TAG_BL_EMA["xyz"] = list(sm)
+    return [round(float(x), 5) for x in sm]
+
 
 def _scene3d_tag5_xyz_display_smoothed(tag5_raw: list[float] | None) -> list[float] | None:
     """EMA sul landmark; se ``tag5_raw`` è None resta l'ultimo valore smussato se c'è."""
@@ -6181,6 +6529,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         payload["tool_tip_xyz_m"] = [round(float(_tipv[i]), 5) for i in range(3)]
         payload["servo_feedback_diag"] = {
             "reason": "OK",
+            "backend": _servo_diag_full.get("backend"),
+            "backends_tried": _servo_diag_full.get("backends_tried"),
             "duration_s": _servo_diag_full.get("duration_s"),
             "dds_domain": _servo_diag_full.get("dds_domain"),
             "listen_s": _servo_diag_full.get("listen_s"),
@@ -6358,7 +6708,10 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
 
     _d_center_bl = _ab_to_bl(_depth_vis_arm.tolist())
     rows6 = _tags_bl_rows(6)
-    look_d = _look_at_bl_from_tags(rows6, (0, 1, 2, 3, REFERENCE_TAG_ID_LIDAR_FRAME))
+    # Cono RealSense: priorità **tag scatola id 0** (oggetto davanti), poi altri id / fallback punta.
+    look_d = _look_at_bl_from_tags(rows6, (0,))
+    if look_d is None:
+        look_d = _look_at_bl_from_tags(rows6, (1, 2, 3, REFERENCE_TAG_ID_LIDAR_FRAME))
     if look_d is None:
         look_d = _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)])
     _d_axis_geo = _unit_toward(_d_center_bl, look_d)
@@ -6374,10 +6727,20 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
 
     _w_center_bl = _ab_to_bl(wc_vis.tolist())
     rows0 = _tags_bl_rows(0)
-    look_w = _look_at_bl_from_tags(rows0, (0, 1, 2, 3))
-    if look_w is None:
-        look_w = _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)])
-    _w_axis_geo = _unit_toward(_w_center_bl, look_w)
+    p0 = _look_at_bl_from_tags(rows0, (0,))
+    p5_wrist = _look_at_bl_from_tags(rows0, (REFERENCE_TAG_ID_LIDAR_FRAME,))
+    p5_front = _look_at_bl_from_tags(rows6, (REFERENCE_TAG_ID_LIDAR_FRAME,))
+    p5 = p5_wrist if p5_wrist is not None else p5_front
+    look_w_mid: list[float] | None = None
+    if p0 is not None and p5 is not None:
+        look_w_mid = [(float(p0[i]) + float(p5[i])) * 0.5 for i in range(3)]
+    elif p0 is not None:
+        look_w_mid = list(p0)
+    elif p5 is not None:
+        look_w_mid = list(p5)
+    if look_w_mid is None:
+        look_w_mid = _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)])
+    _w_axis_geo = _unit_toward(_w_center_bl, look_w_mid)
     if _w_axis_geo is not None:
         _w_ax_final = _frustum_axis_correct_arm_base(
             _w_axis_geo,
@@ -6407,7 +6770,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
             "label": "wrist_camera (FK + offset slider; asse come arm_kinematics)",
             "center_m": _ab_to_bl(wc_vis),
             "axis_unit_m": [round(float(_w_ax_final[i]), 5) for i in range(3)],
-            "fovy_deg": 70.0,
+            "fovy_deg": 78.0,
             "aspect": 4.0 / 3.0,
             "near_m": round(_fr_near, 4),
             "far_m": round(_wrist_far_m, 4),
@@ -6448,6 +6811,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
             pt = np.asarray(_depth_vis_arm, dtype=float) + depth_m * np.asarray(_d_ax_corr, dtype=float)
             lm["xt16_tag_m"] = _ab_to_bl([round(float(pt[i]), 5) for i in range(3)])
             lm["xt16_tag_source"] = "depth_cone_ray"
+    if isinstance(lm.get("xt16_tag_m"), list) and len(lm["xt16_tag_m"]) >= 3:
+        lm["xt16_tag_m"] = _smooth_viewer_xt16_tag_base_link(lm["xt16_tag_m"])
     fcs = markers.get("front_camera_from_tag5_m")
     if isinstance(fcs, list) and len(fcs) >= 3:
         lm["front_camera_slider_m"] = _ab_to_bl(fcs)

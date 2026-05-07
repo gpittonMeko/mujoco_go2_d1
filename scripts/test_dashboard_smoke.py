@@ -137,18 +137,18 @@ def main() -> int:
     assert "wrist_local_dx" in eff0 and "target_ema_alpha" in eff0
     assert "viz_go2_tx_m" in eff0 and abs(float(eff0["viz_go2_tx_m"])) < 1e-9
     assert abs(float(eff0["arm_vs_tag5_x"]) + 0.20) < 1e-5
-    # Preset «2» all'avvio modulo (builtin se presets.json assente): offset polso MJCF.
-    assert abs(float(eff0["wrist_local_dx"]) - 0.05) < 1e-8, eff0.get("wrist_local_dx")
+    # Preset «2» all'avvio modulo (builtin se presets.json assente): MJCF polso/camera front nominale in kinematics.
+    assert abs(float(eff0["wrist_local_dx"])) < 1e-8, eff0.get("wrist_local_dx")
     assert abs(float(eff0["wrist_local_dy"])) < 1e-8
-    assert abs(float(eff0["wrist_local_dz"]) + 0.02) < 1e-8, eff0.get("wrist_local_dz")
+    assert abs(float(eff0["wrist_local_dz"])) < 1e-8, eff0.get("wrist_local_dz")
 
     r = client.get("/api/arm/scene_3d?fast=1")
     assert r.status_code == 200
     s3b = r.get_json()
     assert s3b.get("ok") is True
     vgb = (s3b.get("vis_geometry_effective") or {})
-    assert abs(float(vgb["wrist_local_dx"]) - 0.05) < 1e-8
-    assert abs(float(vgb["wrist_local_dz"]) + 0.02) < 1e-8
+    assert abs(float(vgb["wrist_local_dx"])) < 1e-8
+    assert abs(float(vgb["wrist_local_dz"])) < 1e-8
     cva = s3b.get("calibration_visual_alignment")
     assert isinstance(cva, dict)
     assert cva.get("planner_viewer_tag_positions_aligned") is True
@@ -211,8 +211,8 @@ def main() -> int:
     assert p2.get("name") == "2"
     assert p2.get("ok") is True
     effp2 = p2.get("effective") or {}
-    assert abs(float(effp2["wrist_local_dx"]) - 0.05) < 1e-8
-    assert abs(float(effp2["wrist_local_dz"]) + 0.02) < 1e-8
+    assert abs(float(effp2["wrist_local_dx"])) < 1e-8
+    assert abs(float(effp2["wrist_local_dz"])) < 1e-8
 
     # Round-trip preset (save → muta tuning → load ripristina) + 409 se nome già usato
     r = client.post(
@@ -278,11 +278,11 @@ def main() -> int:
     fru = s3.get("scene_camera_frusta_base_link")
     assert isinstance(fru, dict) and "depth_mjcf" in fru and "wrist" in fru
     assert fru["depth_mjcf"].get("fovy_deg") == 62.0
-    assert fru["wrist"].get("fovy_deg") == 70.0
+    assert fru["wrist"].get("fovy_deg") == 78.0
     assert len(fru["depth_mjcf"].get("axis_unit_m") or []) == 3
     assert fru["depth_mjcf"].get("near_m") == 0.02
-    assert abs(float(fru["depth_mjcf"].get("far_m") or 0) - 0.32) < 1e-6
-    assert abs(float(fru["wrist"].get("far_m") or 0) - 0.32) < 1e-6
+    assert abs(float(fru["depth_mjcf"].get("far_m") or 0) - 0.62) < 1e-6
+    assert abs(float(fru["wrist"].get("far_m") or 0) - 0.58) < 1e-6
     sm = s3.get("scene_mesh")
     assert isinstance(sm, dict) and "manifest" in sm
     vgm = s3.get("vis_geometry_markers_arm_m")

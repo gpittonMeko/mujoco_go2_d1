@@ -75,7 +75,7 @@ Per dettagli sul controllo del D1, contattare Unitree o consultare la documentaz
 
 **Modelli MuJoCo:**
 - **`go2_d1.xml`:** braccio Z1 (menagerie), generato da `scripts/build_go2_arm.py`.
-- **`go2_d1_d1mesh.xml`:** mesh Unitree D1 (`d1_550_description`), limiti giunti da datasheet (J0–J5 su `arm_joint1`–`arm_joint6`; la pinza datasheet non è un DoF separato nel MJCF).
+- **`go2_d1_d1mesh.xml`:** mesh Unitree D1 (`d1_550_description`), limiti giunti da datasheet (J0–J5 su `arm_joint1`–`arm_joint6`; la pinza datasheet non è un DoF separato nel MJCF). Gli STL usano path **relativi a `meshdir` (`assets/`)**: `../../../../d1_550_description/meshes/…` fino alla root del clone (niente path assoluti tipo `/home/lab/...`).
 
 **Setup (Z1 / build):**
 ```bash

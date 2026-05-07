@@ -71,13 +71,14 @@
     <mesh file="calf_mirror_1.obj" />
     <mesh file="foot.obj" />
 
-    <mesh name="d1_base_link" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/base_link.STL" />
-    <mesh name="d1_Empty_Link1" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link1.STL" />
-    <mesh name="d1_Empty_Link2" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link2.STL" />
-    <mesh name="d1_Empty_Link3" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link3.STL" />
-    <mesh name="d1_Empty_Link4" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link4.STL" />
-    <mesh name="d1_Empty_Link5" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link5.STL" />
-    <mesh name="d1_Empty_Link6" file="/home/lab/Documents/Unitree_Simulator/d1_550_description/meshes/Empty_Link6.STL" />
+    <!-- Path relativi a meshdir (assets/): ../d1_550_description/meshes/ = vendored nel repo. -->
+    <mesh name="d1_base_link" file="../d1_550_description/meshes/base_link.STL" />
+    <mesh name="d1_Empty_Link1" file="../d1_550_description/meshes/Empty_Link1.STL" />
+    <mesh name="d1_Empty_Link2" file="../d1_550_description/meshes/Empty_Link2.STL" />
+    <mesh name="d1_Empty_Link3" file="../d1_550_description/meshes/Empty_Link3.STL" />
+    <mesh name="d1_Empty_Link4" file="../d1_550_description/meshes/Empty_Link4.STL" />
+    <mesh name="d1_Empty_Link5" file="../d1_550_description/meshes/Empty_Link5.STL" />
+    <mesh name="d1_Empty_Link6" file="../d1_550_description/meshes/Empty_Link6.STL" />
   </asset>
 
   <worldbody>
@@ -96,7 +97,7 @@
       <geom size="0.047" pos="0.293 0 -0.06" class="collision" />
       <site name="imu" pos="-0.02557 0 0.04232" />
       <!-- Camera per depth/SLAM (da fork lupinjia/unitree_mujoco) -->
-      <camera name="depth_camera" pos="0.315 0 0.09" euler="0 -1.57 -1.57" mode="fixed" fovy="62"/>
+      <camera name="depth_camera" pos="0.34 0 0.09" euler="0 -1.57 -1.57" mode="fixed" fovy="62"/>
       <body name="FL_hip" pos="0.1934 0.0465 0">
         <inertial pos="-0.0054 0.00194 -0.000105" quat="0.497014 0.499245 0.505462 0.498237"
           mass="0.678"
@@ -288,7 +289,8 @@
                     <joint name="arm_joint6" axis="1 0 0" range="-2.35619 2.35619"/>
                     <geom class="d1_visual" mesh="d1_Empty_Link6"/>
                     <geom size="0.0325 0.0255" pos="0.0255 0 0" quat="1 0 1 0" class="d1_collision"/>
-                    <camera name="wrist_camera" pos="0.1 0 0" euler="0 -1.5708 -1.5708" fovy="70" mode="fixed"/>
+                    <!-- Centro ottico: 0.02 m lungo link6 + 0.03 m lungo +Z arm_link00 (FK in arm_kinematics_d1_template) -->
+                    <camera name="wrist_camera" pos="0.02 0 0" euler="0 -1.5708 -1.5708" fovy="78" mode="fixed"/>
                   </body>
                 </body>
               </body>

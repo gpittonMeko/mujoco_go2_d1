@@ -20,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from arm_kinematics_d1_template import ARM_FOLD_POSE, fk_tool_tip, ik_reach, smooth
+from arm_kinematics_d1_template import fk_tool_tip, ik_reach
 
 
 # Tags glued on / near the grasp object (tag25h9 family).
@@ -455,18 +455,59 @@ def grip_point_from_tags(tags_result: dict[str, Any], frame_shape: tuple[int, in
     cx = sum(xs) / len(xs)
     cy = sum(ys) / len(ys)
     area = max(1.0, (x2 - x1) * (y2 - y1))
+
+    # Asse presa / yaw nel piano immagine: usare il bordo reale del tag (OpenCV: corneri in senso orario
+    # da alto-sinistra). Prima era una retta orizzontale sul centro → tag_planar_yaw sempre ~0° anche
+    # con scatola inclinata nella camera polso.
+    use_aabb_axis = os.environ.get("GO2_GRASP_TAG_AXIS_USE_AABB", "0").lower() in {"1", "true", "yes"}
+    grip_axis_px: list[list[float]]
+    orient_id: int | None = None
+    if use_aabb_axis:
+        grip_axis_px = [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]]
+    else:
+
+        def _tag_size_score(tg: dict[str, Any]) -> float:
+            try:
+                return float(tg.get("mean_edge_px") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        orient_t = max(box_tags, key=_tag_size_score)
+        orient_id = int(orient_t.get("id", -1))
+        c4 = orient_t.get("corners_px") or []
+        if len(c4) >= 2:
+            p0 = [float(c4[0][0]), float(c4[0][1])]
+            p1 = [float(c4[1][0]), float(c4[1][1])]
+            ex = p1[0] - p0[0]
+            ey = p1[1] - p0[1]
+            elen = float(math.hypot(ex, ey))
+            if elen < 1e-3:
+                grip_axis_px = [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]]
+            else:
+                ux, uy = ex / elen, ey / elen
+                half = max(8.0, 0.55 * elen, float(orient_t.get("mean_edge_px") or elen) * 0.65)
+                ax0 = cx - ux * half
+                ay0 = cy - uy * half
+                ax1 = cx + ux * half
+                ay1 = cy + uy * half
+                grip_axis_px = [[round(ax0, 1), round(ay0, 1)], [round(ax1, 1), round(ay1, 1)]]
+        else:
+            grip_axis_px = [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]]
+
     out = {
         "ok": True,
         "source": "apriltag",
         "confidence": 0.98 if len(box_tags) >= 2 else 0.86,
         "box_tag_ids": [int(t.get("id", -1)) for t in box_tags],
         "grip_center_px": [round(cx, 1), round(cy, 1)],
-        "grip_axis_px": [[round(x1, 1), round(cy, 1)], [round(x2, 1), round(cy, 1)]],
+        "grip_axis_px": grip_axis_px,
         "box_bbox_px": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
         "box_size_px": [round(x2 - x1, 1), round(y2 - y1, 1)],
         "box_area_px": round(area, 1),
         "gripper_model": "east_west_close_to_center",
     }
+    if orient_id is not None and not use_aabb_axis:
+        out["tag_orientation_id"] = orient_id
     if frame_shape is not None and len(frame_shape) >= 2:
         h, w = float(frame_shape[0]), float(frame_shape[1])
         out["approach_error_px"] = [round(cx - w / 2.0, 1), round(cy - h / 2.0, 1)]
@@ -565,23 +606,70 @@ def merge_grip_point(
     return {"ok": False, "source": "none", "reason": tag_grip.get("reason") or object_grip.get("reason") or "no grip point"}
 
 
+def grip_tag_planar_yaw_rad(grip: dict[str, Any]) -> float | None:
+    """
+    Angolo nel piano immagine dell'asse «largo» box (``grip_axis_px``): coincide con l'orientamento
+    del QR/tag sulla faccia scatola. Usato per ruotare pre-approccio / presa nel frame base (~orizzontale).
+    """
+    ax = grip.get("grip_axis_px")
+    if not (isinstance(ax, list) and len(ax) >= 2):
+        return None
+    a, b = ax[0], ax[1]
+    if not (isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)) and len(a) >= 2 and len(b) >= 2):
+        return None
+    try:
+        return float(
+            math.atan2(float(b[1]) - float(a[1]), float(b[0]) - float(a[0]))
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def build_grasp_preview(target_base: dict[str, Any]) -> dict[str, Any]:
     if not target_base.get("ok"):
         return {"ok": False, "error": target_base.get("error", "no target")}
 
     x, y, z = target_base["base_xyz_m"]
+    # Offset default: arretramento lungo +X base braccio, poi presa.
+    # ``tag_planar_yaw_rad`` è l'angolo di un bordo tag **nel piano immagine** (pixel): non coincide
+    # con una rotazione attorno all'asse verticale del **base braccio**. Ruotare (dx,dy) base con ψ
+    # immagine sposta la pre‑presa lateralmente (es. ~90° → «si allontana» invece di avvicinarsi).
+    # Solo con GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW=1 si applica quella ψ (sperimentale).
+    use_tag_yaw = os.environ.get("GO2_GRASP_ORIENT_PREVIEW_TO_TAG", "1").lower() in {"1", "true", "yes"}
+    image_as_base = os.environ.get("GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    psi = math.radians(float(os.environ.get("GO2_GRASP_TAG_YAW_OFFSET_DEG", "0")))
+    if use_tag_yaw and image_as_base:
+        raw = target_base.get("tag_planar_yaw_rad")
+        if raw is not None:
+            try:
+                psi += float(raw)
+            except (TypeError, ValueError):
+                pass
+    c, s = math.cos(psi), math.sin(psi)
+
+    def rot(dx: float, dy: float) -> tuple[float, float]:
+        return c * dx - s * dy, s * dx + c * dy
+
+    d_pre_x, d_pre_y = rot(-0.06, 0.0)
+    d_ap_x, d_ap_y = rot(-0.015, 0.0)
+    d_li_x, d_li_y = rot(-0.04, 0.0)
     stages = [
-        ("pre_grasp", x - 0.06, y, z + 0.12),
-        ("approach", x - 0.015, y, z + 0.045),
+        ("pre_grasp", x + d_pre_x, y + d_pre_y, z + 0.12),
+        ("approach", x + d_ap_x, y + d_ap_y, z + 0.045),
         ("grasp", x, y, z + 0.02),
-        ("lift", x - 0.04, y, z + 0.18),
+        ("lift", x + d_li_x, y + d_li_y, z + 0.18),
     ]
     plan = []
-    previous = list(ARM_FOLD_POSE)
+    prev_q: list[float] | None = None
     for name, sx, sy, sz in stages:
-        q = ik_reach(sx, sy, sz)
+        q = ik_reach(sx, sy, sz, primary_seed=prev_q)
         if q is None:
             return {"ok": False, "failed_stage": name, "target_xyz_m": [sx, sy, sz]}
+        prev_q = q
         tip = fk_tool_tip(q)
         plan.append(
             {
@@ -591,7 +679,6 @@ def build_grasp_preview(target_base: dict[str, Any]) -> dict[str, Any]:
                 "fk_tip_xyz_m": [round(float(v), 4) for v in tip],
             }
         )
-        previous = smooth(previous, q, 0.5)
 
     gripper = [
         {"stage": "pre_grasp", "gripper": "open"},
@@ -619,8 +706,13 @@ def plan_from_frame(
     tag_target = estimate_box_target_base(poses)
     obj_target = target_base_from_object_detection(object_detection or {}, frame) if object_detection else {"ok": False}
     target = tag_target if tag_target.get("ok") else obj_target
-    preview = build_grasp_preview(target)
     tag_grip = grip_point_from_tags(tags, frame.shape[:2])
+    yaw = grip_tag_planar_yaw_rad(tag_grip)
+    if target.get("ok") and yaw is not None:
+        target = dict(target)
+        target["tag_planar_yaw_rad"] = round(float(yaw), 6)
+        target["tag_planar_yaw_deg"] = round(float(math.degrees(yaw)), 3)
+    preview = build_grasp_preview(target)
     obj_grip = grip_point_from_object_detection(object_detection or {}, frame.shape[:2]) if object_detection else {"ok": False}
     if prefer_tag_grip is None:
         prefer_tag_grip = os.environ.get("GO2_GRASP_PREFER_TAG_GRIP", "0").lower() in {"1", "true", "yes"}

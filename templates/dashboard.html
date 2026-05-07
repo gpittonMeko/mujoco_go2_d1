@@ -971,7 +971,7 @@
                   <input type="range" id="vg_frustum_depth_rz_deg" min="-120" max="120" step="1" value="0" />
                 </label>
                 <label class="small" style="display:flex;flex-direction:column;gap:4px;">Profondità cono <code id="vg_l_frustum_depth_far_cm" class="muted">—</code>
-                  <input type="range" id="vg_frustum_depth_far_cm" min="4" max="180" step="1" value="32" />
+                  <input type="range" id="vg_frustum_depth_far_cm" min="4" max="180" step="1" value="62" />
                 </label>
               </div>
             </div>
@@ -988,7 +988,7 @@
                   <input type="range" id="vg_frustum_wrist_rz_deg" min="-120" max="120" step="1" value="0" />
                 </label>
                 <label class="small" style="display:flex;flex-direction:column;gap:4px;">Profondità cono <code id="vg_l_frustum_wrist_far_cm" class="muted">—</code>
-                  <input type="range" id="vg_frustum_wrist_far_cm" min="4" max="180" step="1" value="32" />
+                  <input type="range" id="vg_frustum_wrist_far_cm" min="4" max="180" step="1" value="58" />
                 </label>
               </div>
             </div>
@@ -3103,11 +3103,18 @@
           var far = o.far_m != null ? Number(o.far_m) : 0.32;
           var cam = new THREE.PerspectiveCamera(fovy, asp, near, far);
           cam.position.set(p[0], p[1], p[2]);
-          cam.up.set(0, 0, 1);
-          var tx = p[0] + ax[0];
-          var ty = p[1] + ax[1];
-          var tz = p[2] + ax[2];
-          cam.lookAt(tx, ty, tz);
+          /* Non usare lookAt: i punti sono nello stesso frame MuJoCo (Z su) del gruppo ``orient``,
+           * ma lookAt interpreta target in world space e con ``orient.rotation.x = -PI/2`` i coni finiscono
+           * ruotati (es. verso terra). Allinea l'asse -Z della camera al versore ottico ``axis_unit_m``. */
+          var fwd = new THREE.Vector3(Number(ax[0]), Number(ax[1]), Number(ax[2]));
+          if (fwd.lengthSq() < 1e-14) fwd.set(1, 0, 0);
+          else fwd.normalize();
+          var upW = new THREE.Vector3(0, 0, 1);
+          if (Math.abs(fwd.dot(upW)) > 0.985) upW = new THREE.Vector3(0, 1, 0);
+          var zPlus = fwd.clone().multiplyScalar(-1);
+          var xPlus = new THREE.Vector3().crossVectors(upW, zPlus).normalize();
+          var yPlus = new THREE.Vector3().crossVectors(zPlus, xPlus).normalize();
+          cam.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xPlus, yPlus, zPlus));
           cam.updateMatrixWorld(true);
           var helper = new THREE.CameraHelper(cam);
           if (helper.material && helper.material.color) helper.material.color.setHex(colorHex);

@@ -280,6 +280,7 @@
                     <joint name="arm_joint6" axis="1 0 0" range="-2.79253 2.79253"/>
                     <geom class="z1_visual" mesh="z1_Link06"/>
                     <geom size="0.0325 0.0255" pos="0.0255 0 0" quat="1 0 1 0" class="z1_collision"/>
+                    <!-- Z1 placeholder arm: offset ≠ D1 mesh. arm_kinematics_d1_template.WRIST_CAMERA_* matches go2_d1_d1mesh.xml (0.1 m). -->
                     <camera name="wrist_camera" pos="0.05 0 0" euler="0 -1.5708 -1.5708" fovy="70" mode="fixed"/>
                   </body>
                 </body>

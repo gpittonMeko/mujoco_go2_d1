@@ -1,0 +1,2 @@
+# Shell remoto (Jetson/Linux): fine riga LF anche su checkout Windows.
+*.sh text eol=lf

@@ -34,6 +34,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 REMOTE_PUSH_FILES = [
     "diagnostics_dashboard.py",
+    "msg/ArmString_.hpp",
+    "msg/PubServoInfo_.hpp",
+    "msg/ArmString_.cpp",
+    "msg/PubServoInfo_.cpp",
+    "scripts/build_d1_arm_helpers.sh",
+    "scripts/d1_arm_dds_helper.cpp",
+    "scripts/d1_arm_feedback_helper.cpp",
+    "scripts/d1_arm_servo_read_python.py",
     "go2_dashboard/__init__.py",
     "go2_dashboard/app.py",
     "go2_dashboard/legacy_mount.py",
@@ -57,6 +65,7 @@ REMOTE_PUSH_FILES = [
     "scripts/nx_dashboard_supervise.sh",
     "scripts/nx_machine_diag.sh",
     "scripts/nx_peripheral_probe.sh",
+    "scripts/probe_nx_dds_servo.py",
     "scripts/udev/99-go2-realsense-dashboard.rules",
     "scripts/go2-visual-dashboard.service",
     "templates/dashboard.html",
@@ -73,12 +82,20 @@ export GO2_ENABLE_BASE_MOTION=1
 # Interfaccia Ethernet Jetson→subnet Unitree (di solito 192.168.123.x). Se usi WiFi verso l'AP del cane: wlan0.
 export GO2_DDS_DOMAIN=0
 export GO2_DDS_INTERFACE=eth0
-# Cyclone: allinea la lib C usata dal wheel ``cyclonedds`` pip (evita mix con
-# ``/usr/local/lib/libddsc.so*`` diverso → SIGSEGV in pub.py / Sport RPC).
+# Cyclone + iceoryx: i binari C++ ``d1_arm_*`` (Unitree SDK) risolvono ``free_iox_chunk`` da
+# ``/usr/local/lib`` (iceoryx accoppiato al libddsc di sistema). Mettere *solo*
+# ``$HOME/cyclonedds/install/lib`` in testa rompeva il lookup (symbol undefined su ``d1_arm_command``).
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+_UT="${UNITREE_SDK2:-/usr/local}"
+if [ -d "$_UT/lib" ]; then
+  export LD_LIBRARY_PATH="$_UT/lib:${LD_LIBRARY_PATH}"
+elif [ -d "$_UT/lib64" ]; then
+  export LD_LIBRARY_PATH="$_UT/lib64:${LD_LIBRARY_PATH}"
+fi
 if [ -d "$HOME/cyclonedds/install/lib" ]; then
   export CYCLONEDDS_HOME="$HOME/cyclonedds/install"
-  export LD_LIBRARY_PATH="$HOME/cyclonedds/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   export CMAKE_PREFIX_PATH="$HOME/cyclonedds/install${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}$HOME/cyclonedds/install/lib"
 fi
 # --- CycloneDDS / unitree_sdk2py (Jetson: segfault noti con wheel miste) ---
 # Guida: scripts/nx_go2_sta_and_dds_troubleshoot.txt | Diagnosi: bash scripts/nx_print_cyclone_diag.sh
@@ -104,12 +121,29 @@ export GO2_VIS_GEOMETRY_DEFAULT_PRESET=2
 export GO2_CAMERA_AUTO_USB_MAP=1
 export GO2_REALSENSE_V4L_DEFAULT=6
 export GO2_REALSENSE_VIDEO_PROBE=1
-export D1_SEARCH_MAX_CYCLES=12
+export D1_SEARCH_MAX_CYCLES=10
 export GO2_GRASP_USE_FUSED_PLAN_IK=1
+export GO2_GRASP_FUSED_WITH_CENTER=1
 export GO2_TRUST_WRIST_ABSOLUTE_IK=1
-export GO2_GRASP_START_FOLD=0
-export GO2_GRASP_GOTO_SAVED_START=0
+# Fold + START: senza goto START il braccio resta dove capita → piano/tag spesso assenti e grasp «non va».
+export GO2_GRASP_START_FOLD=1
+export GO2_GRASP_GOTO_SAVED_START=1
 export GO2_GRASP_WAIT_TAG_BEFORE_START_POSE=0
+# Ultima spiaggia se il polso non locka mai (solo se area libera / rischio accettabile in laboratorio).
+export GO2_FRONT_CAMERA_FALLBACK_GRASP=1
+# Grasp: meno punti fold→START (meno «cede»); yaw tag in immagine solo se GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW=1.
+export GO2_GRASP_FAST_START_ALIGN=1
+export GO2_GRASP_START_PREHOLD_CAP=5
+export D1_GRASP_START_ALIGN_MAX_STEP_DEG=4.8,2.5,2.3,3.4,4.8,5.0,8.5
+export D1_GRASP_FOLD_MAX_STEP_DEG=4.5,2.3,2.1,3.0,4.5,4.8,8.0
+export GO2_GRASP_ORIENT_PREVIEW_TO_TAG=1
+# 0 (default): NON ruotare offset pre‑presa nel base XY con lo yaw del tag **in immagine** (errore con camera polso).
+# 1 = sperimentale (può «allontanare» il braccio se ψ immagine ≠ rotazione base).
+export GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW=0
+# 0 (default): asse grip da bordo reale AprilTag; 1 = vecchio asse AABB orizzontale (~0°).
+# export GO2_GRASP_TAG_AXIS_USE_AABB=0
+# Piano fuso stabile: 1 = IK dopo un solo frame «ready» (più reattivo; 2–3 se il piano jittera).
+export GO2_GRASP_FUSED_CONFIRM_FRAMES=1
 export D1_SEARCH_DELAY_MS=260
 export D1_PLAN_DELAY_MS=420
 export D1_START_ALIGN_DELAY_MS=260
@@ -134,7 +168,15 @@ export D1_FEEDBACK_MEDIAN_SAMPLES=3
 export D1_FEEDBACK_MEDIAN_GAP_S=0.03
 export D1_PATH_POINT_REPEAT=1
 export D1_ABORTABLE_MOTION_CHUNKS=1
-export D1_ABORTABLE_CHUNK_MESSAGES=8
+# Più messaggi per chunk = meno confini subprocess (meno «cede» tra uno step e l’altro).
+export D1_ABORTABLE_CHUNK_MESSAGES=20
+# Tra un chunk e l’altro: hold dalla posa feedback (anti-cedimento / ripetizione coppia posizione).
+export GO2_D1_HOLD_BETWEEN_CHUNKS=1
+export D1_INTER_CHUNK_HOLD_REPEATS=18
+export D1_INTER_CHUNK_HOLD_DELAY_MS=58
+# Hold generico (emergenza, publish_d1_hold_current default): più ripetizioni = meno cedimento tra comandi.
+export D1_HOLD_REPEATS=22
+export D1_HOLD_DELAY_MS=88
 export D1_ZERO_TO_START_SPLIT=1
 export D1_ZERO_TO_START_SETTLE_REPEATS=5
 export D1_ZERO_TO_START_SETTLE_DELAY_MS=45
@@ -164,8 +206,8 @@ export D1_GOTO_PREHOLD_DELAY_MS=55
 export D1_START_PREHOLD=1
 export D1_START_PREHOLD_REPEATS=10
 export D1_START_PREHOLD_DELAY_MS=55
-export D1_POST_MOTION_HOLD_REPEATS=10
-export D1_POST_MOTION_HOLD_DELAY_MS=55
+export D1_POST_MOTION_HOLD_REPEATS=14
+export D1_POST_MOTION_HOLD_DELAY_MS=60
 """.strip()
 
 
@@ -314,6 +356,45 @@ def _remote_run_probe(ssh: paramiko.SSHClient) -> None:
         print("probe stderr:", err)
 
 
+def _remote_build_d1_arm_helpers(ssh: paramiko.SSHClient) -> None:
+    """Compila ``bin/d1_arm_command`` e ``bin/d1_arm_feedback_helper`` sulla NX (g++ + Unitree SDK2)."""
+    print("[deploy] Compilazione helper braccio D1 (bin/d1_arm_command) …")
+    log = "/tmp/go2_d1_arm_helpers_build.log"
+    script = f"""set +e
+cd "{REMOTE_BASE}"
+mkdir -p bin
+rm -f bin/d1_arm_command bin/d1_arm_feedback_helper
+set -a
+if [ -f scripts/nx_dashboard_env.sh ]; then
+  # shellcheck disable=SC1091
+  . scripts/nx_dashboard_env.sh
+fi
+set +a
+bash scripts/build_d1_arm_helpers.sh >{log} 2>&1
+EC=$?
+echo "EXIT_CODE=$EC" >>{log}
+cat {log}
+chmod +x bin/d1_arm_command bin/d1_arm_feedback_helper 2>/dev/null || true
+ls -la bin/d1_arm_command bin/d1_arm_feedback_helper 2>/dev/null || true
+exit $EC
+"""
+    stdin, stdout, stderr = ssh.exec_command(script)
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode(errors="replace")
+    err = stderr.read().decode(errors="replace")
+    if out.strip():
+        print(out.strip())
+    if err.strip():
+        print("build_d1_helpers stderr:", err.strip())
+    if code != 0:
+        print(
+            f"[deploy] ERRORE: build_d1_arm_helpers.sh exit={code} — "
+            "verifica g++, Unitree SDK2 e CYCLONEDDS_HOME sulla NX."
+        )
+    else:
+        print("[deploy] Helper D1 compilati OK.")
+
+
 def _mesh_rel_paths() -> list[str]:
     """Path relativi alla root repo per mesh Go2 (.obj) e D1 (.STL) servite dal viewer."""
     out: list[str] = []
@@ -361,8 +442,10 @@ def main() -> None:
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes "
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/urdf "
         f"{REMOTE_BASE}/go2_dashboard/blueprints "
+        f"{REMOTE_BASE}/msg "
         f"{REMOTE_BASE}/templates "
         f"{REMOTE_BASE}/data "
+        f"{REMOTE_BASE}/bin "
         f"{REMOTE_BASE}/scripts/udev"
     )
     stdout.channel.recv_exit_status()
@@ -441,6 +524,8 @@ def main() -> None:
     )
     strip_stdout.channel.recv_exit_status()
     sftp.close()
+
+    _remote_build_d1_arm_helpers(ssh)
 
     print("[deploy] Install cron @reboot (non blocca boot; log in dashboard_boot.log) …")
     _remote_install_crontab(ssh)

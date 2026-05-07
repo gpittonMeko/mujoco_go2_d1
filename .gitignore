@@ -38,3 +38,8 @@ cyclonedds/build/
 
 # D1 arm DDS helpers (compiled locally on Jetson — see scripts/build_d1_arm_helpers.sh)
 bin/
+
+# Saved START alignment snapshot on NX (operator-specific scene geometry)
+data/start_alignment.json
+# Calibrated folded "true zero" pose on NX (operator-specific)
+data/true_zero_pose.json

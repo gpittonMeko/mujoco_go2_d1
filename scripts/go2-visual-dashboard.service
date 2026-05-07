@@ -1,0 +1,20 @@
+[Unit]
+Description=Go2 visual dashboard (Flask)
+Documentation=file:/home/unitree/go2_visual_dashboard/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unitree/go2_visual_dashboard
+ExecStart=/home/unitree/go2_visual_dashboard/scripts/nx_serve_foreground.sh
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Nice=5
+# Exit 0 anche se il processo figlio è già morto (evita job failed rumorosi)
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target
