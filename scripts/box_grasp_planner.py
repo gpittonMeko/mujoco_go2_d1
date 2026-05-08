@@ -296,6 +296,7 @@ def make_tag5_calibration_record(
 ) -> dict[str, Any]:
     """
     Crea il record da salvare in ``data/tag5_calibration_arm_base.json``:
+    salva sia il **nominale fisico** del tag 5 sia la **correzione interna**
     ``offset = nominal - heuristic(tag5)`` nello stesso frame (base braccio).
     """
     h = _camera_tvec_to_base_heuristic_xyz(

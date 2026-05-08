@@ -115,6 +115,13 @@ def main() -> int:
     assert isinstance(gp.get("narrative_it"), list)
     assert "candidates" in gp
     assert "true_zero_json" in gp
+    assert gp.get("front_first_flow_enabled") is True
+    assert gp.get("preferred_execution_flow") == [
+        "front_camera_detect_object",
+        "goto_saved_start",
+        "grasp_from_start",
+        "return_to_start",
+    ]
 
     r = client.get("/api/arm/ui_tuning")
     assert r.status_code == 200
@@ -136,8 +143,17 @@ def main() -> int:
     assert "arm_vs_tag5_x" in eff0 and "front_vs_tag5_x" in eff0
     assert "wrist_local_dx" in eff0 and "target_ema_alpha" in eff0
     assert "viz_go2_tx_m" in eff0 and abs(float(eff0["viz_go2_tx_m"])) < 1e-9
-    assert abs(float(eff0["arm_vs_tag5_x"]) + 0.20) < 1e-5
-    # Preset «2» all'avvio modulo (builtin se presets.json assente): MJCF polso/camera front nominale in kinematics.
+    assert abs(float(eff0["arm_vs_tag5_x"]) + 0.19) < 1e-5
+    assert abs(float(eff0["arm_vs_tag5_y"])) < 1e-5
+    assert abs(float(eff0["arm_vs_tag5_z"]) + 0.08) < 1e-5
+    assert abs(float(eff0["front_vs_tag5_x"]) - 0.185) < 1e-5
+    assert abs(float(eff0["front_vs_tag5_y"])) < 1e-5
+    assert abs(float(eff0["front_vs_tag5_z"]) + 0.07) < 1e-5
+    assert abs(float(eff0["frustum_depth_rx_deg"]) - 20.0) < 1e-5
+    assert abs(float(eff0["viz_front_cam_dx_m"]) - 0.225) < 1e-5
+    assert abs(float(eff0["viz_front_cam_dy_m"])) < 1e-5
+    assert abs(float(eff0["viz_front_cam_dz_m"]) + 0.05) < 1e-5
+    # Preset «2» all'avvio modulo (builtin se presets.json assente): geometria calibrata lab.
     assert abs(float(eff0["wrist_local_dx"])) < 1e-8, eff0.get("wrist_local_dx")
     assert abs(float(eff0["wrist_local_dy"])) < 1e-8
     assert abs(float(eff0["wrist_local_dz"])) < 1e-8, eff0.get("wrist_local_dz")
@@ -173,7 +189,7 @@ def main() -> int:
     assert r.status_code == 200
     vg2 = r.get_json()
     assert vg2.get("ok") is True
-    assert abs(float(vg2["effective"]["arm_vs_tag5_x"]) + 0.20) < 1e-5
+    assert abs(float(vg2["effective"]["arm_vs_tag5_x"]) + 0.2) < 1e-5
 
     r = client.get("/api/arm/vis_geometry/presets")
     assert r.status_code == 200

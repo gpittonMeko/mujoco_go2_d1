@@ -179,14 +179,17 @@ def _nominal_tag5_arm_base_from_env() -> list[float] | None:
     """Centro AprilTag 5 (landmark XT-16) nel frame base braccio: ``GO2_TAG5_NOMINAL_ARM_BASE_M=x,y,z`` (m)."""
     raw = os.environ.get("GO2_TAG5_NOMINAL_ARM_BASE_M", "").strip()
     if not raw:
-        return None
+        # Fallback fisico coerente con la scena di laboratorio: riferimento assoluto
+        # nel frame base del servo, con tag 5 a X=19 cm, Y=0, Z=8 cm.
+        return [0.19, 0.0, 0.08]
     try:
         parts = [float(x.strip()) for x in raw.split(",")]
         if len(parts) >= 3:
             return [parts[0], parts[1], parts[2]]
     except ValueError:
-        return None
-    return None
+        pass
+    # Se l'env è malformata, non blocchiamo la calibrazione: usa il fallback fisico.
+    return [0.19, 0.0, 0.08]
 
 
 GO2_HOST = os.environ.get("GO2_HOST", "192.168.123.18")
@@ -993,15 +996,15 @@ def grasp_session_effective_flags() -> dict[str, Any]:
 
 def _vis_geometry_defaults_dict() -> dict[str, float]:
     default_alpha = float(os.environ.get("GO2_SCENE3D_TARGET_EMA_ALPHA", "0.28"))
-    # Mount mesh braccio in viewer (``viz_arm_mount_*``): default −200 mm in +X base_link (indietro) rispetto al nominale MJCF (0.15,0,0.06).
-    # Polso: MJCF nominale ``wrist_camera`` 0.02,0,+0.03 in link6 (~3 cm sopra polso); slider ``wrist_local_*`` solo rifinitura.
+    # Legacy viewer calibration for the tag5 overlays.
+    # Actual component poses in the 3D scene are taken directly from MJCF/FK below.
     return {
-        "arm_vs_tag5_x": -0.20,
+        "arm_vs_tag5_x": -0.19,
         "arm_vs_tag5_y": 0.0,
-        "arm_vs_tag5_z": 0.0,
-        "front_vs_tag5_x": 0.20,
+        "arm_vs_tag5_z": -0.08,
+        "front_vs_tag5_x": 0.185,
         "front_vs_tag5_y": 0.0,
-        "front_vs_tag5_z": -0.08,
+        "front_vs_tag5_z": -0.07,
         "wrist_local_dx": 0.0,
         "wrist_local_dy": 0.0,
         "wrist_local_dz": 0.0,
@@ -1015,10 +1018,10 @@ def _vis_geometry_defaults_dict() -> dict[str, float]:
         "viz_arm_mount_dx_m": -0.20,
         "viz_arm_mount_dy_m": 0.0,
         "viz_arm_mount_dz_m": 0.0,
-        "viz_front_cam_dx_m": 0.0,
+        "viz_front_cam_dx_m": 0.225,
         "viz_front_cam_dy_m": 0.0,
-        "viz_front_cam_dz_m": 0.0,
-        "frustum_depth_rx_deg": 0.0,
+        "viz_front_cam_dz_m": -0.05,
+        "frustum_depth_rx_deg": 20.0,
         "frustum_depth_ry_deg": 0.0,
         "frustum_depth_rz_deg": 0.0,
         "frustum_wrist_rx_deg": 0.0,
@@ -1452,6 +1455,10 @@ def grasp_pipeline_status() -> dict[str, Any]:
         )
 
     fusion_ready_exec = _plan_ready_for_fused_ik(plan)
+    front_first_flow_enabled = _front_first_grasp_flow_enabled()
+    preferred_execution_flow = _grasp_front_first_sequence_steps()
+    if front_first_flow_enabled:
+        story.append("Flusso attivo: camera frontale → START fisso → presa → ritorno a START.")
     wrist_c0 = cands_raw.get("0") or {}
     wd0 = _candidate_ik_detail(wrist_c0)
     wrist_sees_box_tags = bool(wd0.get("has_box_tags_for_ik"))
@@ -1493,6 +1500,8 @@ def grasp_pipeline_status() -> dict[str, Any]:
         "wrist_sees_box_tags": wrist_sees_box_tags,
         "wrist_preview_ok": wrist_preview_ok,
         "selected_camera": sel,
+        "front_first_flow_enabled": front_first_flow_enabled,
+        "preferred_execution_flow": preferred_execution_flow,
         "candidates": per_dev,
         "diagnose_hints": diag.get("hints") or [],
         "narrative_it": story,
@@ -1621,8 +1630,14 @@ def _arm_event(kind: str, message: str, **extra: Any) -> None:
         "t": now_iso(),
         "kind": kind,
         "message": message,
-        **{k: v for k, v in extra.items() if v is not None},
     }
+    for k, v in extra.items():
+        if v is None:
+            continue
+        try:
+            event[k] = _json_safe_for_status(v)
+        except Exception:
+            event[k] = repr(v)
     with ARM_OPERATION_LOCK:
         ARM_GRASP_EVENTS.append(event)
         del ARM_GRASP_EVENTS[:-ARM_GRASP_EVENTS_MAX]
@@ -1641,6 +1656,46 @@ def _grasp_live_phase(label_it: str, **extra: Any) -> None:
     detail = {k: v for k, v in detail.items() if v is not None}
     _arm_job_update("running", detail)
     _arm_event("phase", label_it, **extra)
+
+
+def _candidate_debug_summary(candidate: dict[str, Any] | None) -> dict[str, Any]:
+    cand = candidate or {}
+    tags = ((cand.get("tags") or {}).get("tags") or []) if isinstance(cand, dict) else []
+    ids = [int(t.get("id", -1)) for t in tags if isinstance(t, dict)]
+    box_ids = [i for i in ids if i in BOX_TAG_IDS_IK]
+    grip = (cand.get("grip_point") or {}) if isinstance(cand, dict) else {}
+    preview = (cand.get("preview") or {}) if isinstance(cand, dict) else {}
+    target = (cand.get("target") or {}) if isinstance(cand, dict) else {}
+    out: dict[str, Any] = {
+        "ok": bool(cand.get("ok")),
+        "camera_device": cand.get("camera_device"),
+        "camera_label": cand.get("camera_label"),
+        "tag_ids": ids,
+        "box_tag_ids": box_ids,
+        "tag_count": len(ids),
+        "box_tag_count": len(box_ids),
+        "grip_ok": bool(grip.get("ok")),
+        "grip_source": grip.get("source"),
+        "preview_ok": bool(preview.get("ok")),
+        "absolute_ik_safe": bool(cand.get("absolute_ik_safe", True)),
+        "target_base_xyz_m": target.get("base_xyz_m"),
+    }
+    if isinstance(grip, dict):
+        for key in (
+            "grip_center_px",
+            "grip_axis_px",
+            "box_bbox_px",
+            "box_size_px",
+            "approach_error_px",
+            "approach_error_norm",
+            "confidence",
+        ):
+            if key in grip:
+                out[key] = grip.get(key)
+    if isinstance(preview, dict):
+        out["preview_failed_stage"] = preview.get("failed_stage")
+        out["preview_target_xyz_m"] = preview.get("target_xyz_m")
+    return out
 
 
 def _sleep_abortable(total_s: float, chunk_s: float = 0.05) -> bool:
@@ -3202,6 +3257,17 @@ def _run_d1_messages(
             "true",
             "yes",
         }
+    _arm_event(
+        "d1_run_begin",
+        "Invio comandi D1",
+        total_messages=len(messages),
+        chunks_total=len(chunks),
+        delay_ms=delay_ms,
+        abortable=abortable,
+        ignore_abort=ignore_abort,
+        post_hold=bool(post_hold),
+        hold_between_chunks=bool(hold_between_chunks),
+    )
     for idx, chunk in enumerate(chunks):
         if ARM_GRASP_ABORT.is_set() and not ignore_abort:
             return {
@@ -3214,6 +3280,15 @@ def _run_d1_messages(
                 "helper_stderr": "\n".join(errs)[-2000:],
             }
         stdin = "\n".join(json.dumps(msg, separators=(",", ":")) for msg in chunk) + "\n"
+        _arm_event(
+            "d1_chunk_begin",
+            "Eseguo chunk D1",
+            chunk_index=idx + 1,
+            chunks_total=len(chunks),
+            chunk_messages=len(chunk),
+            first_stage=(chunk[0].get("data") or {}).get("stage") if chunk else None,
+            last_stage=(chunk[-1].get("data") or {}).get("stage") if chunk else None,
+        )
         result = _d1_arm_command_subprocess_run(
             str(helper),
             int(GO2_DDS_DOMAIN),
@@ -3224,6 +3299,15 @@ def _run_d1_messages(
         )
         outs.append(result.stdout)
         errs.append(result.stderr)
+        _arm_event(
+            "d1_chunk_done",
+            "Chunk D1 completato",
+            chunk_index=idx + 1,
+            chunks_total=len(chunks),
+            returncode=result.returncode,
+            stdout_tail=(result.stdout or "")[-700:],
+            stderr_tail=(result.stderr or "")[-700:],
+        )
         if result.returncode != 0:
             break
         # Tra un subprocess e l'altro i servo possono cedere: rileggi posa e ripeti hold breve
@@ -3259,9 +3343,48 @@ def _run_d1_messages(
     return out
 
 
+def _read_d1_servo_angles_cached() -> list[float] | None:
+    """Ritorna l'ultimo feedback servo in cache senza avviare un refresh DDS costoso."""
+    with _D1_SERVO_FB_CV:
+        ang = _D1_SERVO_FB_STATE.get("angles")
+        if isinstance(ang, list) and len(ang) >= 7:
+            return [float(v) for v in ang[:7]]
+    return None
+
+
+def _read_d1_servo_angles_cached_or_start() -> list[float] | None:
+    """
+    Hold rapido: prima cache viva, poi eventuale snapshot START salvato.
+    Non fa refresh DDS bloccante: il grasp non deve fermarsi qui per minuti.
+    """
+    cur = _read_d1_servo_angles_cached()
+    if cur is not None:
+        return cur
+    try:
+        if ALIGNMENT_START_PATH.is_file():
+            data = json.loads(ALIGNMENT_START_PATH.read_text(encoding="utf-8"))
+            arm = (data.get("arm_at_start") or data.get("arm") or {}) if isinstance(data, dict) else {}
+            jr = arm.get("joints_rad") if isinstance(arm, dict) else None
+            if isinstance(jr, list) and len(jr) >= 6:
+                servo = [math.degrees(float(jr[i])) for i in range(6)]
+                if len(jr) >= 7 and isinstance(jr[6], (int, float)):
+                    servo.append(float(jr[6]))
+                else:
+                    servo.append(servo[-1] if servo else 0.0)
+                while len(servo) < 7:
+                    servo.append(servo[-1])
+                return [float(v) for v in servo[:7]]
+    except Exception:
+        pass
+    return None
+
+
 def publish_d1_hold_current(*, repeats: int | None = None, delay_ms: int | None = None) -> dict[str, Any]:
     """
-    Ripete la posa servo letta da feedback: riduce cedimenti/creep tra un comando e l'altro.
+    Ripete la posa servo letta da cache/START: riduce cedimenti/creep tra un comando e l'altro.
+
+    IMPORTANT: non fa una lettura DDS bloccante qui. Se il feedback non è già in cache,
+    usa il salvataggio START oppure fallisce veloce invece di congelare la sequenza.
     """
     if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes"}:
         return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM is not enabled"}
@@ -3270,10 +3393,17 @@ def publish_d1_hold_current(*, repeats: int | None = None, delay_ms: int | None 
         return {"ok": False, "reason": f"D1 DDS helper missing: {helper}"}
     rpt = repeats if repeats is not None else int(os.environ.get("D1_HOLD_REPEATS", "14"))
     dms = delay_ms if delay_ms is not None else int(os.environ.get("D1_HOLD_DELAY_MS", "95"))
-    cur = _read_d1_servo_angles()
+    cur = _read_d1_servo_angles_cached_or_start()
     if cur is None:
-        return {"ok": False, "reason": "No D1 servo feedback; cannot hold"}
+        return {"ok": False, "reason": "No cached D1 servo feedback; cannot hold quickly"}
     seq = int(time.time()) % 100000
+    _arm_event(
+        "hold_begin",
+        "Hold posa corrente",
+        repeats=rpt,
+        delay_ms=dms,
+        snapshot_deg=[round(float(v), 3) for v in cur[:7]],
+    )
     messages: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
     for i in range(max(3, rpt)):
         angles = {f"angle{idx}": round(float(cur[idx]), 3) for idx in range(7)}
@@ -3281,6 +3411,13 @@ def publish_d1_hold_current(*, repeats: int | None = None, delay_ms: int | None 
         messages.append({"seq": seq + 1 + i, "address": 1, "funcode": 2, "data": angles})
     result = _run_d1_messages(
         messages, delay_ms=max(40, dms), ignore_abort=True, hold_between_chunks=False
+    )
+    _arm_event(
+        "hold_done",
+        "Hold completato",
+        ok=bool(result.get("ok")),
+        helper_returncode=result.get("helper_returncode"),
+        mode="hold_current_pose",
     )
     return {
         **result,
@@ -3798,8 +3935,19 @@ def _goto_saved_start_arm_pose(*, ignore_disable_env: bool = False, prelude_for_
     if not isinstance(jr, list) or len(jr) < 6:
         return {"ok": True, "skipped": True, "reason": "saved START missing joints_rad"}
     stages = [{"stage": "goto_saved_start_align", "joints_rad": [float(v) for v in jr[:6]]}]
+    _arm_event(
+        "goto_saved_start_begin",
+        "Ritorno a START richiesto",
+        ignore_disable_env=ignore_disable_env,
+        prelude_for_grasp=prelude_for_grasp,
+        saved_feedback_ok=bool(arm.get("feedback_ok")),
+        saved_joints_deg=[round(math.degrees(float(v)), 3) for v in jr[:6]],
+    )
     prehold = None
-    if os.environ.get("D1_START_PREHOLD", "1").lower() in {"1", "true", "yes"}:
+    do_prehold = os.environ.get("D1_START_PREHOLD", "1").lower() in {"1", "true", "yes"}
+    if prelude_for_grasp and _front_first_grasp_flow_enabled():
+        do_prehold = False
+    if do_prehold:
         rep = int(os.environ.get("D1_START_PREHOLD_REPEATS", "10"))
         if prelude_for_grasp and _grasp_prelude_fast_align():
             cap = int(os.environ.get("GO2_GRASP_START_PREHOLD_CAP", "6"))
@@ -3813,6 +3961,14 @@ def _goto_saved_start_arm_pose(*, ignore_disable_env: bool = False, prelude_for_
         max_steps = _grasp_start_align_max_step_deg() if prelude_for_grasp else D1_START_ALIGN_MAX_STEP_DEG
         messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=max_steps)
         result = _run_d1_messages(messages, delay_ms=max(120, delay_ms), post_hold=True)
+        _arm_event(
+            "goto_saved_start_done",
+            "START raggiunto",
+            ok=bool(result.get("ok")),
+            sent_stages=sent,
+            helper_returncode=result.get("helper_returncode"),
+            prehold_ok=bool((prehold or {}).get("ok")) if isinstance(prehold, dict) else None,
+        )
         out = {
             **result,
             "skipped": False,
@@ -3846,10 +4002,22 @@ def _goto_fold_arm_pose() -> dict[str, Any]:
     except Exception as exc:
         return {"ok": False, "skipped": False, "reason": f"fold_pose_import: {exc!r}"}
     stages = [{"stage": "goto_fold_compact", "joints_rad": jr}]
+    _arm_event(
+        "goto_fold_begin",
+        "Fold braccio richiesto",
+        target_joints_deg=[round(math.degrees(v), 3) for v in jr],
+    )
     try:
         delay_ms = int(os.environ.get("D1_FOLD_DELAY_MS", str(D1_SEARCH_COMMAND_DELAY_MS)))
         messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=_grasp_fold_max_step_deg())
-        result = _run_d1_messages(messages, delay_ms=max(120, delay_ms))
+        result = _run_d1_messages(messages, delay_ms=max(120, delay_ms), post_hold=True)
+        _arm_event(
+            "goto_fold_done",
+            "Fold eseguito",
+            ok=bool(result.get("ok")),
+            sent_stages=sent,
+            helper_returncode=result.get("helper_returncode"),
+        )
         return {**result, "skipped": False, "sent_stages": sent, "pose": "ARM_FOLD_POSE"}
     except Exception as exc:
         return {"ok": False, "skipped": False, "reason": repr(exc)}
@@ -4218,6 +4386,22 @@ def _stage_messages(
             # Non forzare 56° sul gripper: mantiene l'angolo attuale — evita comandi spurî sui giunti braccio.
             target.append(round(float(current[6]), 3))
         path = _interpolate_angles(current, target, max_step_deg=max_step_deg, ease_profile=ease_profile)
+        _arm_event(
+            "stage_plan",
+            "Pianifico stage D1",
+            stage=stage.get("stage"),
+            stage_index=offset,
+            stages_total=len(stages),
+            current_deg=current,
+            target_deg=target,
+            path_points=len(path),
+            close_gripper=close_gripper,
+            rehome=rehome,
+            use_stable_start=use_stable,
+            use_median_start=use_median_start,
+            use_median_rehome=use_median_rehome,
+            ease_profile=ease_profile,
+        )
         for point in path:
             for _ in range(point_repeat):
                 angles = {f"angle{idx}": point[idx] for idx in range(7)}
@@ -4362,10 +4546,27 @@ def publish_d1_arm_search(front_plan: dict[str, Any], cycle: int = 0) -> dict[st
         return {"ok": False, "attempted_motion": False, "reason": "No valid front-camera coarse plan for wrist search"}
     hints = _front_camera_scan_hints(front_plan)
     stages = _manual_overhead_search_stages(front_plan, current_deg, cycle, hints=hints)
+    _arm_event(
+        "search_prepare",
+        "Pianifico ricerca frontale",
+        cycle=cycle,
+        candidate=_candidate_debug_summary(front_plan),
+        scan_hints=hints,
+        current_deg=[round(float(v), 3) for v in current_deg[:7]],
+        stage_count=len(stages),
+    )
     try:
         sdelay = _effective_search_delay_ms()
         messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=D1_MAX_STEP_DEG_SEARCH)
         result = _run_d1_messages(messages, delay_ms=sdelay)
+        _arm_event(
+            "search_done",
+            "Ricerca frontale completata",
+            cycle=cycle,
+            ok=bool(result.get("ok")),
+            sent_stages=sent,
+            helper_returncode=result.get("helper_returncode"),
+        )
         return {
             **result,
             "attempted_motion": bool(result.get("ok")),
@@ -4399,11 +4600,28 @@ def publish_d1_arm_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
     if not plan_payload.get("ok") or not preview.get("ok") or not stages:
         return {"ok": False, "attempted_motion": False, "reason": "No valid IK plan to execute"}
 
+    _arm_event(
+        "plan_prepare",
+        "Piano IK pronto da eseguire",
+        selected_camera=plan_payload.get("selected_camera"),
+        selected=_candidate_debug_summary(selected),
+        preview_ok=bool(preview.get("ok")),
+        preview_plan_len=len(stages),
+        target=selected.get("target"),
+    )
     _grasp_live_phase("Esecuzione piano IK sul braccio (comandi DDS multi-step)…", progress_step=7)
     try:
         pdelay = _effective_plan_delay_ms()
         messages, sent = _stage_messages(stages, close_gripper=True, max_step_deg=D1_MAX_STEP_DEG_GRASP)
-        result = _run_d1_messages(messages, delay_ms=pdelay)
+        result = _run_d1_messages(messages, delay_ms=pdelay, post_hold=True)
+        _arm_event(
+            "plan_done",
+            "Piano IK eseguito",
+            selected_camera=plan_payload.get("selected_camera"),
+            ok=bool(result.get("ok")),
+            sent_stages=sent,
+            helper_returncode=result.get("helper_returncode"),
+        )
         return {
             **result,
             "attempted_motion": bool(result.get("ok")),
@@ -4638,6 +4856,15 @@ def publish_d1_wrist_center_step(
     fh = frame_hw if frame_hw is not None else _frame_shape_hw_for_camera(plan_for_shape, 0)
     hints = _wrist_camera_center_hints(wrist_plan, fh)
     stages = _wrist_centering_stages(wrist_plan, current_deg, fh, hints=hints)
+    _arm_event(
+        "wrist_center_prepare",
+        "Micro-centering polso",
+        candidate=_candidate_debug_summary(wrist_plan),
+        frame_hw=fh,
+        center_hints=hints,
+        current_deg=[round(float(v), 3) for v in current_deg[:7]],
+        stage_count=len(stages),
+    )
     if not stages:
         return {
             "ok": True,
@@ -4655,6 +4882,14 @@ def publish_d1_wrist_center_step(
         cdelay = max(120, min(cdelay, 900))
         messages, sent = _stage_messages(stages, close_gripper=False, max_step_deg=D1_WRIST_CENTER_MAX_STEP_DEG)
         result = _run_d1_messages(messages, delay_ms=cdelay)
+        _arm_event(
+            "wrist_center_done",
+            "Micro-centering polso completato",
+            ok=bool(result.get("ok")),
+            attempted_motion=bool(result.get("ok")),
+            sent_stages=sent,
+            helper_returncode=result.get("helper_returncode"),
+        )
         return {
             **result,
             "attempted_motion": bool(result.get("ok")),
@@ -4705,6 +4940,198 @@ def _visual_servo_progress(before: dict[str, Any], after: dict[str, Any]) -> dic
         "size_ratio": round((size_gain / size_before) if size_before > 1.0 else 0.0, 5),
         "before": before,
         "after": after,
+    }
+
+
+def _wait_for_front_camera_plan(wait_s: float | None = None) -> dict[str, Any]:
+    """Attende un piano utilizzabile dalla camera frontale (logical 6)."""
+    if wait_s is None:
+        wait_s = _tune_float("front_plan_wait_s", "GO2_GRASP_FRONT_PLAN_WAIT_S", 15.0)
+    deadline = time.time() + wait_s
+    last = _box_plan_snapshot()
+    t_wait_start = time.time()
+    next_phase_ping = t_wait_start
+    next_hold_ping = t_wait_start + 1.0
+    while time.time() < deadline:
+        if ARM_GRASP_ABORT.is_set():
+            return {"ok": False, "reason": "aborted_while_waiting_front_camera_plan", "last_plan": last}
+        now = time.time()
+        if now >= next_phase_ping:
+            next_phase_ping = now + 2.6
+            elapsed = int(now - t_wait_start)
+            rem = max(0.0, deadline - now)
+            _grasp_live_phase(
+                "Camera frontale Intelsense: attesa oggetto…",
+                progress_step=2,
+                front_wait_elapsed_s=elapsed,
+                front_wait_remaining_s=round(rem, 1),
+                front_wait_total_s=round(float(wait_s), 1),
+            )
+        if now >= next_hold_ping:
+            next_hold_ping = now + 1.8
+            _arm_hold_keepalive("attesa oggetto su camera frontale")
+        plan = _box_plan_snapshot()
+        front = _camera_candidate(plan, 6)
+        if front.get("ok"):
+            _grasp_live_phase(
+                "Camera frontale vede l'oggetto — continuo con START fisso…",
+                progress_step=2,
+                front_wait_elapsed_s=round(time.time() - t_wait_start, 2),
+            )
+            return {"ok": True, "wait_s_elapsed": round(time.time() - t_wait_start, 2), "plan_snapshot": plan, "front_plan": front}
+        last = plan
+        if not _sleep_abortable(0.25):
+            return {"ok": False, "reason": "aborted_while_waiting_front_camera_plan", "last_plan": last}
+    return {"ok": False, "reason": "front_camera_plan_timeout", "wait_s": wait_s, "last_plan": last}
+
+
+def _front_first_grasp_flow_enabled() -> bool:
+    return os.environ.get("GO2_GRASP_FRONT_FIRST_FLOW", "1").lower() in {"1", "true", "yes"}
+
+
+def _grasp_front_first_sequence_steps() -> list[str]:
+    return ["front_camera_detect_object", "goto_saved_start", "grasp_from_start", "return_to_start"]
+
+
+def _run_front_first_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]:
+    """Flusso richiesto: front camera → START → grasp → ritorno a START."""
+    del max_cycles  # compatibilità firma: il flusso è guidato da timeout camera, non da cicli di search.
+    alignment_prelude: dict[str, Any] = {}
+    front_first_flow = _front_first_grasp_flow_enabled()
+    if not front_first_flow and os.environ.get("GO2_GRASP_ENTRY_HOLD", "1").lower() in {"1", "true", "yes"}:
+        if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() in {"1", "true", "yes"}:
+            _grasp_live_phase("Hold iniziale sulla posa corrente (anti-cedimento)…", progress_step=1)
+            er = int(os.environ.get("GO2_GRASP_ENTRY_HOLD_REPEATS", "20"))
+            ed = int(os.environ.get("GO2_GRASP_ENTRY_HOLD_DELAY_MS", "90"))
+            alignment_prelude["entry_hold"] = publish_d1_hold_current(repeats=max(8, er), delay_ms=max(45, ed))
+    _grasp_live_phase("Attesa oggetto sulla camera frontale…", progress_step=2)
+    front_wait = _wait_for_front_camera_plan()
+    alignment_prelude["front_camera_wait_before_start"] = front_wait
+    _arm_event(
+        "front_first_wait_before_start",
+        "Attesa camera frontale prima di START",
+        wait_ok=bool(front_wait.get("ok")),
+        reason=front_wait.get("reason"),
+        last_plan_ok=bool((front_wait.get("last_plan") or {}).get("ok")) if isinstance(front_wait.get("last_plan"), dict) else None,
+    )
+    if not front_wait.get("ok") and not front_wait.get("skipped"):
+        return {
+            "ok": False,
+            "attempted_motion": bool((alignment_prelude.get("entry_hold") or {}).get("attempted_motion")),
+            "grasp_policy": "front_camera_wait_failed",
+            "reason": str(front_wait.get("reason", "front camera wait failed")),
+            "alignment_prelude": alignment_prelude,
+            "cycles": [],
+            "final_plan": front_wait.get("last_plan") or _box_plan_snapshot(),
+            "dry_run_plan": {},
+        }
+
+    _grasp_live_phase("START fisso — riallineo il braccio sulla posa salvata…", progress_step=3)
+    start_raw = _goto_saved_start_arm_pose(ignore_disable_env=True, prelude_for_grasp=True)
+    alignment_prelude["goto_saved_start"] = start_raw
+    _arm_event(
+        "front_first_start_pose",
+        "Riallineamento su START completato",
+        ok=bool(start_raw.get("ok")),
+        skipped=bool(start_raw.get("skipped")),
+        reason=start_raw.get("reason"),
+        sent_stages=start_raw.get("sent_stages"),
+    )
+    if not start_raw.get("ok") and not start_raw.get("skipped"):
+        return {
+            "ok": False,
+            "attempted_motion": bool((alignment_prelude.get("entry_hold") or {}).get("attempted_motion")),
+            "grasp_policy": "saved_start_align_failed",
+            "reason": str(start_raw.get("reason", "goto_saved_start failed")),
+            "alignment_prelude": alignment_prelude,
+            "cycles": [],
+            "final_plan": _box_plan_snapshot(),
+            "dry_run_plan": {},
+        }
+
+    _grasp_live_phase("Da START: ricontrollo la camera frontale prima della presa…", progress_step=4)
+    post_start_wait = _wait_for_front_camera_plan(
+        _tune_float("front_plan_after_start_wait_s", "GO2_GRASP_FRONT_PLAN_AFTER_START_WAIT_S", 6.0)
+    )
+    alignment_prelude["front_camera_wait_after_start"] = post_start_wait
+    _arm_event(
+        "front_first_wait_after_start",
+        "Attesa camera frontale dopo START",
+        wait_ok=bool(post_start_wait.get("ok")),
+        reason=post_start_wait.get("reason"),
+        last_plan_ok=bool((post_start_wait.get("last_plan") or {}).get("ok")) if isinstance(post_start_wait.get("last_plan"), dict) else None,
+    )
+    if not post_start_wait.get("ok") and not post_start_wait.get("skipped"):
+        return {
+            "ok": False,
+            "attempted_motion": bool((alignment_prelude.get("entry_hold") or {}).get("attempted_motion")),
+            "grasp_policy": "front_camera_wait_after_start_failed",
+            "reason": str(post_start_wait.get("reason", "front camera wait after start failed")),
+            "alignment_prelude": alignment_prelude,
+            "cycles": [],
+            "final_plan": post_start_wait.get("last_plan") or _box_plan_snapshot(),
+            "dry_run_plan": {},
+        }
+
+    final_plan = post_start_wait.get("plan_snapshot") or _box_plan_snapshot()
+    front_plan = _camera_candidate(final_plan, 6)
+    if not front_plan.get("ok"):
+        return {
+            "ok": False,
+            "attempted_motion": False,
+            "grasp_policy": "front_camera_plan_missing_after_start",
+            "reason": "front_camera_plan_missing_after_start",
+            "alignment_prelude": alignment_prelude,
+            "cycles": [],
+            "final_plan": final_plan,
+            "dry_run_plan": front_wait.get("plan_snapshot") or {},
+        }
+
+    if os.environ.get("GO2_GRASP_HOLD_KEEPALIVE", "1").lower() in {"1", "true", "yes"} and os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() in {"1", "true", "yes"}:
+        alignment_prelude["pre_grasp_hold"] = publish_d1_hold_current(
+            repeats=max(3, int(os.environ.get("GO2_GRASP_PRE_EXECUTE_HOLD_REPEATS", "6"))),
+            delay_ms=max(40, int(os.environ.get("GO2_GRASP_PRE_EXECUTE_HOLD_DELAY_MS", "55"))),
+        )
+    _grasp_live_phase("Presa da START con orientamento camera frontale…", progress_step=5)
+    execution = publish_d1_arm_plan({"ok": True, "selected_camera": 6, "selected": front_plan})
+    _arm_event(
+        "front_first_execute",
+        "Eseguo presa da START",
+        execution_ok=bool(execution.get("ok")),
+        attempted_motion=bool(execution.get("attempted_motion")),
+        sent_stages=execution.get("sent_stages"),
+        selected_camera=6,
+        candidate=_candidate_debug_summary(front_plan),
+    )
+    if os.environ.get("GO2_GRASP_HOLD_KEEPALIVE", "1").lower() in {"1", "true", "yes"} and os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() in {"1", "true", "yes"}:
+        alignment_prelude["post_grasp_hold"] = publish_d1_hold_current(
+            repeats=max(3, int(os.environ.get("GO2_GRASP_POST_EXECUTE_HOLD_REPEATS", "6"))),
+            delay_ms=max(40, int(os.environ.get("GO2_GRASP_POST_EXECUTE_HOLD_DELAY_MS", "55"))),
+        )
+    _grasp_live_phase("Ritorno a START con pinza chiusa…", progress_step=6)
+    return_to_start = _goto_saved_start_arm_pose(ignore_disable_env=True, prelude_for_grasp=True)
+    _arm_event(
+        "front_first_return_start",
+        "Ritorno a START dopo presa",
+        ok=bool(return_to_start.get("ok")),
+        skipped=bool(return_to_start.get("skipped")),
+        reason=return_to_start.get("reason"),
+        sent_stages=return_to_start.get("sent_stages"),
+    )
+    ok = bool(execution.get("ok")) and (bool(return_to_start.get("ok")) or bool(return_to_start.get("skipped")))
+    attempted_motion = bool(execution.get("attempted_motion")) or bool(return_to_start.get("attempted_motion"))
+    return {
+        **execution,
+        "ok": ok,
+        "attempted_motion": attempted_motion,
+        "grasp_policy": "front_camera_detect_start_grasp_return_start",
+        "cycles": [],
+        "final_plan": final_plan,
+        "dry_run_plan": front_wait.get("plan_snapshot") or {},
+        "alignment_prelude": alignment_prelude,
+        "return_to_start": return_to_start,
+        "front_first_flow": True,
+        "preferred_execution_flow": _grasp_front_first_sequence_steps(),
     }
 
 
@@ -4763,7 +5190,18 @@ def _grasp_abort_return(
 
 
 def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]:
-    # 1) Eventuale fold; 2) START salvata; 3) attendi AprilTag dalla posa operativa; 4) lock/piano fuso → IK.
+    # Default: camera frontale → START salvata → presa da START → ritorno a START.
+    # Fallback legacy: fold → START → ricerca polso / piano fuso → IK.
+    front_first = _front_first_grasp_flow_enabled()
+    _arm_event(
+        "grasp_loop_start",
+        "Avvio grasp loop",
+        flow="front_first" if front_first else "legacy",
+        max_cycles=max_cycles,
+        entry_hold=os.environ.get("GO2_GRASP_ENTRY_HOLD", "1"),
+    )
+    if front_first:
+        return _run_front_first_grasp_loop(max_cycles)
     mc = (
         int(max_cycles)
         if max_cycles is not None
@@ -4886,6 +5324,23 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
         else:
             live_cn = round(float(cn_raw), 4)
 
+        _arm_event(
+            "cycle_snapshot",
+            "Snapshot ciclo grasp",
+            cycle=cycle + 1,
+            max_cycles=mc,
+            wrist=_candidate_debug_summary(wrist_plan),
+            front=_candidate_debug_summary(front_plan),
+            grip_visible=bool(grip_vis),
+            box_tags_visible=bool(box_vis),
+            center_norm=live_cn,
+            diagonal_px=round(float(md_px), 1) if md_px is not None else None,
+            loss_streak=int(loss_streak),
+            policy=wrist_policy,
+            fused_env=fused_env,
+            cached_wrist_ik_ok=last_valid_execute is not None,
+            selected_camera=plan.get("selected_camera"),
+        )
         _grasp_live_phase(
             f"Avvicinamento / ricerca — ciclo {cycle + 1} di {mc} (muovo polso verso tag)",
             progress_step=6,
@@ -5174,6 +5629,21 @@ def _grasp_preflight_and_start(drain_s: float) -> None:
     """
     try:
         preflight = grasp_pipeline_status()
+        _arm_event(
+            "preflight_snapshot",
+            "Snapshot preflight grasp",
+            sequence_start_ready=preflight.get("sequence_start_ready"),
+            block_reason=preflight.get("sequence_start_block_reason"),
+            front_first_flow_enabled=preflight.get("front_first_flow_enabled"),
+            selected_camera=preflight.get("selected_camera"),
+            fusion_ready_for_execute=preflight.get("fusion_ready_for_execute"),
+            wrist_sees_box_tags=preflight.get("wrist_sees_box_tags"),
+            wrist_preview_ok=preflight.get("wrist_preview_ok"),
+            candidates={
+                "0": _candidate_debug_summary((preflight.get("candidates") or {}).get("0")),
+                "6": _candidate_debug_summary((preflight.get("candidates") or {}).get("6")),
+            },
+        )
         if not _grasp_execute_enabled():
             _arm_event("blocked", "Avvio grasp bloccato: GO2_GRASP_EXECUTE_ARM=0 (modalità sicura)")
             with ARM_OPERATION_LOCK:
@@ -6209,23 +6679,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     q_vis = [float(x) for x in ARM_FOLD_POSE]
 
     _mount_nom = np.array([0.15, 0.0, 0.06], dtype=float)
-    _viz_arm_d = np.array(
-        [
-            float(vg["viz_arm_mount_dx_m"]),
-            float(vg["viz_arm_mount_dy_m"]),
-            float(vg["viz_arm_mount_dz_m"]),
-        ],
-        dtype=float,
-    )
-    _mount_bl_list = [round(float(x), 5) for x in (_mount_nom + _viz_arm_d)]
-    _depth_vis_arm = np.asarray(DEPTH_CAMERA_ARM_BASE_M, dtype=float) + np.array(
-        [
-            float(vg["viz_front_cam_dx_m"]),
-            float(vg["viz_front_cam_dy_m"]),
-            float(vg["viz_front_cam_dz_m"]),
-        ],
-        dtype=float,
-    )
+    _mount_bl_list = [round(float(x), 5) for x in _mount_nom]
+    _depth_vis_arm = np.asarray(DEPTH_CAMERA_ARM_BASE_M, dtype=float)
 
     def _ab_to_bl(p: list[float] | Any) -> list[float]:
         a = [float(np.asarray(p, dtype=float)[i]) for i in range(3)]
@@ -6476,7 +6931,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     tag5_lm: dict[str, Any] = {
         "reference_tag_id": 5,
         "mount": "Landmark AprilTag 5 sopra XT-16.",
-        "frames": "Frame base braccio = arm_link00; mount→base_link +(0.15,0,0.06)+slider.",
+        "frames": "Frame base braccio = arm_link00; mount→base_link fissato a (0.15,0,0.06) dal MJCF.",
         "nominal_arm_base_m": _nominal_tag5_arm_base_from_env(),
         "offset_applied_m": off_t5,
         "d1_mesh_online_refs": [
@@ -6565,7 +7020,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     ]
 
     # --- Viewer 3D: base_link + mesh (mount e camera muso regolabili da slider viz_*) ---
-    _mount_bl = _mount_bl_list
+    _mount_bl = _mount_nom
     tip_v = fk_tool_tip(q_vis)
     _ch_bl = fk_chain_positions(q_vis)
     _jmark_bias = (
@@ -6631,9 +7086,13 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         "depth_front_arm_base_m": [round(float(_depth_vis_arm[i]), 5) for i in range(3)],
         "depth_front_base_link_m": _ab_to_bl(_depth_vis_arm.tolist()),
     }
+    front_cam_display_bl = list(vc_bl["depth_front_base_link_m"])
     wc_vis = fk_wrist_camera_center_m(q_vis, wrist_off)
+    wrist_cam_display_bl = _ab_to_bl(wc_vis)
+    vc_bl["front_display_base_link_m"] = [round(float(x), 5) for x in front_cam_display_bl]
     vc_bl["wrist_arm_base_m"] = [round(float(wc_vis[i]), 5) for i in range(3)]
-    vc_bl["wrist_base_link_m"] = _ab_to_bl(wc_vis)
+    vc_bl["wrist_base_link_m"] = wrist_cam_display_bl
+    vc_bl["wrist_display_base_link_m"] = [round(float(x), 5) for x in wrist_cam_display_bl]
     payload["viewer_cameras_base_link_m"] = vc_bl
 
     _wv_axis_vis = fk_wrist_camera_view_axis_unit_m(q_vis, wrist_off)
@@ -6753,9 +7212,9 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
 
     payload["scene_camera_frusta_base_link"] = {
         "depth_mjcf": {
-            "label": "depth_camera (MJCF go2_d1_d1mesh.xml)",
-            "center_m": _ab_to_bl(_depth_vis_arm.tolist()),
-            "axis_unit_m": [round(float(_d_ax_final[i]), 5) for i in range(3)],
+            "label": "front_camera (display / base_link)",
+            "center_m": front_cam_display_bl,
+            "axis_unit_m": [1.0, 0.0, 0.0],
             "fovy_deg": 62.0,
             "aspect": 4.0 / 3.0,
             "near_m": round(_fr_near, 4),
@@ -6767,8 +7226,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
             },
         },
         "wrist": {
-            "label": "wrist_camera (FK + offset slider; asse come arm_kinematics)",
-            "center_m": _ab_to_bl(wc_vis),
+            "label": "wrist_camera (display / base_link)",
+            "center_m": wrist_cam_display_bl,
             "axis_unit_m": [round(float(_w_ax_final[i]), 5) for i in range(3)],
             "fovy_deg": 78.0,
             "aspect": 4.0 / 3.0,
@@ -6785,10 +7244,19 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     lm: dict[str, Any] = {
         "depth_camera_mjcf_m": _ab_to_bl(_depth_vis_arm.tolist()),
         "wrist_camera_mjcf_m": _ab_to_bl(wc_vis),
+        "front_camera_display_base_link_m": [round(float(x), 5) for x in front_cam_display_bl],
+        "wrist_camera_display_base_link_m": [round(float(x), 5) for x in wrist_cam_display_bl],
         "xt16_tag_m": None,
         "front_camera_slider_m": None,
         "object_nominal_20cm_base_link_m": _ab_to_bl(_nom_obj_ab.tolist()),
-        # Punto presa (frame arm_base) convertito per il viewer Three.js (sfere in base_link).
+        # Target di presa convertito nel frame del viewer (base_link), sia raw sia smoothed.
+        "object_target_base_link_m": None
+        if raw_target is None
+        else _ab_to_bl([float(raw_target[i]) for i in range(3)]),
+        "object_target_display_base_link_m": None
+        if disp_t is None
+        else _ab_to_bl([float(disp_t[i]) for i in range(3)]),
+        # Alias vecchio per compatibilità frontend.
         "object_grasp_target_display_base_link_m": None
         if disp_t is None
         else _ab_to_bl([float(disp_t[i]) for i in range(3)]),
@@ -6819,8 +7287,8 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     tip_arm = fk_tool_tip(q_vis)
     lm["tool_tip_base_link_m"] = _ab_to_bl([round(float(tip_arm[i]), 5) for i in range(3)])
     _tag_half = float(REFERENCE_TAG_SIZE_M) * 0.5
-    _cyl_h = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_HEIGHT_M", "0.06"))
-    _cyl_r = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_RADIUS_M", "0.045"))
+    _cyl_h = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_HEIGHT_M", "0.08"))
+    _cyl_r = float(os.environ.get("GO2_VIEWER_XT16_CYLINDER_RADIUS_M", "0.05"))
     xtlm = lm.get("xt16_tag_m")
     if isinstance(xtlm, list) and len(xtlm) >= 3:
         tx, ty, tz = float(xtlm[0]), float(xtlm[1]), float(xtlm[2])
@@ -6831,7 +7299,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
             "height_m": round(_cyl_h, 6),
             "axis_unit_m": [0.0, 0.0, 1.0],
             "tag_plane_half_m": round(_tag_half, 5),
-            "note_it": "Simbolo XT-16: cilindro Ø9 cm × h 6 cm, AprilTag 5 sul piano superiore (assi base_link, Z su).",
+            "note_it": "Simbolo XT-16: cilindro Ø10 cm × h 8 cm, AprilTag 5 sul riferimento assoluto del frame base_link (X=19 cm, Y=0, Z=8 cm)."
         }
     payload["viewer_landmarks_base_link_m"] = lm
 
@@ -6852,10 +7320,10 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         "api_pattern": "/api/arm/scene_meshes/<go2|d1>/<filename>",
     }
     payload["viewer_geometry_notes_it"] = (
-        "Camera frontale depth MJCF: sfera viola; slider Δ fino a ±400 mm. "
-        "Camera polso: MJCF 0.02,0,0.05 m su arm_link06 + slider «Polso locale» (default ≈ pinza +30 mm in Z link). "
+        "Camera frontale display: sfera viola davanti al cane + frustum lungo +X (fronte robot). "
+        "Camera polso display: sfera gialla sul polso con frustum orientato dalla cinematica del braccio. "
         "Pinza (tool tip): sfera magenta da FK. "
-        "XT-16: cilindro grigio sotto la sfera rossa tag 5 (h 6 cm, Ø 9 cm). "
+        "XT-16: cilindro grigio sopra il landmark tag 5. "
         "Tag 5: da visione / offset file / nominale env; se no, fallback lungo cono depth."
     )
 
@@ -6884,13 +7352,13 @@ def _calibration_flow_payload() -> dict[str, Any]:
                 "AprilTag **25h9 ID 5** fisso sul robot (vicino XT-16): **un solo** landmark sul corpo basta per "
                 "**correggere** la mappa tvec camera → frame base braccio (`data/tag5_calibration_arm_base.json`). "
                 "Non servono altri ArUco/AprilTag **sul cane** né che **entrambe** le telecamere lo vedano: per il POST "
-                "«Salva offset» basta **una** camera nitida (di solito **polso / video0**)."
+                "«Salva nominale» basta **una** camera nitida (di solito **polso / video0**)."
             ),
             "arm_link00_nominal_it": (
                 "**arm_link00** è il frame **base braccio** (origine al primo giunto D1), non il muso del Go2: assi in metri, "
-                "**+X** verso la testa del cane. Il **nominale** del centro tag 5 è la tua stima di dove cade quel punto nel "
+                "**+X** verso la testa del cane. Il **nominale** del centro tag 5 è la tua stima fisica di dove cade quel punto nel "
                 "mondo reale in quel frame (CAD, metro, oppure confronto con la **scena 3D** dopo aver messo braccio/cilindro "
-                "XT-16 come li vedi dal vivo, poi «Salva offset» corregge l’errore della euristica tvec)."
+                "XT-16 come li vedi dal vivo, poi «Salva nominale» salva la correzione interna della euristica tvec)."
             ),
             "dual_probe_optional": (
                 "**GET …/tag5_calibration?dual_probe=1** è **solo diagnostica**: se nello stesso istante **video0** e "
@@ -6923,7 +7391,7 @@ def _calibration_flow_payload() -> dict[str, Any]:
                     "Coordinate **in metri** nell’origine **arm_link00** (primo giunto), **+X** avanti sul cane: è **diverso** "
                     "dal solo allineamento mesh Three.js. Il nominale descrive dove sta il **centro fisico** del tag 5 "
                     "rispetto al braccio (misura/CAD, o confronto visivo con la scena 3D + cilindro XT-16). "
-                    "Dopo aver impostato un nominale plausibile, «Salva offset» misura l’errore della euristica tvec→base "
+                    "Dopo aver impostato un nominale plausibile, «Salva nominale» misura l’errore della euristica tvec→base ",
                     "e lo corregge per planner e viewer."
                 ),
             },
@@ -6933,19 +7401,19 @@ def _calibration_flow_payload() -> dict[str, Any]:
                 "body": (
                     "Serve **un** frame nitido con ID **5** rilevato. Sul Go2+D1 spesso **solo la camera polso (0)** "
                     "vede il landmark sul corpo; la RealSense (6) può **non** inquadrarlo: va bene lo stesso. "
-                    "Nel POST senza `camera_device`, il server prova **0 poi 6**; conviene scegliere **0** esplicitamente. "
+                    "Nel POST di calibrazione usa **camera 0** (polso) come riferimento. "
                     "**dual_probe** ha senso **solo** se in quell’istante **entrambe** le camere vedono **lo stesso** tag 5 "
                     "(raro); altrimenti ignorarlo. **Non** calibra la geometria relativa tra le due telecamere."
                 ),
             },
             {
                 "n": 3,
-                "title": "Salva offset tag 5 (XT-16) su disco",
+                "title": "Salva nominale tag 5 (XT-16) su disco",
                 "body": (
-                    "Scrive `offset_arm_base_m = nominale − euristica(tvec)` in `data/tag5_calibration_arm_base.json` "
+                    "Scrive `offset_arm_base_m = nominale fisico − euristica(tvec)` in `data/tag5_calibration_arm_base.json` "
                     "(tipicamente da **camera 0**). Vale come **fallback** per ogni camera se non esiste una voce "
                     "specifica in `offset_by_logical_camera_device_m`. **Planner** e **Three.js** usano "
-                    "`camera_tvec_to_base_xyz` con priorità offset **per-device** quando presente."
+                    "`camera_tvec_to_base_xyz` con priorità correzione **per-device** quando presente."
                 ),
             },
             {
@@ -6971,7 +7439,7 @@ def _calibration_flow_payload() -> dict[str, Any]:
             },
             {
                 "n": 6,
-                "title": "Stesso AprilTag visibile da polso e RealSense (offset per camera)",
+                "title": "Stesso AprilTag visibile da polso e RealSense (correzione per camera)",
                 "body": (
                     "Quando **video0** e **video6** inquadrano **lo stesso** tag (anche su oggetto / scatola, non serve a terra): "
                     "**POST /api/arm/tag_calibration_shared_dual** con `tag_id`, `nominal_arm_base_m` (centro tag in arm_link00, m) "
@@ -6982,7 +7450,7 @@ def _calibration_flow_payload() -> dict[str, Any]:
             },
         ],
         "env_hints": {
-            "GO2_TAG5_NOMINAL_ARM_BASE_M": "es. 0.42,0.0,0.14",
+            "GO2_TAG5_NOMINAL_ARM_BASE_M": "es. 0.19,0.0,0.08 (tag 5 assoluto in base_link)",
             "GO2_TAG5_CALIBRATION_ENABLE": "1 (default) oppure 0 per disattivare il file offset",
             "dual_probe": "GET /api/arm/tag5_calibration?dual_probe=1",
             "shared_dual_tag": "POST /api/arm/tag_calibration_shared_dual",
@@ -7111,8 +7579,8 @@ def _tag5_dual_camera_probe_payload() -> dict[str, Any]:
 @APP.route("/api/arm/tag5_calibration", methods=["GET", "POST", "DELETE"])
 def api_arm_tag5_calibration() -> Any:
     """
-    Calibrazione offset tvec→base usando AprilTag 5 (fisso su XT-16).
-    POST: legge frame, trova tag 5, calcola offset = nominal - euristica (senza offset precedente).
+    Calibrazione del riferimento fisico tag 5 (fisso su XT-16).
+    POST: legge frame, trova tag 5, calcola la correzione interna = nominale fisico - euristica (senza correzione precedente).
     Richiede ``GO2_TAG5_NOMINAL_ARM_BASE_M`` o JSON ``nominal_tag5_arm_base_m``.
 
     GET ``?dual_probe=1``: confronta tag 5 su ``/dev/video0`` e ``/dev/video6`` (nessuna scrittura su disco).
@@ -7177,9 +7645,10 @@ def api_arm_tag5_calibration() -> Any:
             dev_order.append(int(prefer_dev))
         except (TypeError, ValueError):
             pass
-    for d in (0, 6):
-        if d not in dev_order:
-            dev_order.append(d)
+    # Per la calibrazione tag5 sul corpo del robot la camera utile è di norma la polso (0).
+    # La frontale (6) resta disponibile solo se la si seleziona esplicitamente.
+    if not dev_order:
+        dev_order.append(0)
 
     found: tuple[int, list[float]] | None = None
     for dev in dev_order:
@@ -7199,7 +7668,7 @@ def api_arm_tag5_calibration() -> Any:
 
     if not found:
         return jsonify(
-            {"ok": False, "error": "AprilTag 5 non rilevato (provati dispositivi V4L2 0 e 6)."}
+            {"ok": False, "error": "AprilTag 5 non rilevato sulla camera selezionata (di norma la polso / device 0)."}
         ), 400
 
     dev, cam_xyz = found

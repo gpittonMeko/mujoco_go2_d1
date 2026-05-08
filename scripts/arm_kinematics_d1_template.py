@@ -32,10 +32,10 @@ ARM_MOUNT_Z = 0.06
 TOOL_TIP_OFFSET = np.array([0.07, 0.0, 0.0], dtype=float)
 
 # --- Camere MJCF ``go2_d1_d1mesh.xml`` (base_link + arm_link06) ----------------
-# depth_camera: body base_link, pos="0.34 0 0.09" euler="0 -1.57 -1.57"
+# depth_camera: target visivo in base_link ≈ ``(0.375, 0.0, 0.01)`` m
 # arm_link00:   pos="0.15 0 0.06" → +X avanti nel frame braccio (origine arm_link00)
-# Richiesta laboratorio: **19 cm** avanti rispetto all’origine arm_link00 lungo +X mount → 0.15+0.19 = 0.34 in base_link.
-DEPTH_CAMERA_ARM_BASE_M = np.array([0.34 - 0.15, 0.0, 0.09 - 0.06], dtype=float)
+# Quindi in frame arm_link00 il centro ottico frontale vale circa ``(0.225, 0.0, -0.05)`` m.
+DEPTH_CAMERA_ARM_BASE_M = np.array([0.225, 0.0, -0.05], dtype=float)
 # wrist_camera: parent arm_link06 — offset **locale** lungo il link (MJCF ``go2_d1_d1mesh.xml``).
 # Più ``WRIST_CAMERA_ARM_BASE_EXTRA_M``: +Z nel frame arm_link00 («su» sul robot) così la camera resta
 # sopra il polso anche quando il link è inclinato (non solo +Z locale link6).

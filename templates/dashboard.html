@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="it">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,10 +8,28 @@
     :root { color-scheme: dark; font-family: Inter, Segoe UI, Arial, sans-serif; }
     * { box-sizing: border-box; }
     body { margin: 0; background: radial-gradient(circle at top left, #172554, #020617 48%); color: #e5e7eb; }
-    header { padding: 22px 26px; background: rgba(2,6,23,.72); border-bottom: 1px solid #334155; backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 2; }
-    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: .2px; }
-    .sub { color: #bfdbfe; }
-    main { padding: 22px; display: grid; gap: 18px; }
+    header {
+      padding: 16px 22px;
+      background: rgba(2,6,23,.78);
+      border-bottom: 1px solid rgba(51,65,85,.9);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+    .header-shell {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 28px; letter-spacing: .2px; }
+    .sub { color: #bfdbfe; margin: 6px 0 0; font-size: 13px; line-height: 1.4; }
+    .header-badges { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    main { padding: 22px; display: grid; gap: 18px; max-width: 1600px; margin: 0 auto; width: 100%; }
     button { background: #2563eb; color: white; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700; }
     button.green { background: #059669; }
     button.green:hover { background: #047857; }
@@ -145,6 +163,31 @@
     .flow-card h4 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: #cbd5e1; letter-spacing: .02em; }
     .flow-card .small { margin-top: 0; }
     .joint-editor-card { grid-column: 1 / -1; max-width: 100%; }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .section-kicker { margin: 0 0 4px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #93c5fd; }
+    .section-head h2 { margin: 0; }
+    .section-note { margin: 0; color: #94a3b8; font-size: 13px; line-height: 1.45; max-width: 70ch; }
+    .scan-panel { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, .95fr); gap: 14px; align-items: stretch; }
+    @media (max-width: 980px) { .scan-panel { grid-template-columns: 1fr; } }
+    .scan-card { background: rgba(15,23,42,.74); border: 1px solid #334155; border-radius: 16px; padding: 14px; box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+    .scan-card h3 { margin: 0 0 10px; font-size: 14px; color: #e2e8f0; }
+    .scan-card canvas { width: 100%; height: min(70vh, 620px); min-height: 460px; border-radius: 14px; }
+    .scan-side { display: grid; gap: 12px; align-content: start; }
+    .scan-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .scan-stat { background: rgba(2,6,23,.55); border: 1px solid #334155; border-radius: 12px; padding: 10px 12px; }
+    .scan-stat strong { display: block; font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+    .scan-stat span { font-size: 15px; font-weight: 800; color: #e2e8f0; }
+    .scan-headline { color: #e2e8f0; font-size: 14px; line-height: 1.5; margin: 0; }
+    .scan-empty { color: #94a3b8; font-size: 13px; line-height: 1.5; }
+    .scan-sectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .sector-chip { background: #0f172a; border: 1px solid #475569; border-radius: 10px; padding: 8px 10px; }
+    .sector-chip b { display: block; font-size: 12px; color: #e2e8f0; }
+    .sector-chip small { color: #94a3b8; display: block; margin-top: 3px; }
+    .scan-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .scan-list li { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 8px 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+    .scan-list li strong { font-size: 12px; display: block; color: #e2e8f0; }
+    .scan-list li span { color: #94a3b8; font-size: 12px; text-align: right; line-height: 1.35; }
+    .scan-source-line { color: #cbd5e1; font-size: 13px; line-height: 1.5; }
     .grasp-debug-viz { margin-top: 14px; padding: 12px 14px; border-radius: 14px; background: rgba(15,23,42,.92); border: 1px solid #334155; }
     .grasp-debug-viz h5 { margin: 0 0 10px; font-size: 13px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.02em; }
     .grasp-debug-rail { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: stretch; }
@@ -354,11 +397,559 @@
     .big-state.ok { border-color:#059669; background:rgba(5,150,105,.18); }
     .big-state.warn { border-color:#d97706; background:rgba(217,119,6,.16); }
     .big-state.bad { border-color:#dc2626; background:rgba(220,38,38,.18); }
+    /* === UI refresh layer === */
+    :root {
+      --bg: #040816;
+      --bg-2: #070c1b;
+      --surface: rgba(15, 23, 42, 0.84);
+      --surface-2: rgba(2, 6, 23, 0.74);
+      --surface-3: rgba(30, 41, 59, 0.76);
+      --border-soft: rgba(71, 85, 105, 0.85);
+      --border-strong: rgba(96, 165, 250, 0.45);
+      --text: #e5eefb;
+      --muted: #9aa8bd;
+      --muted-2: #74839c;
+      --primary: #60a5fa;
+      --primary-2: #2563eb;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.34);
+      --shadow-md: 0 14px 30px rgba(0, 0, 0, 0.22);
+      --radius-xl: 22px;
+      --radius-lg: 18px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      background:
+        radial-gradient(circle at 14% 14%, rgba(37, 99, 235, 0.26), transparent 28%),
+        radial-gradient(circle at 88% 4%, rgba(168, 85, 247, 0.16), transparent 22%),
+        linear-gradient(180deg, #020617 0%, #040816 42%, #020617 100%);
+      color: var(--text);
+      font-family: Inter, Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+      line-height: 1.5;
+      font-size: 15px;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    header {
+      padding: 18px 24px 16px;
+      background: rgba(2, 6, 23, 0.8);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.92);
+      backdrop-filter: blur(14px) saturate(1.1);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      box-shadow: 0 10px 28px rgba(2, 6, 23, 0.24);
+    }
+    .header-shell {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
+    .sub { color: #bfd3f4; margin: 6px 0 0; font-size: 13px; line-height: 1.5; max-width: 76ch; }
+    .header-badges { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+    main { padding: 22px; display: grid; gap: 18px; max-width: 1600px; margin: 0 auto; width: 100%; }
+    button,
+    .op-tab,
+    input,
+    select,
+    .pill,
+    details.diag-acc,
+    .card,
+    .flow-card,
+    .mission-hero,
+    .big-state,
+    .scan-card,
+    .scan-stat,
+    .sector-chip,
+    .cam,
+    .cam-strip-tile,
+    .vision-large-tile,
+    .arm3d-canvas-host,
+    .visgeom-overlay > #visgeomOverlayToggle {
+      transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease, opacity .16s ease;
+    }
+    :focus-visible {
+      outline: 3px solid rgba(96, 165, 250, 0.96);
+      outline-offset: 2px;
+    }
+    button {
+      background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+      color: white;
+      border: 1px solid rgba(96, 165, 250, 0.34);
+      border-radius: 12px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 700;
+      box-shadow: 0 8px 20px rgba(37, 99, 235, 0.2);
+    }
+    button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button.green { background: linear-gradient(180deg, #10b981 0%, #059669 100%); border-color: rgba(16, 185, 129, 0.36); }
+    button.warn { background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%); border-color: rgba(245, 158, 11, 0.36); }
+    button.emergency { background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%); border-color: rgba(239, 68, 68, 0.4); }
+    button.emergency.always-visible {
+      font-size: 15px;
+      padding: 12px 18px;
+      border: 2px solid rgba(254, 202, 202, 0.9);
+      box-shadow: 0 0 0 2px rgba(185, 28, 28, .18), 0 10px 24px rgba(0, 0, 0, .24);
+    }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+    .layout { display: grid; grid-template-columns: minmax(360px, 1.2fr) minmax(340px, .8fr); gap: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card {
+      background: linear-gradient(180deg, rgba(15,23,42,.94), rgba(10,16,28,.95));
+      border: 1px solid rgba(71, 85, 105, 0.92);
+      border-radius: var(--radius-xl);
+      padding: 16px;
+      box-shadow: var(--shadow-lg);
+    }
+    .card h2 { margin: 0 0 12px; font-size: 17px; display: flex; align-items: center; justify-content: space-between; gap: 8px; letter-spacing: -0.01em; }
+    .ok { color: #5eead4; }
+    .bad { color: #fb7185; }
+    .warn { color: #fbbf24; }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(30, 41, 59, 0.92);
+      margin: 2px;
+      font-size: 12px;
+      border: 1px solid rgba(71, 85, 105, 0.9);
+      color: #dbe7f7;
+      white-space: nowrap;
+    }
+    .pill.ok { color: #a7f3d0; border-color: rgba(34, 197, 94, 0.75); background: rgba(5, 150, 105, 0.18); }
+    .pill.warn { color: #fde68a; border-color: rgba(217, 119, 6, 0.78); background: rgba(217, 119, 6, 0.18); }
+    .pill.bad { color: #fecaca; border-color: rgba(220, 38, 38, 0.82); background: rgba(220, 38, 38, 0.22); }
+    .metric { font-size: 28px; font-weight: 800; margin: 6px 0; letter-spacing: -0.02em; }
+    .small { color: #9ca3af; font-size: 13px; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 240px;
+      overflow: auto;
+      background: rgba(2, 6, 23, 0.96);
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(30, 41, 59, 0.95);
+      font-size: 12px;
+      line-height: 1.45;
+      color: #d7e3f5;
+    }
+    canvas { width: 100%; height: 420px; background: radial-gradient(circle, #0f172a, #020617); border: 1px solid rgba(71, 85, 105, 0.92); border-radius: 16px; }
+    .cams { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+    .cam { background: #020617; border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 14px; overflow: hidden; min-height: 150px; box-shadow: var(--shadow-md); }
+    .cam img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #020617; }
+    .cam span { display: block; padding: 8px 10px; color: #cbd5e1; font-size: 12px; }
+    .flow-h { margin: 14px 0 8px; font-size: 14px; font-weight: 700; color: #e2e8f0; display: flex; align-items: center; gap: 10px; }
+    .step-num { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; border-radius: 8px; background: #334155; font-size: 13px; }
+    pre.compact-pre { max-height: 180px; font-size: 11px; }
+    details.diag-acc {
+      background: rgba(15,23,42,.72);
+      border: 1px solid rgba(71, 85, 105, 0.88);
+      border-radius: 14px;
+      margin-bottom: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 18px rgba(0,0,0,.12);
+    }
+    details.diag-acc summary { cursor: pointer; padding: 12px 14px; list-style: none; font-weight: 700; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+    details.diag-acc summary::-webkit-details-marker { display: none; }
+    details.diag-acc summary .muted { font-weight: 400; font-size: 11px; max-width: min(900px, 92vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    details.diag-acc pre { max-height: 260px; margin: 0 14px 14px; }
+    .diag-stack { display: flex; flex-direction: column; gap: 0; }
+    .banner-op {
+      background: linear-gradient(180deg, rgba(66,32,6,.92), rgba(30, 41, 59, 0.95));
+      border: 1px solid rgba(217, 119, 6, 0.88);
+      border-radius: 16px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      line-height: 1.45;
+      box-shadow: var(--shadow-md);
+    }
+    .banner-op code { background: #1e293b; padding: 2px 8px; border-radius: 6px; font-size: 13px; }
+    #dragFollowStatus { max-height: 200px; font-size: 12px; line-height: 1.5; border: 2px solid rgba(71, 85, 105, 0.9); transition: border-color .25s, box-shadow .25s; }
+    #dragFollowStatus.live { border-color: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,.25); }
+    #dragFollowBadge { font-weight: 800; font-size: 13px; display: inline-block; margin-bottom: 6px; }
+    body.drag-follow-running .hide-when-drag-active { display: none !important; }
+    body.drag-follow-running .drag-session-block {
+      border: 1px solid rgba(34, 197, 94, 0.45);
+      border-radius: 14px;
+      padding: 14px 14px 10px;
+      background: rgba(34, 197, 94, 0.07);
+      margin-bottom: 4px;
+    }
+    .op-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.95);
+    }
+    .op-tab {
+      background: rgba(30, 41, 59, 0.92);
+      color: #e2e8f0;
+      border: 1px solid rgba(71, 85, 105, 0.95);
+      border-radius: 999px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 14px;
+      transition: background .15s, border-color .15s, color .15s, transform .15s ease;
+    }
+    .op-tab:hover { background: rgba(51, 65, 85, 0.98); border-color: rgba(100, 116, 139, 0.92); }
+    .op-tab.is-active {
+      background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+      border-color: rgba(59, 130, 246, 0.9);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
+    }
+    .op-panel { display: none; animation: opFade .22s ease-out; }
+    .op-panel.is-active { display: block; }
+    @keyframes opFade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .mission-hero {
+      background: linear-gradient(135deg, rgba(30, 58, 138, 0.32), rgba(15, 23, 42, 0.95));
+      border: 1px solid rgba(71, 85, 105, 0.95);
+      border-radius: 18px;
+      padding: 18px 18px 16px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow-md);
+    }
+    .mission-hero h3 { margin: 0 0 8px; font-size: 16px; color: #e2e8f0; letter-spacing: -0.01em; }
+    .mission-hero .lead { margin: 0 0 14px; color: #9aa8bd; font-size: 13px; line-height: 1.55; }
+    .mission-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .mission-actions .primary-go,
+    .primary-go {
+      font-size: 15px;
+      padding: 12px 20px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+      border: 1px solid rgba(16, 185, 129, 0.34);
+      color: #fff;
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 10px 24px rgba(5, 150, 105, 0.22);
+    }
+    .mission-actions .primary-go:hover,
+    .primary-go:hover { filter: brightness(1.03); }
+    .mission-actions .secondary-go,
+    .mission-actions button:not(.primary-go):not(.green):not(.warn):not(.emergency) {
+      background: rgba(51, 65, 85, 0.9);
+      color: #e2e8f0;
+      border: 1px solid rgba(71, 85, 105, 0.95);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .mission-actions .secondary-go:hover,
+    .mission-actions button:not(.primary-go):not(.green):not(.warn):not(.emergency):hover { background: rgba(71, 85, 105, 0.98); }
+    .pulse-hint { font-size: 12px; color: #9aa8bd; margin-left: 4px; }
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 8px;
+    }
+    .flow-card {
+      background: rgba(15, 23, 42, 0.74);
+      border: 1px solid rgba(71, 85, 105, 0.9);
+      border-radius: 16px;
+      padding: 14px 14px 12px;
+      box-shadow: var(--shadow-md);
+    }
+    .flow-card h4 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: #d8e4f2; letter-spacing: .02em; }
+    .flow-card .small { margin-top: 0; }
+    .joint-editor-card { grid-column: 1 / -1; max-width: 100%; }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .section-kicker { margin: 0 0 4px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #93c5fd; }
+    .section-head h2 { margin: 0; }
+    .section-note { margin: 0; color: #9aa8bd; font-size: 13px; line-height: 1.45; max-width: 70ch; }
+    .scan-panel { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, .95fr); gap: 14px; align-items: stretch; }
+    @media (max-width: 980px) { .scan-panel { grid-template-columns: 1fr; } }
+    .scan-card { background: rgba(15,23,42,.78); border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 16px; padding: 14px; box-shadow: var(--shadow-md); }
+    .scan-card h3 { margin: 0 0 10px; font-size: 14px; color: #e2e8f0; }
+    .scan-card canvas { width: 100%; height: min(70vh, 620px); min-height: 460px; border-radius: 14px; }
+    .scan-side { display: grid; gap: 12px; align-content: start; }
+    .scan-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .scan-stat { background: rgba(2,6,23,.55); border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 12px; padding: 10px 12px; }
+    .scan-stat strong { display: block; font-size: 11px; color: #9aa8bd; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+    .scan-stat span { font-size: 15px; font-weight: 800; color: #e2e8f0; }
+    .scan-headline { color: #e2e8f0; font-size: 14px; line-height: 1.5; margin: 0; }
+    .scan-empty { color: #9aa8bd; font-size: 13px; line-height: 1.5; }
+    .scan-sectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .sector-chip { background: #0f172a; border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 10px; padding: 8px 10px; }
+    .sector-chip b { display: block; font-size: 12px; color: #e2e8f0; }
+    .sector-chip small { color: #9aa8bd; display: block; margin-top: 3px; }
+    .scan-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .scan-list li { background: #0f172a; border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 12px; padding: 8px 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+    .scan-list li strong { font-size: 12px; display: block; color: #e2e8f0; }
+    .scan-list li span { color: #9aa8bd; font-size: 12px; text-align: right; line-height: 1.35; }
+    .scan-source-line { color: #cbd5e1; font-size: 13px; line-height: 1.5; }
+    .grasp-debug-viz {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(15,23,42,.96), rgba(2,6,23,.95));
+      border: 1px solid rgba(71, 85, 105, 0.92);
+      box-shadow: var(--shadow-md);
+    }
+    .grasp-debug-viz h5 { margin: 0 0 10px; font-size: 13px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.02em; }
+    .grasp-debug-rail { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: stretch; }
+    .grasp-rail-step {
+      flex: 1;
+      min-width: 64px;
+      text-align: center;
+      padding: 8px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      line-height: 1.3;
+      color: #9aa8bd;
+      background: #0f172a;
+      border: 1px solid rgba(30, 41, 59, 0.98);
+      transition: background .15s, border-color .15s, color .15s, transform .15s ease;
+    }
+    .grasp-rail-step b { display: block; font-size: 11px; color: #dbe7f7; margin-bottom: 2px; }
+    .grasp-rail-step.on { color: #f8fafc; border-color: rgba(59, 130, 246, 0.95); background: rgba(37,99,235,.22); box-shadow: 0 0 0 1px rgba(37,99,235,0.35); }
+    .grasp-rail-step.done { color: #a7f3d0; border-color: rgba(16, 185, 129, 0.9); background: rgba(5,150,105,.12); }
+    .grasp-rail-step.bad { color: #fecaca; border-color: rgba(185,28,28,0.9); background: rgba(185,28,28,.12); }
+    .grasp-debug-viz.st-preflight .grasp-rail-step:nth-child(1) { animation: graspPulse 1.1s ease-in-out infinite; }
+    @keyframes graspPulse { 50% { box-shadow: 0 0 0 2px rgba(59,130,246,0.45); } }
+    .grasp-debug-bar { height: 9px; background: #1e293b; border-radius: 999px; overflow: hidden; margin: 4px 0 10px; }
+    .grasp-debug-bar > i { display: block; height: 100%; background: linear-gradient(90deg,#2563eb,#7c3aed); width: 0%; transition: width .25s ease; border-radius: 999px; }
+    .grasp-metric-row { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; align-items: center; }
+    .grasp-chip { padding: 4px 9px; border-radius: 999px; background: #1e293b; border: 1px solid rgba(71, 85, 105, 0.9); color: #dbe7f7; }
+    .grasp-chip.ok { border-color: rgba(16, 185, 129, 0.9); color: #a7f3d0; }
+    .grasp-chip.warn { border-color: rgba(217, 119, 6, 0.9); color: #fde68a; }
+    .grasp-debug-line { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: #9aa8bd; }
+    .arm3d-wrap { margin-top: 4px; position: relative; }
+    .arm3d-canvas-host { width: 100%; min-height: 420px; height: min(52vh, 520px); border-radius: 14px; background: #0a0f1a; border: 1px solid rgba(71, 85, 105, 0.92); position: relative; overflow: hidden; box-shadow: var(--shadow-md); }
+    .arm3d-float-toggles {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+      max-width: min(200px, 42vw);
+    }
+    .arm3d-mini-toggle {
+      pointer-events: auto;
+      font-size: 11px;
+      color: #cbd5e1;
+      background: rgba(15, 23, 42, 0.9);
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(71, 85, 105, 0.9);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      line-height: 1.25;
+    }
+    .arm3d-mini-toggle input { accent-color: #38bdf8; flex-shrink: 0; }
+    .visgeom-overlay {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: min(440px, calc(100% - 24px));
+      max-height: min(82vh, calc(100% - 20px));
+      z-index: 7;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+      pointer-events: none;
+    }
+    .visgeom-overlay > #visgeomOverlayToggle {
+      pointer-events: auto;
+      align-self: flex-end;
+      margin-bottom: 8px;
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(37, 99, 235, 0.92);
+      border: 1px solid rgba(96, 165, 250, 0.96);
+      color: #eff6ff;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .visgeom-overlay > #visgeomOverlayBody {
+      pointer-events: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
+      max-height: min(74vh, calc(100vh - 140px));
+      border-radius: 14px;
+      scrollbar-width: thin;
+    }
+    .visgeom-overlay-collapsed > #visgeomOverlayBody { display: none; }
+    .visgeom-overlay-collapsed > #visgeomOverlayToggle { margin-bottom: 0; }
+    #visGeomForm.visgeom-on-canvas {
+      margin-top: 0;
+      background: rgba(15, 23, 42, 0.94);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(59, 130, 246, 0.42);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    }
+    .arm3d-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; font-size: 11px; color: #9aa8bd; }
+    .arm3d-legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .arm3d-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .joint-sliders { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+    .joint-slider-row {
+      display: grid;
+      grid-template-columns: 36px 1fr 58px;
+      align-items: center;
+      gap: 8px 10px;
+    }
+    @media (max-width: 700px) {
+      .joint-slider-row { grid-template-columns: 32px 1fr; }
+      .joint-slider-row .joint-val { grid-column: 2; text-align: left; }
+    }
+    .joint-slider-row input[type="range"] { width: 100%; accent-color: #10b981; }
+    .joint-lab { font-size: 12px; font-weight: 800; color: #9aa8bd; }
+    .joint-val { font-size: 12px; color: #e2e8f0; font-variant-numeric: tabular-nums; text-align: right; }
+    .joint-mvbtn { padding: 6px 10px; font-size: 12px; border-radius: 8px; border: 1px solid rgba(71, 85, 105, 0.9); background: rgba(30, 41, 59, 0.96); color: #e2e8f0; cursor: pointer; white-space: nowrap; }
+    .joint-mvbtn:hover { background: rgba(51, 65, 85, 0.98); }
+    .always-cam-strip {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      border-color: rgba(37, 99, 235, 0.62);
+      box-shadow: 0 14px 38px rgba(15, 23, 42, 0.52);
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      background: linear-gradient(180deg, rgba(8, 15, 29, 0.94), rgba(8, 15, 29, 0.88));
+    }
+    .always-cam-strip h2 { margin-top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .quick-op-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+    .quick-op-row .primary-go { background: linear-gradient(180deg, #10b981 0%, #059669 100%); padding: 10px 14px; border-radius: 10px; font-weight: 900; }
+    .quick-vision-row { display: flex; gap: 12px; align-items: flex-end; margin-left: auto; flex-wrap: wrap; }
+    .quick-cams { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+    .quick-cams .cam-thumb-wrap { display: flex; flex-direction: column; align-items: center; gap: 3px; max-width: 140px; }
+    .quick-cams .cam-thumb-caption { font-size: 10px; line-height: 1.25; color: #9aa8bd; text-align: center; }
+    .quick-cams img { width: 132px; max-width: 28vw; height: 74px; object-fit: contain; background:#020617; border:1px solid rgba(71, 85, 105, 0.9); border-radius:8px; }
+    .quick-lidar-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 118px; }
+    .quick-lidar-wrap canvas#alwaysLidarCanvas {
+      display: block; width: 132px; max-width: 28vw; height: 74px; background: #020617; border: 1px solid rgba(71, 85, 105, 0.9); border-radius: 8px;
+    }
+    .always-cam-more { display: none; margin-top: 12px; max-height: calc(100vh - 160px); overflow: auto; padding-right: 4px; }
+    .always-cam-strip.expanded .always-cam-more { display: block; }
+    .always-cam-strip.expanded .quick-cams img { width: 96px; height: 54px; }
+    .always-cam-strip.expanded .quick-lidar-wrap canvas#alwaysLidarCanvas { width: 96px; height: 54px; }
+    .always-cam-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+      margin-top: 10px;
+    }
+    @media (max-width: 900px) {
+      .always-cam-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quick-vision-row { width: 100%; margin-left: 0; justify-content: flex-start; }
+      .quick-cams img { flex: 1; min-width: 120px; }
+    }
+    .always-cam-strip .cam-strip-tile img,
+    .always-cam-strip .cam-strip-tile canvas {
+      width: 100%;
+      max-height: min(160px, 24vh);
+      object-fit: contain;
+      background: #0f172a;
+      border-radius: 8px;
+      border: 1px solid rgba(71, 85, 105, 0.9);
+      display: block;
+    }
+    .always-cam-strip.expanded .always-cam-grid { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
+    .always-cam-strip.expanded .cam-strip-tile img,
+    .always-cam-strip.expanded .cam-strip-tile canvas {
+      max-height: min(460px, 46vh);
+      min-height: 260px;
+    }
+    .vision-large-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(320px, 1fr));
+      gap: 14px;
+      margin: 12px 0 14px;
+    }
+    @media (max-width: 900px) { .vision-large-grid { grid-template-columns: 1fr; } }
+    .vision-large-tile { background:#020617; border:1px solid rgba(71, 85, 105, 0.9); border-radius:14px; overflow:hidden; box-shadow: var(--shadow-md); }
+    .vision-large-tile img,
+    .vision-large-tile canvas {
+      width: 100%;
+      height: min(520px, 52vh);
+      object-fit: contain;
+      display: block;
+      background:#020617;
+    }
+    .vision-large-tile img.bad-frame,
+    .vision-large-tile canvas.bad-frame {
+      outline: 3px solid #dc2626;
+      opacity: 0.92;
+    }
+    .vision-large-tile strong,
+    .vision-large-tile span { display:block; padding:8px 10px; font-size:13px; }
+    .vision-large-tile strong { color:#e2e8f0; padding-bottom:0; }
+    .vision-large-tile span { color:#9aa8bd; }
+    .always-cam-strip .cam-strip-tile img.bad-frame,
+    .always-cam-strip .cam-strip-tile canvas.bad-frame {
+      outline: 2px solid #dc2626;
+      opacity: .68;
+    }
+    .always-cam-strip .cam-strip-tile span {
+      display: block;
+      font-size: 11px;
+      color: #9aa8bd;
+      margin-top: 6px;
+      line-height: 1.35;
+    }
+    .tuning-controls .tune-row { margin-bottom: 12px; }
+    .tuning-controls .tune-row label { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 12px; color: #cbd5e1; flex-wrap: wrap; }
+    .tuning-controls input[type="range"] { width: 100%; margin-top: 6px; }
+    .grasp-status-grid { display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px; margin:12px 0; }
+    @media (max-width: 900px) { .grasp-status-grid { grid-template-columns: 1fr; } }
+    .big-state {
+      border:1px solid rgba(71, 85, 105, 0.92);
+      border-radius:14px;
+      padding:12px;
+      background:rgba(2,6,23,.58);
+      box-shadow: 0 10px 18px rgba(0,0,0,.12);
+    }
+    .big-state strong { display:block; font-size:18px; margin-bottom:5px; letter-spacing: -0.01em; }
+    .big-state.ok { border-color:rgba(16,185,129,.85); background:rgba(5,150,105,.16); }
+    .big-state.warn { border-color:rgba(217,119,6,.85); background:rgba(217,119,6,.12); }
+    .big-state.bad { border-color:rgba(220,38,38,.85); background:rgba(220,38,38,.16); }
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } .cams { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Go2 Diagnostics Dashboard</h1>
+    <div class="header-shell">
+      <div>
+        <h1>Go2 Diagnostics Dashboard</h1>
+        <p class="sub">Presa D1, LiDAR XT-16, AprilTag e diagnostica in una vista unica.</p>
+      </div>
+      <div class="header-badges">
+        <span class="pill">LiDAR live</span>
+        <span class="pill">D1 grasp</span>
+        <span class="pill">AprilTag</span>
+        <span class="pill">Sport / stack</span>
+      </div>
+    </div>
   </header>
   <noscript><div class="banner-op" style="margin:16px;">Abilita JavaScript: senza, la dashboard non aggiorna stato, camere e pulsanti restano statici.</div></noscript>
   <iframe name="graspPostTarget" style="display:none;width:0;height:0;border:0;" title="grasp POST target"></iframe>
@@ -393,6 +984,7 @@
         <button type="button" class="primary-go" style="background:#0f766e;border-color:#0d9488;" onclick="gotoSavedStartPose()" title="Vai direttamente alla posa START salvata (start_alignment.json)">Vai a START</button>
         <button type="button" onclick="openOpTab('graspseq')">Sequenza/debug</button>
         <button type="button" class="primary-go" style="background:#1d4ed8;border-color:#2563eb;" onclick="openOpTab('arm3d')" title="Apre il tab e scorre alla sezione Operazioni">Braccio 3D</button>
+        <button type="button" class="primary-go" style="background:#0f766e;border-color:#0d9488;" onclick="openOpTab('trace')" title="Apri la vista pulita dall'alto">Vista dall’alto</button>
         <button type="button" onclick="toggleAlwaysCamDetails()">Mostra camere GRANDI/debug</button>
         <div class="quick-vision-row">
           <div class="quick-cams">
@@ -495,7 +1087,9 @@
         <button type="button" class="op-tab is-active" role="tab" data-op-tab="camtag" aria-selected="true">Camere &amp; AprilTag</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="lidar" aria-selected="false">LiDAR XT-16</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Sequenza presa</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="graspdbg" aria-selected="false">Grasp debug</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Braccio 3D</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="trace" aria-selected="false">Vista dall’alto</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="go2" aria-selected="false">Corpo Go2</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="drag" aria-selected="false">Drag mano</button>
       </div>
@@ -546,12 +1140,48 @@
       </div>
 
       <div id="op-lidar" class="op-panel" role="tabpanel" data-op-panel="lidar">
-        <p class="small muted" style="margin-bottom:12px;">Visualizzazione UDP locale sulla NX (<code>GO2_LOCAL=1</code>). Da PC remoto il LiDAR dipende dal routing verso la Jetson.</p>
-        <article class="card">
-          <h2>LiDAR XT-16 Live <span id="lidarStatus" class="warn">waiting</span></h2>
-          <canvas id="lidarCanvas" width="900" height="620"></canvas>
-          <div id="lidarMeta" class="small">Listening on robot UDP 2368...</div>
-        </article>
+        <p class="section-note" style="margin-bottom:12px;">
+          Vista LiDAR in piano XY: mostra i ritorni grezzi e li riassume per settore. Non classifica oggetti,
+          ma ti fa vedere <strong>dove</strong> il sensore sta vedendo punti e quali zone sono più occupate.
+        </p>
+        <div class="scan-panel">
+          <article class="scan-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Sensors / LiDAR</p>
+                <h2>LiDAR XT-16 Live</h2>
+              </div>
+              <span id="lidarStatus" class="pill warn">waiting</span>
+            </div>
+            <canvas id="lidarCanvas" width="900" height="620" aria-label="Mappa LiDAR XY"></canvas>
+            <div id="lidarMeta" class="small" style="margin-top:10px;">Listening on robot UDP 2368...</div>
+          </article>
+          <aside class="scan-side">
+            <div class="scan-card">
+              <div class="scan-summary-grid">
+                <div class="scan-stat"><strong>Aggiornato</strong><span id="lidarUpdatedAt">—</span></div>
+                <div class="scan-stat"><strong>Punti visibili</strong><span id="lidarVisiblePoints">—</span></div>
+                <div class="scan-stat"><strong>Range</strong><span id="lidarRangeStats">—</span></div>
+                <div class="scan-stat"><strong>Packet / sorgenti</strong><span id="lidarPacketStats">—</span></div>
+              </div>
+            </div>
+            <div class="scan-card">
+              <h3>Cosa ha scannerizzato</h3>
+              <p id="lidarHeadline" class="scan-headline">In attesa dei dati...</p>
+              <div id="lidarSectorList" class="scan-sectors" style="margin-top:10px;"></div>
+            </div>
+            <div class="scan-card">
+              <h3>Ritorni più vicini</h3>
+              <ul id="lidarClosestList" class="scan-list">
+                <li class="scan-empty">Nessun punto ancora.</li>
+              </ul>
+            </div>
+            <div class="scan-card">
+              <h3>Sorgenti UDP</h3>
+              <div id="lidarSources" class="scan-source-line">—</div>
+            </div>
+          </aside>
+        </div>
       </div>
 
       <div id="op-graspseq" class="op-panel" role="tabpanel" data-op-panel="graspseq">
@@ -559,7 +1189,8 @@
         <div class="mission-hero">
           <h3>Sequenza presa braccio</h3>
           <p class="lead">
-            Avvio tentativo e stato <strong>fase per fase</strong> (vedi riga grande). Le camere sono nella <strong>striscia fissa sopra</strong> e in
+            Flusso di default: <strong>camera frontale → START fisso → presa orientata box/tag → ritorno a START</strong>.
+            Lo stato è <strong>fase per fase</strong> (vedi riga grande). Le camere sono nella <strong>striscia fissa sopra</strong> e in
             <strong>Camere &amp; AprilTag</strong>. Serve <code>GO2_ENABLE_REAL_ARM=1</code> e helper <code>bin/d1_arm_*</code>.
           </p>
           <p id="graspPhaseBig" class="metric" style="font-size:19px;margin:10px 0 14px;line-height:1.4;color:#e2e8f0;">
@@ -567,32 +1198,33 @@
           </p>
           <div class="grasp-status-grid">
             <div id="tagStateBig" class="big-state warn">
-              <strong>VISIONE: …</strong>
-              <span class="small">AprilTag 0–3 + box detector su polso/frontale</span>
+              <strong>VISIONE: camera frontale</strong>
+              <span class="small">Oggetto visto → si prepara la posa START</span>
             </div>
             <div id="gripStateBig" class="big-state warn">
-              <strong>PRESA: …</strong>
+              <strong>PRESA: orientamento box/tag</strong>
               <span class="small">Centro presa + asse griffe est/ovest</span>
             </div>
             <div id="motionStateBig" class="big-state warn">
-              <strong>MOTO: fermo</strong>
+              <strong>MOTO: START → presa → START</strong>
               <span class="small">Mostra quando il braccio sta ricevendo comandi</span>
             </div>
             <div id="ikStateBig" class="big-state warn">
-              <strong>IK: …</strong>
+              <strong>IK: da START</strong>
               <span class="small">Target + traiettoria braccio</span>
             </div>
             <div id="detectorStateBig" class="big-state warn">
-              <strong>DETECTOR: …</strong>
-              <span class="small">YOLO26/YOLO11 TensorRT o fallback</span>
+              <strong>DETECTOR: fallback</strong>
+              <span class="small">YOLO26/YOLO11 TensorRT o fallback se manca il tag</span>
             </div>
           </div>
             <div class="mission-actions">
             <form method="post" action="{{ script_root|default('') }}/api/arm/grasp_box/attempt" target="graspPostTarget" style="display:inline;margin:0;" onsubmit="setPresaSequenceStatus('POST diretto grasp inviato — guarda stato sotto…', false); setTimeout(refreshGraspJobPanel, 350); setTimeout(refreshGraspJobPanel, 1200);">
-              <button type="submit" class="primary-go" title="POST diretto: non dipende dal fetch JavaScript">Avvia sequenza presa (braccio)</button>
+              <button type="submit" class="primary-go" title="POST diretto: non dipende dal fetch JavaScript">Avvia: front camera → START → presa → START</button>
             </form>
             <button type="button" class="secondary-go" onclick="graspAfterCrouch()">Crouch cane → poi grasp</button>
             <button type="button" class="secondary-go" onclick="refreshDetectionNow()">Aggiorna detection ora</button>
+            <button type="button" class="secondary-go" onclick="openOpTab('graspdbg', { user: true })">Apri debug grasp</button>
             <span id="detectionPulse" class="pulse-hint"></span>
           </div>
           <div id="graspLiveDebug" class="grasp-debug-viz" aria-live="polite">
@@ -600,7 +1232,7 @@
             <div class="grasp-debug-rail" id="graspRailSteps"></div>
             <div class="grasp-debug-bar" title="Cicli ricerca polso (fase 6)"><i id="graspCycleBar"></i></div>
             <div class="grasp-metric-row" id="graspMetricChips"></div>
-            <p class="grasp-debug-line" id="graspDebugLine">Nessun job attivo — dopo «Avvia» compaiono fase, ciclo e metriche polso.</p>
+            <p class="grasp-debug-line" id="graspDebugLine">Nessun job attivo — dopo «Avvia» compaiono camera frontale, START, presa e ritorno.</p>
           </div>
           <div class="flow-card" style="margin-top:14px;border:1px solid #334155;">
             <h4 style="margin-top:0;">Flag grasp (sessione processo)</h4>
@@ -619,16 +1251,17 @@
               <span id="graspSessionStatus" class="small muted"></span>
             </p>
           </div>
-          <div class="flow-card" style="margin-top:12px;border:1px dashed #475569;">
-            <h4 style="margin-top:0;">Fasi 1–3 (riferimento)</h4>
+          <div class="flow-card" style="margin-top:14px;border:1px dashed #475569;">
+            <h4 style="margin-top:0;">Fasi operative del grasp</h4>
             <ul class="small muted" style="margin:0;padding-left:1.2em;line-height:1.55;">
-              <li><strong>Fase 1</strong> — Allineamento: fold opz., posa START, attesa AprilTag e piano visibile (dual cam <code>/api/box/plan</code>).</li>
-              <li><strong>Fase 2</strong> — Avvicinamento: ricerca polso da hint frontale + micro-step centratura grip; hold tra i comandi.</li>
-              <li><strong>Fase 3</strong> — Presa: esecuzione IK multi-step + pinza al trigger (tag grande in frame o grip perso dopo debounce); nel JSON risultato ogni ciclo include <code>ik_gate</code> (debug gating).</li>
+              <li><strong>1.</strong> Front camera: vede l'oggetto e prepara il target presa.</li>
+              <li><strong>2.</strong> START: il braccio torna sempre alla posa fissa salvata.</li>
+              <li><strong>3.</strong> Presa: dalla START esegue l'IK con orientamento box/tag corretto e chiude la pinza.</li>
+              <li><strong>4.</strong> Ritorno: il braccio torna in START dopo la presa.</li>
             </ul>
           </div>
           <p id="presaSequenceStatus" class="small" style="margin-top:12px;min-height:1.5em;line-height:1.45;color:#cbd5e1;">
-            Pronto — dopo «Avvia» la fase si aggiorna qui sopra e nel JSON sotto.
+            Pronto — flusso attivo: camera frontale → START → presa → START.
           </p>
           <p class="small muted" style="margin:12px 0 0;">
             <button type="button" class="emergency" style="padding:8px 14px;font-size:13px;" onclick="emergencyHold()">FERMA — hold</button>
@@ -637,12 +1270,10 @@
         </div>
 
         <div class="flow-card" style="margin-top:14px;border:1px solid #475569;background:rgba(15,23,42,.55);">
-          <h4 style="margin-top:0;">Flusso visione → punto presa → IK → moto braccio <span class="small muted">/api/arm/grasp_pipeline</span></h4>
+          <h4 style="margin-top:0;">Flusso frontale → START → presa → ritorno <span class="small muted">/api/arm/grasp_pipeline</span></h4>
           <p class="small muted" style="margin:0 0 8px;line-height:1.5;">
-            Diagnostica aggiornata: dove si interrompe la catena (frame, detector/tag, punto presa, target, IK, DDS).
-            Con <code>GO2_ENABLE_REAL_ARM=0</code> il braccio <strong>non</strong> riceve comandi. Se il RealSense ha piano IK valido ma il polso no,
-            di default si resta in ricerca: su NX prova <code>GO2_GRASP_USE_FUSED_PLAN_IK=1</code> (due snapshot consecutivi col piano fuso ok) oppure
-            <code>GO2_FRONT_CAMERA_FALLBACK_GRASP=1</code> dopo i cicli di ricerca.
+            Diagnostica aggiornata: front camera vede l'oggetto, il braccio va in START fisso, poi esegue la presa orientata e torna a START.
+            Con <code>GO2_ENABLE_REAL_ARM=0</code> il braccio <strong>non</strong> riceve comandi. Il percorso legacy resta disponibile solo come fallback tecnico.
           </p>
           <p id="graspEnvBadge" class="small" style="margin:0 0 8px;line-height:1.45;color:#e2e8f0;">Env: …</p>
           <pre id="graspEventLogPre" class="small compact-pre" style="max-height:180px;margin:0 0 10px;border-color:#475569;">Log eventi presa…</pre>
@@ -736,6 +1367,49 @@
         </div>
       </div>
 
+      <div id="op-graspdbg" class="op-panel" role="tabpanel" data-op-panel="graspdbg">
+        <div class="flow-card" style="padding:14px;border:1px solid #475569;background:rgba(15,23,42,.62);">
+          <h3 style="margin-top:0;margin-bottom:8px;">Grasp debug console</h3>
+          <p class="small muted" style="margin:0 0 10px;line-height:1.45;">
+            Vista unica per capire dove si rompe la presa: stato job, preflight, eventi, session override e risposta del pipeline.
+          </p>
+          <div class="btn-row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <button type="button" class="primary-go" onclick="graspDbgStart(false)">Avvia grasp</button>
+            <button type="button" class="secondary-go" onclick="graspDbgStart(true)">Crouch + grasp</button>
+            <button type="button" onclick="graspDbgRefreshAll()">Aggiorna tutto</button>
+            <button type="button" onclick="graspDbgRefreshJob()">Job status</button>
+            <button type="button" onclick="graspDbgRefreshPipeline()">Pipeline</button>
+            <button type="button" onclick="graspDbgRefreshSession()">Sessione flag</button>
+            <button type="button" onclick="openOpTab('graspseq', { user: true })">Vai alla sequenza</button>
+          </div>
+          <p id="graspDbgTopLine" class="small muted" style="margin:0 0 12px;line-height:1.45;">Pronto.</p>
+          <div class="flow-grid" style="margin-bottom:12px;">
+            <div class="flow-card" style="border:1px solid #334155;">
+              <h4 style="margin-top:0;">Job attivo</h4>
+              <pre id="graspDbgJobPre" class="small compact-pre" style="max-height:240px;">—</pre>
+            </div>
+            <div class="flow-card" style="border:1px solid #334155;">
+              <h4 style="margin-top:0;">Pipeline grasp</h4>
+              <pre id="graspDbgPipelinePre" class="small compact-pre" style="max-height:240px;">—</pre>
+            </div>
+          </div>
+          <div class="flow-grid" style="margin-bottom:12px;">
+            <div class="flow-card" style="border:1px solid #334155;">
+              <h4 style="margin-top:0;">Session override</h4>
+              <pre id="graspDbgSessionPre" class="small compact-pre" style="max-height:200px;">—</pre>
+            </div>
+            <div class="flow-card" style="border:1px solid #334155;">
+              <h4 style="margin-top:0;">Eventi recenti</h4>
+              <pre id="graspDbgEventsPre" class="small compact-pre" style="max-height:200px;">—</pre>
+            </div>
+          </div>
+          <details class="diag-acc">
+            <summary><strong>JSON raw completo</strong> <span class="muted small">job + pipeline + session</span></summary>
+            <pre id="graspDbgRawPre" class="small compact-pre" style="margin-top:10px;max-height:360px;">—</pre>
+          </details>
+        </div>
+      </div>
+
       <div id="op-go2" class="op-panel hide-when-drag-active" role="tabpanel" data-op-panel="go2">
         <p class="small muted">
           Comandi <strong>Sport</strong> sul quadrupede — <span class="warn">non il braccio D1</span>.
@@ -792,48 +1466,50 @@
       <div id="op-arm3d" class="op-panel" role="tabpanel" data-op-panel="arm3d">
         <div class="arm3d-legend">
           <span><i class="arm3d-dot" style="background:#1e3a8a;"></i> Giunti</span>
-          <span><i class="arm3d-dot" style="background:#a855f7;"></i> Cam front (MJCF)</span>
+          <span><i class="arm3d-dot" style="background:#a855f7;"></i> Camera front</span>
           <span><i class="arm3d-dot" style="background:#eab308;"></i> Camera polso</span>
           <span><i class="arm3d-dot" style="background:#dc2626;"></i> Tag 5</span>
-          <span><i class="arm3d-dot" style="background:#64748b;"></i> XT-16 (cilindro)</span>
-          <span><i class="arm3d-dot" style="background:#db2777;"></i> Pinza FK</span>
-          <span><i class="arm3d-dot" style="background:#10b981;"></i> Target presa (EMA · da piano)</span>
+          <span><i class="arm3d-dot" style="background:#64748b;"></i> Lidar XT-16</span>
+          <span><i class="arm3d-dot" style="background:#db2777;"></i> Pinza</span>
+          <span><i class="arm3d-dot" style="background:#10b981;"></i> Target</span>
           <span class="small muted">Coni: checkbox sul canvas.</span>
         </div>
-        <div class="flow-card" style="margin:8px 0;padding:10px 12px;font-size:12px;border-radius:8px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
-          <div style="font-weight:600;margin-bottom:6px;color:#cbd5e1;">Prestazioni vista 3D</div>
-          <label class="small" style="display:flex;align-items:flex-start;gap:8px;margin:6px 0;cursor:pointer;">
-            <input type="checkbox" id="arm3d_solo_focus" style="margin-top:2px;" />
-            <span><strong>Solo braccio 3D</strong> — con questo tab aperto il viewer continua il poll completo <code>scene_3d</code> (piano/IK); si evitano solo le stesse chiamate nel ciclo globale ~1,25&nbsp;s (meno CPU, slider più fluidi). <span class="muted">localStorage</span></span>
-          </label>
-          <div style="margin-top:12px;padding-top:10px;border-top:1px solid #334155;">
-            <div class="small" style="color:#cbd5e1;margin-bottom:6px;">Dimensioni sfere nel viewer (solo grafica · salvate nel browser)</div>
-            <label class="small" style="display:grid;grid-template-columns:118px 1fr 40px;align-items:center;gap:8px;margin:5px 0;">
-              <span>Giunti</span>
-              <input type="range" id="arm3d_sphere_joint_mm" min="5" max="22" step="1" value="9" />
-              <code id="arm3d_sphere_joint_mm_v" class="muted">9</code>
+        <details class="flow-card" style="margin:8px 0;padding:10px 12px;font-size:12px;border-radius:8px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+          <summary style="font-weight:700;color:#cbd5e1;cursor:pointer;">Controlli rapidi 3D</summary>
+          <div style="margin-top:10px;">
+            <label class="small" style="display:flex;align-items:flex-start;gap:8px;margin:6px 0;cursor:pointer;">
+              <input type="checkbox" id="arm3d_solo_focus" style="margin-top:2px;" />
+              <span><strong>Solo braccio 3D</strong> — con questo tab aperto il viewer continua il poll completo <code>scene_3d</code> (piano/IK); si evitano solo le stesse chiamate nel ciclo globale ~1,25&nbsp;s (meno CPU, slider più fluidi). <span class="muted">localStorage</span></span>
             </label>
-            <label class="small" style="display:grid;grid-template-columns:118px 1fr 40px;align-items:center;gap:8px;margin:5px 0;">
-              <span style="color:#c084fc;">Cam front</span>
-              <input type="range" id="arm3d_sphere_front_mm" min="6" max="38" step="1" value="13" />
-              <code id="arm3d_sphere_front_mm_v" class="muted">13</code>
-            </label>
-            <label class="small" style="display:grid;grid-template-columns:118px 1fr 40px;align-items:center;gap:8px;margin:5px 0;">
-              <span style="color:#eab308;">Polso</span>
-              <input type="range" id="arm3d_sphere_wrist_mm" min="6" max="38" step="1" value="11" />
-              <code id="arm3d_sphere_wrist_mm_v" class="muted">11</code>
-            </label>
-            <label class="small" style="display:grid;grid-template-columns:118px 1fr 40px;align-items:center;gap:8px;margin:5px 0;">
-              <span style="color:#f87171;">Tag 5</span>
-              <input type="range" id="arm3d_sphere_tag_mm" min="6" max="40" step="1" value="13" />
-              <code id="arm3d_sphere_tag_mm_v" class="muted">13</code>
-            </label>
+            <div style="margin-top:10px;padding-top:8px;border-top:1px solid #334155;">
+              <div class="small" style="color:#cbd5e1;margin-bottom:6px;">Dimensioni sfere nel viewer (solo grafica · salvate nel browser)</div>
+              <label class="small" style="display:grid;grid-template-columns:98px 1fr 36px;align-items:center;gap:8px;margin:4px 0;">
+                <span>Giunti</span>
+                <input type="range" id="arm3d_sphere_joint_mm" min="5" max="22" step="1" value="9" />
+                <code id="arm3d_sphere_joint_mm_v" class="muted">9</code>
+              </label>
+              <label class="small" style="display:grid;grid-template-columns:98px 1fr 36px;align-items:center;gap:8px;margin:4px 0;">
+                <span style="color:#c084fc;">Cam front</span>
+                <input type="range" id="arm3d_sphere_front_mm" min="6" max="38" step="1" value="13" />
+                <code id="arm3d_sphere_front_mm_v" class="muted">13</code>
+              </label>
+              <label class="small" style="display:grid;grid-template-columns:98px 1fr 36px;align-items:center;gap:8px;margin:4px 0;">
+                <span style="color:#eab308;">Polso</span>
+                <input type="range" id="arm3d_sphere_wrist_mm" min="6" max="38" step="1" value="11" />
+                <code id="arm3d_sphere_wrist_mm_v" class="muted">11</code>
+              </label>
+              <label class="small" style="display:grid;grid-template-columns:98px 1fr 36px;align-items:center;gap:8px;margin:4px 0;">
+                <span style="color:#f87171;">Tag 5</span>
+                <input type="range" id="arm3d_sphere_tag_mm" min="6" max="40" step="1" value="13" />
+                <code id="arm3d_sphere_tag_mm_v" class="muted">13</code>
+              </label>
+            </div>
+            <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+              <button type="button" class="primary-go" onclick="arm3dManualRefreshNow()">Aggiorna 3D ora</button>
+              <span id="arm3d_perf_hint" class="small muted">—</span>
+            </div>
           </div>
-          <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-            <button type="button" class="primary-go" onclick="arm3dManualRefreshNow()">Aggiorna 3D ora</button>
-            <span id="arm3d_perf_hint" class="small muted">—</span>
-          </div>
-        </div>
+        </details>
         <div class="arm3d-wrap">
           <div id="arm3dCanvasHost" class="arm3d-canvas-host">
             <div class="arm3d-float-toggles" aria-label="Sovrapposizioni vista 3D">
@@ -846,9 +1522,9 @@
                 Assi XYZ
               </label>
             </div>
-            <div id="visgeomOverlay" class="visgeom-overlay" aria-live="polite">
-              <button type="button" id="visgeomOverlayToggle" aria-expanded="true" aria-controls="visgeomOverlayBody">
-                Nascondi pannello
+            <div id="visgeomOverlay" class="visgeom-overlay visgeom-overlay-collapsed" aria-live="polite">
+              <button type="button" id="visgeomOverlayToggle" aria-expanded="false" aria-controls="visgeomOverlayBody">
+                Mostra pannello
               </button>
               <div id="visgeomOverlayBody">
                 <div class="flow-card visgeom-on-canvas" id="visGeomForm" style="padding:12px 14px;">
@@ -903,44 +1579,45 @@
               <input type="range" id="vg_viz_arm_mount_dz_m" min="-250" max="250" step="1" value="0" />
             </label>
           </div>
-          <h5 style="margin:14px 0 6px;font-size:12px;color:#94a3b8;">Camera frontale (depth MJCF) <span class="muted">mm · base braccio · sfera viola nel viewer</span></h5>
+          <h5 style="margin:14px 0 6px;font-size:12px;color:#94a3b8;">Camera frontale (depth MJCF) <span class="muted">mm · base braccio · sfera viola nel viewer · target: X 37,5 / Y 0 / Z 1 cm</span></h5>
           <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
             Posizione centro ottico come nel XML <code class="small">go2_d1_d1mesh.xml</code> più gli slider Δ sotto.
             Raggio della sfera viola: scheda «Prestazioni vista 3D» sopra il canvas.
           </p>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;font-size:12px;">
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">ΔX <code id="vg_l_viz_front_cam_dx_m" class="muted">—</code>
-              <input type="range" id="vg_viz_front_cam_dx_m" min="-350" max="350" step="1" value="0" />
+              <input type="range" id="vg_viz_front_cam_dx_m" min="-350" max="350" step="1" value="225" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">ΔY <code id="vg_l_viz_front_cam_dy_m" class="muted">—</code>
               <input type="range" id="vg_viz_front_cam_dy_m" min="-350" max="350" step="1" value="0" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">ΔZ <code id="vg_l_viz_front_cam_dz_m" class="muted">—</code>
-              <input type="range" id="vg_viz_front_cam_dz_m" min="-350" max="350" step="1" value="0" />
+              <input type="range" id="vg_viz_front_cam_dz_m" min="-350" max="350" step="1" value="-50" />
             </label>
           </div>
           <h5 style="margin:14px 0 6px;font-size:12px;color:#94a3b8;">Preset visione (tag 5 · polso FK · EMA)</h5>
           <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
             Valori del <strong>preset «2»</strong> (e file <code class="small">vis_geometry_tuning.json</code>) sincronizzati qui; <code class="small">/api/arm/scene_3d</code> li usa per mount, camera polso, tag/cam front e anche per <code class="small">scene_graph.go2_body_offset_base_link_m</code> (sezione <strong>Corpo Go2</strong> sopra — nel JSON del preset sono <code class="small">viz_go2_*</code>).
+            Riferimento assoluto nel frame base del servo (0,0): <strong>tag 5 = X 19 cm, Y 0, Z 8</strong>; <strong>LiDAR</strong> = cilindro <strong>Ø10 cm × h 8 cm</strong> centrato su <strong>X 19 cm, Y 0</strong>; <strong>camera frontale</strong> = <strong>X 37,5 cm, Y 0, Z 1</strong>.
           </p>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;font-size:12px;">
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Mount vs tag5 ΔX <code id="vg_l_arm_vs_tag5_x" class="muted">—</code>
-              <input type="range" id="vg_arm_vs_tag5_x" min="-500" max="500" step="1" value="0" />
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→mount X <code id="vg_l_arm_vs_tag5_x" class="muted">—</code>
+              <input type="range" id="vg_arm_vs_tag5_x" min="-500" max="500" step="1" value="-190" />
             </label>
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Mount vs tag5 ΔY <code id="vg_l_arm_vs_tag5_y" class="muted">—</code>
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→mount Y <code id="vg_l_arm_vs_tag5_y" class="muted">—</code>
               <input type="range" id="vg_arm_vs_tag5_y" min="-500" max="500" step="1" value="0" />
             </label>
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Mount vs tag5 ΔZ <code id="vg_l_arm_vs_tag5_z" class="muted">—</code>
-              <input type="range" id="vg_arm_vs_tag5_z" min="-500" max="500" step="1" value="0" />
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→mount Z <code id="vg_l_arm_vs_tag5_z" class="muted">—</code>
+              <input type="range" id="vg_arm_vs_tag5_z" min="-500" max="500" step="1" value="-80" />
             </label>
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Front vs tag5 ΔX <code id="vg_l_front_vs_tag5_x" class="muted">—</code>
-              <input type="range" id="vg_front_vs_tag5_x" min="-500" max="500" step="1" value="0" />
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→camera front X <code id="vg_l_front_vs_tag5_x" class="muted">—</code>
+              <input type="range" id="vg_front_vs_tag5_x" min="-500" max="500" step="1" value="185" />
             </label>
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Front vs tag5 ΔY <code id="vg_l_front_vs_tag5_y" class="muted">—</code>
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→camera front Y <code id="vg_l_front_vs_tag5_y" class="muted">—</code>
               <input type="range" id="vg_front_vs_tag5_y" min="-500" max="500" step="1" value="0" />
             </label>
-            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Front vs tag5 ΔZ <code id="vg_l_front_vs_tag5_z" class="muted">—</code>
-              <input type="range" id="vg_front_vs_tag5_z" min="-500" max="500" step="1" value="0" />
+            <label class="small" style="display:flex;flex-direction:column;gap:4px;">Tuning interno tag5→camera front Z <code id="vg_l_front_vs_tag5_z" class="muted">—</code>
+              <input type="range" id="vg_front_vs_tag5_z" min="-500" max="500" step="1" value="-70" />
             </label>
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">Polso FK ΔX <code id="vg_l_wrist_local_dx" class="muted">—</code>
               <input type="range" id="vg_wrist_local_dx" min="-350" max="350" step="1" value="0" />
@@ -1007,7 +1684,7 @@
           </p>
           <p class="small muted" style="margin:0 0 10px;line-height:1.35;">
             <strong>Detection oggetto / due camere:</strong> polso e RealSense elaborano <strong>due immagini distinte</strong> (bounding box in pixel + YOLO/fallback).
-            La coerenza «stesso oggetto / stessa geometria» in <code class="small">base_link</code> dipende dalla catena tag5 → mount → camera front (slider <em>Mount vs tag5</em>, <em>Front vs tag5</em>) e dal tag5 stimato in comune; in 3D controlla le sfere e il campo <code class="small">vis_geometry_chain_mm</code> in <code class="small">/api/arm/scene_3d</code>.
+            La coerenza «stesso oggetto / stessa geometria» in <code class="small">base_link</code> dipende dalla catena tag5 → mount → camera front; i cursori qui sotto sono solo <strong>tuning interno</strong> per rifinire il modello, mentre la vista usa sempre il frame assoluto. In 3D controlla le sfere e il campo <code class="small">vis_geometry_chain_mm</code> in <code class="small">/api/arm/scene_3d</code>.
           </p>
           <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
             <input type="text" id="visgeom_preset_name" placeholder="Nome preset" maxlength="80" autocomplete="off" style="flex:1;min-width:160px;padding:6px 8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:12px;" />
@@ -1033,24 +1710,34 @@
           </div>
           <p id="arm3dStatusLine" class="small muted" style="margin-top:8px;">Carico scena…</p>
           <pre id="arm3dSceneDetail" class="compact-pre small muted" style="margin-top:6px;max-height:100px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+          <div class="flow-card" style="margin-top:8px;padding:10px 12px;border:1px dashed #475569;background:rgba(15,23,42,0.28);">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+              <strong style="font-size:13px;color:#cbd5e1;">Vista dall’alto separata dal Three.js</strong>
+              <button type="button" onclick="openOpTab('trace', { user: true })">Apri vista dall’alto</button>
+            </div>
+            <p class="small muted" style="margin:8px 0 0;line-height:1.4;">
+              Qui resta solo il viewer avanzato. Se vuoi capire cosa sta facendo il braccio senza rumore, usa il tab <strong>Vista dall’alto</strong>.
+            </p>
+          </div>
         </div>
-        <details id="arm3d-calibration-guide" style="margin-top:12px;" open>
+        <details id="arm3d-calibration-guide" open style="margin-top:12px;">
           <summary class="small muted" style="cursor:pointer;font-weight:600;color:#e2e8f0;">
             Calibrazione visiva: landmark tag 5 + allineamento Three.js / planner
           </summary>
           <div class="flow-card" style="margin-top:10px;padding:12px 14px;">
             <p class="small" style="margin:0 0 10px;line-height:1.45;color:#cbd5e1;">
               <strong>arm_link00</strong> è l’origine del <strong>braccio</strong> (primo giunto), in metri: <strong>+X</strong> avanti rispetto al cane.
-              Il «nominale» del tag 5 è dove sta il <strong>centro del marker</strong> nel mondo reale in quella base — non è una stima dalla sola mesh Three.js: viene da <strong>misura/CAD</strong> o allineando la scena alla vista reale e rifinendo con «Salva offset».
-              Per <strong>tvec → base</strong> basta <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): di solito lo vede <strong>solo la camera polso (0)</strong>;
-              la RealSense (6) può non inquadrarlo: va bene. Il POST «Salva offset» crea <code>data/tag5_calibration_arm_base.json</code>.
+              Il riferimento corretto che usiamo qui è <strong>assoluto</strong> nel frame base del servo: <strong>tag 5 = X 19 cm, Y 0, Z 8 cm</strong>.
+              Il <strong>LiDAR</strong> è reso come <strong>cilindro Ø10 cm × h 8 cm</strong> centrato su <strong>X 19 cm, Y 0</strong>; la <strong>camera frontale</strong> è a <strong>X 37,5 cm, Y 0, Z 1 cm</strong>.
+              Per <strong>tvec → base</strong> basta <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): di solito lo vede <strong>solo la camera polso (0)</strong>; la RealSense (6) può non inquadrarlo: va bene.
+              Il POST «Salva nominale» crea <code>data/tag5_calibration_arm_base.json</code>.
               <strong>dual_probe</strong> (GET opzionale) confronta due stime <em>solo se</em> entrambe le camere vedono <em>lo stesso</em> tag 5 nello stesso istante; non calibra la mutua posa polso↔muso.
-              Per stimare bene quella geometria servirebbe un <strong>punto 3D comune</strong> visto da entrambe (es. tag a terra con posa nota): oggi <strong>non</strong> c’è un wizard dedicato; si affianca con gli slider del viewer.
+              Per stimare bene quella geometria servirebbe un <strong>punto 3D comune</strong> visto da entrambe (es. tag a terra con posa nota): oggi <strong>non</strong> c’è un wizard dedicato; i cursori sotto servono solo al tuning interno del viewer.
               I tag <strong>0–3 sulla scatola</strong> servono alla presa; usano la <strong>stessa</strong> correzione del landmark.
             </p>
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
               <button type="button" class="primary-go" onclick="calibrationFlowReload()">Aggiorna guida e stato server</button>
-              <button type="button" onclick="tag5CalibRefresh()">Stato file offset</button>
+              <button type="button" onclick="tag5CalibRefresh()">Stato file calibrazione</button>
               <label class="small muted" style="display:flex;align-items:center;gap:6px;">
                 <input type="checkbox" id="calibrationShowFullJson" /> Mostra JSON guida completo
               </label>
@@ -1059,27 +1746,32 @@
               <li>Apri questo tab per caricare i passi dalla NX…</li>
             </ol>
             <pre id="calibrationFlowJson" class="compact-pre small muted" style="margin-top:4px;max-height:160px;display:none;font-size:11px;">—</pre>
-            <h4 style="margin:14px 0 8px;font-size:13px;">Salva offset tag 5</h4>
+            <h4 style="margin:14px 0 8px;font-size:13px;">Salva nominale tag 5</h4>
             <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
               Posizione <strong>nominale</strong> del centro tag 5 in <code>arm_link00</code> (metri). Opzionale se hai già
               <code>GO2_TAG5_NOMINAL_ARM_BASE_M=x,y,z</code> nell’ambiente del server.
             </p>
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-              <label class="small">X <input type="number" step="0.001" id="tag5_nom_x" placeholder="es. 0.42" style="width:92px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+              <label class="small">X <input type="number" step="0.001" id="tag5_nom_x" placeholder="0.19" style="width:92px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
               <label class="small">Y <input type="number" step="0.001" id="tag5_nom_y" placeholder="0" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Z <input type="number" step="0.001" id="tag5_nom_z" placeholder="0.14" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+              <label class="small">Z <input type="number" step="0.001" id="tag5_nom_z" placeholder="0.08" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
               <label class="small">Camera
                 <select id="tag5_calib_camera" style="padding:4px 8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
-                  <option value="">Auto (0 poi 6)</option>
-                  <option value="0">Polso log. 0</option>
+                  <option value="0" selected>Polso log. 0 (consigliata)</option>
                   <option value="6">Frontale log. 6</option>
                 </select>
               </label>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:8px;">
-              <button type="button" class="primary-go" onclick="tag5CalibSave()">Salva offset (scrive JSON)</button>
+              <button type="button" class="primary-go" onclick="tag5CalibSave()">Salva nominale (scrive JSON)</button>
               <button type="button" onclick="tag5CalibClear()">Cancella file calibrazione</button>
+              <button type="button" onclick="openOpTab('arm3d'); setTimeout(function(){ try { jointEditorLoad(); } catch (e) {} }, 120);">Apri cursori giunti</button>
             </div>
+            <p class="small muted" style="margin:8px 0 0;line-height:1.35;">
+              Per il tag 5 usa il <strong>polso (camera 0)</strong>: apri il tab <strong>Braccio 3D</strong>, attiva <em>Controllo live</em>
+              e fai micro-movimenti sui giunti finché <code>video0</code> vede bene il tag. La posa di partenza consigliata è quella di ricerca
+              (<code>SEARCH_POSES_D1</code>) e poi rifinitura a piccoli step.
+            </p>
             <pre id="tag5CalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:200px;font-size:11px;">—</pre>
             <h4 style="margin:16px 0 8px;font-size:13px;">Calibrazione doppia (stesso tag su polso + RealSense)</h4>
             <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
@@ -1095,15 +1787,44 @@
               <label class="small">Y <input type="number" step="0.001" id="dual_nom_y" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
               <label class="small">Z <input type="number" step="0.001" id="dual_nom_z" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
             </div>
-            <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva offset 0+6 (stesso tag)</button>
+              <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva calibrazione 0+6 (stesso tag)</button>
             <pre id="dualSharedCalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:180px;font-size:11px;">—</pre>
             <p class="small muted" style="margin-top:10px;line-height:1.4;">
-              <strong>Coerenza viewer:</strong> dopo «Salva offset» la pagina aggiorna <code>scene_3d</code> <strong>completo</strong> (con <code>/api/box/plan</code>) così la sfera rossa usa la visione quando il tag è nel piano; evita solo l’anteprima <code>?fast=1</code> subito dopo.
+              <strong>Coerenza viewer:</strong> dopo «Salva nominale» la pagina aggiorna <code>scene_3d</code> <strong>completo</strong> (con <code>/api/box/plan</code>) così la sfera rossa usa la visione quando il tag è nel piano; evita solo l’anteprima <code>?fast=1</code> subito dopo.
               Nel riquadro dettaglio compaiono righe <code>Calib:</code> da <code>calibration_visual_alignment</code>.
               Gli slider «Camera frontale» / frustum allineano il <strong>modello viola</strong> alla RealSense; non sostituiscono una calibrazione stereo polso↔muso (per quella servirebbe un riferimento comune visto da entrambe).
             </p>
           </div>
         </details>
+      </div>
+      <div id="op-trace" class="op-panel" role="tabpanel" data-op-panel="trace">
+        <div class="flow-card" style="padding:12px 14px;border:1px solid #475569;background:rgba(15,23,42,.55);">
+          <h4 style="margin-top:0;">Vista dall’alto</h4>
+          <p class="small muted" style="margin:0 0 10px;line-height:1.45;">
+            Vista separata dal Three.js: qui leggi solo path, target e frame di riferimento.
+          </p>
+          <div class="btn-row" style="margin:0 0 8px;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="primary-go" onclick="armTracePoll()">Carica traiettoria completa</button>
+            <span id="armTraceStatusLine" class="small muted">—</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1.55fr 0.75fr;gap:10px;align-items:start;">
+            <div>
+              <div class="small muted" style="margin-bottom:4px;">Vista dall’alto X/Y</div>
+              <svg id="arm3dTopSvg" viewBox="0 0 360 220" style="width:100%;height:240px;background:#08101c;border:1px solid #334155;border-radius:8px;"></svg>
+            </div>
+            <div>
+              <div class="small muted" style="margin-bottom:4px;">Vista laterale X/Z</div>
+              <svg id="arm3dSideSvg" viewBox="0 0 360 220" style="width:100%;height:150px;background:#08101c;border:1px solid #334155;border-radius:8px;"></svg>
+            </div>
+          </div>
+          <div class="flow-card" style="margin-top:8px;padding:10px 12px;background:rgba(15,23,42,0.45);border:1px solid #334155;">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+              <strong style="font-size:13px;color:#cbd5e1;">Riassunto traiettoria / frame</strong>
+              <span id="arm3dDebugSummary" class="small muted">—</span>
+            </div>
+            <pre id="arm3dPathDetail" class="compact-pre small muted" style="margin-top:8px;max-height:140px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1146,6 +1867,7 @@
     }
     function statusClass(ok) { return ok ? 'ok' : 'bad'; }
     function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+    function setHtml(id, value) { const el = document.getElementById(id); if (el) el.innerHTML = value; }
     function setArmPoseLog(dataOrMsg) {
       const el = document.getElementById('armPoseLog');
       if (!el) return;
@@ -2529,6 +3251,14 @@
               void arm3dPoll(false);
             } catch (e2) {}
           }, 0);
+        } else if (tabId === 'trace' && fromUserClick) {
+          setTimeout(function () {
+            try { armTracePoll(); } catch (eT) {}
+          }, 0);
+        } else if (tabId === 'graspdbg' && fromUserClick) {
+          setTimeout(function () {
+            try { graspDbgRefreshAll(); } catch (eG) {}
+          }, 0);
         }
       }
       tabs.forEach((btn) => btn.addEventListener('click', () => activate(btn.dataset.opTab, { user: true })));
@@ -2550,9 +3280,150 @@
             void arm3dPoll(false);
           } catch (eI0) {}
         }, 0);
+      } else if (initial === 'trace') {
+        setTimeout(function () {
+          try { armTracePoll(); } catch (eT0) {}
+        }, 0);
+      } else if (initial === 'graspdbg') {
+        setTimeout(function () {
+          try { graspDbgRefreshAll(); } catch (eG0) {}
+        }, 0);
       }
       window.openOpTab = openOpTab;
     }
+    var graspDbgState = { job: null, pipeline: null, session: null };
+    function graspDbgStringify(v) {
+      try {
+        return JSON.stringify(v, null, 2);
+      } catch (e) {
+        return String(v);
+      }
+    }
+    function graspDbgSetText(id, text) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = text;
+    }
+    function graspDbgRenderEvents(events) {
+      if (!events || !events.length) return '—';
+      return events
+        .map(function (ev, idx) {
+          if (!ev || typeof ev !== 'object') return String(idx + 1) + '. ' + String(ev);
+          var t = ev.t || ev.updated_at || '—';
+          var k = ev.kind || 'event';
+          var m = ev.message || ev.phase_label_it || ev.reason || '—';
+          var extra = [];
+          Object.keys(ev).forEach(function (key) {
+            if (['t', 'kind', 'message'].indexOf(key) !== -1) return;
+            extra.push(key + '=' + graspDbgStringify(ev[key]));
+          });
+          return '[' + t + '] ' + k + ' :: ' + m + (extra.length ? '\n  ' + extra.join(' | ') : '');
+        })
+        .join('\n\n');
+    }
+    function graspDbgSummary() {
+      var parts = [];
+      var job = graspDbgState.job || null;
+      var pipe = graspDbgState.pipeline || null;
+      var sess = graspDbgState.session || null;
+      if (job) {
+        parts.push('job=' + (job.status || '—') + (job.phase_label_it ? ' · ' + job.phase_label_it : ''));
+      }
+      if (pipe) {
+        if (pipe.sequence_start_ready != null) {
+          parts.push('pipeline=' + (pipe.sequence_start_ready ? 'ready' : 'blocked'));
+        }
+        if (pipe.selected_camera != null) parts.push('cam=' + pipe.selected_camera);
+      }
+      if (sess && sess.effective) {
+        var count = 0;
+        try { count = Object.keys(sess.overrides || {}).length; } catch (e0) {}
+        parts.push('session_overrides=' + count);
+      }
+      return parts.length ? parts.join(' · ') : 'Pronto.';
+    }
+    async function graspDbgFetchJson(path) {
+      var res = await fetch(dashboardApi(path + '?_=' + Date.now()), { cache: 'no-store' });
+      var j = await res.json();
+      return { res: res, json: j };
+    }
+    async function graspDbgRefreshJob() {
+      var out = document.getElementById('graspDbgJobPre');
+      try {
+        var r = await graspDbgFetchJson('/api/arm/job_status');
+        var j = r.json || {};
+        graspDbgState.job = j;
+        if (out) out.textContent = graspDbgStringify(j);
+        graspDbgSetText('graspDbgEventsPre', graspDbgRenderEvents(j.events || []));
+        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: j, pipeline: graspDbgState.pipeline, session: graspDbgState.session }));
+        graspDbgSetText('graspDbgTopLine', graspDbgSummary());
+      } catch (e) {
+        if (out) out.textContent = String(e);
+        graspDbgSetText('graspDbgTopLine', 'Job status non letto: ' + String(e));
+      }
+    }
+    async function graspDbgRefreshPipeline() {
+      var out = document.getElementById('graspDbgPipelinePre');
+      try {
+        var r = await graspDbgFetchJson('/api/arm/grasp_pipeline');
+        var j = r.json || {};
+        graspDbgState.pipeline = j;
+        if (out) out.textContent = graspDbgStringify(j);
+        var narrative = Array.isArray(j.narrative_it) ? j.narrative_it.slice(0, 3).join(' · ') : '';
+        var line = [];
+        if (j.sequence_start_ready != null) line.push('start=' + (j.sequence_start_ready ? 'OK' : 'NO'));
+        if (j.sequence_start_block_reason) line.push('block=' + j.sequence_start_block_reason);
+        if (j.selected_camera != null) line.push('cam=' + j.selected_camera);
+        if (narrative) line.push(narrative);
+        graspDbgSetText('graspDbgTopLine', (line.length ? line.join(' · ') : 'Pipeline caricato.') + ' · ' + graspDbgSummary());
+        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: graspDbgState.job, pipeline: j, session: graspDbgState.session }));
+      } catch (e) {
+        if (out) out.textContent = String(e);
+        graspDbgSetText('graspDbgTopLine', 'Pipeline non letta: ' + String(e));
+      }
+    }
+    async function graspDbgRefreshSession() {
+      var out = document.getElementById('graspDbgSessionPre');
+      try {
+        var r = await graspDbgFetchJson('/api/arm/grasp_session');
+        var j = r.json || {};
+        graspDbgState.session = j;
+        if (out) out.textContent = graspDbgStringify(j);
+        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: graspDbgState.job, pipeline: graspDbgState.pipeline, session: j }));
+        graspDbgSetText('graspDbgTopLine', 'Sessione aggiornata · ' + graspDbgSummary());
+      } catch (e) {
+        if (out) out.textContent = String(e);
+        graspDbgSetText('graspDbgTopLine', 'Sessione non letta: ' + String(e));
+      }
+    }
+    async function graspDbgRefreshAll() {
+      graspDbgSetText('graspDbgTopLine', 'Aggiorno stato grasp…');
+      await Promise.all([graspDbgRefreshJob(), graspDbgRefreshPipeline(), graspDbgRefreshSession()]);
+      graspDbgSetText('graspDbgTopLine', graspDbgSummary());
+    }
+    async function graspDbgStart(afterCrouch) {
+      var line = document.getElementById('graspDbgTopLine');
+      if (line) line.textContent = afterCrouch ? 'Invio crouch + grasp…' : 'Invio grasp…';
+      try {
+        var url = afterCrouch ? '/api/arm/grasp_box/attempt_after_crouch' : '/api/arm/grasp_box/attempt';
+        var res = await fetch(dashboardApi(url), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        var j = await res.json();
+        graspDbgSetText('graspDbgTopLine', (j.message || ('HTTP ' + res.status)) + ' · ' + graspDbgSummary());
+        await graspDbgRefreshAll();
+        setTimeout(function () { try { graspDbgRefreshJob(); } catch (e0) {} }, 350);
+        setTimeout(function () { try { graspDbgRefreshAll(); } catch (e1) {} }, 1200);
+      } catch (e) {
+        if (line) line.textContent = 'Errore avvio grasp: ' + String(e);
+      }
+    }
+    window.graspDbgRefreshAll = graspDbgRefreshAll;
+    window.graspDbgRefreshJob = graspDbgRefreshJob;
+    window.graspDbgRefreshPipeline = graspDbgRefreshPipeline;
+    window.graspDbgRefreshSession = graspDbgRefreshSession;
+    window.graspDbgStart = graspDbgStart;
     var arm3d = {
       scene: null,
       camera: null,
@@ -2570,9 +3441,12 @@
       raf: 0,
       host: null,
       cameraHelpers: null,
+      trajectory: null,
       gridHelper: null,
       axesHelper: null,
-      decorPrefsBound: false
+      decorPrefsBound: false,
+      lastIkTrajectory: null,
+      lastGraspDebug: null
     };
     function arm3dBindDecorPrefsOnce() {
       if (arm3d.decorPrefsBound) return;
@@ -2663,6 +3537,8 @@
       arm3d.markers = new THREE.Group();
       arm3d.orient.add(arm3d.robotAssembly);
       arm3d.orient.add(arm3d.markers);
+      arm3d.trajectory = new THREE.Group();
+      arm3d.orient.add(arm3d.trajectory);
       arm3d.cameraHelpers = new THREE.Group();
       arm3d.orient.add(arm3d.cameraHelpers);
       arm3d.group.add(arm3d.orient);
@@ -2719,14 +3595,345 @@
       arm3d.go2Torso = null;
       arm3d.meshesReady = false;
     }
-    function arm3dAddSphereRobotBl(p, colorHex, radius) {
-      if (!p || p.length < 3 || !arm3d.markers) return;
+    function arm3dClearTrajectory() {
+      if (!arm3d.trajectory) return;
+      while (arm3d.trajectory.children.length) {
+        var o = arm3d.trajectory.children[0];
+        o.traverse(function (x) {
+          arm3dDisposeMesh(x);
+        });
+        arm3d.trajectory.remove(o);
+      }
+    }
+    function arm3dAddSphereRobotBl(p, colorHex, radius, group) {
+      var tgt = group || arm3d.markers;
+      if (!p || p.length < 3 || !tgt) return;
       var geom = new THREE.SphereGeometry(radius, 16, 14);
       var mat = new THREE.MeshPhongMaterial({ color: colorHex, shininess: 48 });
       var m = new THREE.Mesh(geom, mat);
       m.position.set(p[0], p[1], p[2]);
-      arm3d.markers.add(m);
+      tgt.add(m);
     }
+    function arm3dAddLineRobotBl(points, colorHex, group) {
+      var tgt = group || arm3d.markers;
+      if (!points || points.length < 2 || !tgt || typeof THREE === 'undefined') return null;
+      var verts = [];
+      for (var i = 0; i < points.length; i++) {
+        var p = points[i];
+        if (!p || p.length < 3) continue;
+        verts.push(p[0], p[1], p[2]);
+      }
+      if (verts.length < 6) return null;
+      var geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      var mat = new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: 0.95 });
+      var line = new THREE.Line(geom, mat);
+      tgt.add(line);
+      return line;
+    }
+    function arm3dSvgEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function arm3dFmtVec(v) {
+      if (!v || v.length < 3) return '—';
+      return '[' + v[0].toFixed(3) + ', ' + v[1].toFixed(3) + ', ' + v[2].toFixed(3) + ']';
+    }
+    function arm3dTopOriginPoint(xyz, origin) {
+      if (!xyz || xyz.length < 3) return xyz;
+      var o = origin && origin.length >= 3 ? origin : [0, 0, 0];
+      return [xyz[0] - o[0], xyz[1] - o[1], xyz[2] - o[2]];
+    }
+    function arm3dMountOriginTopNodes(nodes, origin) {
+      return (nodes || []).map(function (n) {
+        if (!n || !n.xyz || n.xyz.length < 3) return n;
+        var xyz = arm3dTopOriginPoint([n.xyz[0], n.xyz[1], n.xyz[2]], origin);
+        return { label: n.label || '', xyz: xyz, color: n.color || '#94a3b8', r: n.r || 4 };
+      });
+    }
+    function arm3dMountOriginTopPath(pathPts, origin) {
+      return (pathPts || []).map(function (p) {
+        if (!p || p.length < 3) return p;
+        return arm3dTopOriginPoint([p[0], p[1], p[2]], origin);
+      });
+    }
+    function arm3dRenderProjectionSvg(svgId, mode, nodes, pathPts, subtitle) {
+      var svg = document.getElementById(svgId);
+      if (!svg) return;
+      var pts = [];
+      (nodes || []).forEach(function (n) {
+        if (!n || !n.xyz || n.xyz.length < 3) return;
+        pts.push({
+          label: n.label || '',
+          color: n.color || '#94a3b8',
+          r: n.r || 4,
+          x: n.xyz[0],
+          y: mode === 'top' ? n.xyz[1] : n.xyz[2]
+        });
+      });
+      (pathPts || []).forEach(function (p) {
+        if (!p || p.length < 3) return;
+        pts.push({ x: p[0], y: mode === 'top' ? p[1] : p[2] });
+      });
+      if (!pts.length) {
+        svg.innerHTML = '<text x="14" y="26" fill="#94a3b8" font-size="12">Nessun dato</text>';
+        return;
+      }
+      var minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
+      pts.forEach(function (p) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      });
+      var dx = Math.max(maxX - minX, 0.02);
+      var dy = Math.max(maxY - minY, 0.02);
+      var pad = 26;
+      minX -= dx * 0.18; maxX += dx * 0.18;
+      minY -= dy * 0.18; maxY += dy * 0.18;
+      function proj(x, y) {
+        var W = 360, H = 220;
+        var sx = pad + ((x - minX) / Math.max(maxX - minX, 1e-6)) * (W - pad * 2);
+        var sy = H - pad - ((y - minY) / Math.max(maxY - minY, 1e-6)) * (H - pad * 2);
+        return [sx, sy];
+      }
+      var html = '';
+      html += '<rect x="0" y="0" width="360" height="220" rx="8" fill="#08101c" />';
+      html += '<g stroke="#1f2a3a" stroke-width="1">';
+      for (var i = 0; i <= 4; i++) {
+        var gx = pad + i * ((360 - pad * 2) / 4);
+        var gy = pad + i * ((220 - pad * 2) / 4);
+        html += '<line x1="' + gx.toFixed(1) + '" y1="' + pad + '" x2="' + gx.toFixed(1) + '" y2="' + (220 - pad) + '" />';
+        html += '<line x1="' + pad + '" y1="' + gy.toFixed(1) + '" x2="' + (360 - pad) + '" y2="' + gy.toFixed(1) + '" />';
+      }
+      html += '</g>';
+      var zeroX = null;
+      var zeroY = null;
+      if (minX <= 0 && maxX >= 0) zeroX = proj(0, 0)[0];
+      if (minY <= 0 && maxY >= 0) zeroY = proj(0, 0)[1];
+      if (zeroX != null) html += '<line x1="' + zeroX.toFixed(1) + '" y1="18" x2="' + zeroX.toFixed(1) + '" y2="202" stroke="#475569" stroke-width="1.5" />';
+      if (zeroY != null) html += '<line x1="18" y1="' + zeroY.toFixed(1) + '" x2="342" y2="' + zeroY.toFixed(1) + '" stroke="#475569" stroke-width="1.5" />';
+      if (pathPts && pathPts.length >= 2) {
+        var poly = [];
+        pathPts.forEach(function (p) {
+          if (!p || p.length < 3) return;
+          var q = proj(p[0], mode === 'top' ? p[1] : p[2]);
+          poly.push(q[0].toFixed(1) + ',' + q[1].toFixed(1));
+        });
+        if (poly.length >= 2) {
+          html += '<polyline points="' + poly.join(' ') + '" fill="none" stroke="#f59e0b" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />';
+        }
+      }
+      nodes.forEach(function (n) {
+        if (!n || !n.xyz || n.xyz.length < 3) return;
+        var q = proj(n.xyz[0], mode === 'top' ? n.xyz[1] : n.xyz[2]);
+        var cx = q[0].toFixed(1);
+        var cy = q[1].toFixed(1);
+        html += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (n.r || 4) + '" fill="' + (n.color || '#94a3b8') + '" stroke="#0b1220" stroke-width="1.5" />';
+        if (n.label) {
+          html += '<text x="' + (q[0] + 7).toFixed(1) + '" y="' + (q[1] - 7).toFixed(1) + '" fill="#dbeafe" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">' + arm3dSvgEsc(n.label) + '</text>';
+        }
+      });
+      if (subtitle) html += '<text x="14" y="18" fill="#94a3b8" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">' + arm3dSvgEsc(subtitle) + '</text>';
+      svg.innerHTML = html;
+    }
+    function arm3dRenderGraspDebug(d) {
+      if (!d) return;
+      var traj = d.ik_trajectory || arm3d.lastIkTrajectory || null;
+      if (d.ik_trajectory) arm3d.lastIkTrajectory = d.ik_trajectory;
+      else if (d.geometry_fast_preview === false) {
+        arm3d.lastIkTrajectory = null;
+        arm3dClearTrajectory();
+      }
+      var vis = d.vis_geometry_markers_arm_m || {};
+      var sg = d.scene_graph || {};
+      var vc = d.viewer_cameras_base_link_m || {};
+      var viewerLm = d.viewer_landmarks_base_link_m || {};
+      var nodes = [];
+      function pushNode(label, xyz, color, r) {
+        if (!xyz || xyz.length < 3) return;
+        nodes.push({ label: label, xyz: xyz, color: color, r: r || 4 });
+      }
+      var base = [0, 0, 0];
+      var armMount = sg.arm_mount_xyz_m || vis.arm_mount_m || null;
+      var jointCenters = sg.d1_joint_centers_base_link_m || [];
+      var tag5 = viewerLm.xt16_tag_m || vis.tag5_estimated_m || d.tag5_nominal_arm_base_m || null;
+      var frontCam = vc.front_display_base_link_m || viewerLm.front_camera_display_base_link_m || vis.front_camera_from_tag5_m || null;
+      var wristCam = vc.wrist_display_base_link_m || viewerLm.wrist_camera_display_base_link_m || viewerLm.wrist_camera_mjcf_m || vis.wrist_camera_display_m || null;
+      var toolTip = viewerLm.tool_tip_base_link_m || (traj && traj.fk_tool_xyz_m && traj.fk_tool_xyz_m.length ? traj.fk_tool_xyz_m[traj.fk_tool_xyz_m.length - 1] : null);
+      var targetDisp = viewerLm.object_target_base_link_m || viewerLm.object_target_display_base_link_m || viewerLm.object_grasp_target_display_base_link_m || d.object_target_base_xyz_m_display || d.object_target_base_xyz_m || null;
+      pushNode('BASE', base, '#e2e8f0', 4);
+      pushNode('MOUNT', armMount, '#64748b', 4);
+      (jointCenters || []).forEach(function (p, idx) { pushNode('GIUNTO ' + (idx + 1), p, '#1d4ed8', 4); });
+      pushNode('LIDAR', viewerLm.xt16_lidar_cylinder_base_link_m && viewerLm.xt16_lidar_cylinder_base_link_m.center_m ? viewerLm.xt16_lidar_cylinder_base_link_m.center_m : vis.go2_silhouette_anchor_arm_m || null, '#94a3b8', 4);
+      pushNode('CAMERA FRONT', frontCam, '#a855f7', 5);
+      pushNode('CAMERA POLSO', wristCam, '#eab308', 5);
+      pushNode('TAG 5', tag5, '#dc2626', 5);
+      pushNode('PINZA/TIP', toolTip, '#db2777', 5);
+      pushNode('TARGET', targetDisp, '#10b981', 6);
+      var stagePts = [];
+      if (toolTip && toolTip.length >= 3) stagePts.push(toolTip);
+      if (traj && traj.targets_xyz_m && traj.targets_xyz_m.length) {
+        traj.targets_xyz_m.forEach(function (p) {
+          if (p && p.length >= 3) stagePts.push(p);
+        });
+      }
+      var fkPts = traj && traj.fk_tool_xyz_m ? traj.fk_tool_xyz_m.filter(function (p) { return p && p.length >= 3; }) : null;
+      if (stagePts.length >= 2 && arm3d.trajectory) {
+        arm3dClearTrajectory();
+        arm3dAddLineRobotBl(stagePts, 0xf59e0b, arm3d.trajectory);
+        stagePts.forEach(function (p, idx) {
+          arm3dAddSphereRobotBl(p, idx === 0 ? 0xdb2777 : 0x10b981, idx === 0 ? 0.0055 : 0.0065, arm3d.trajectory);
+        });
+      }
+      if (fkPts && fkPts.length >= 2 && arm3d.trajectory) {
+        arm3dAddLineRobotBl(fkPts, 0xdb2777, arm3d.trajectory);
+      }
+      var topPath = arm3dMountOriginTopPath(stagePts, armMount);
+      var sidePath = stagePts.slice();
+      var topNodes = arm3dMountOriginTopNodes(nodes, armMount);
+      var sideNodes = nodes.slice();
+      var selCam = d.selected_camera != null ? d.selected_camera : ((d.vision_snapshot && d.vision_snapshot.selected_camera) != null ? d.vision_snapshot.selected_camera : '—');
+      var gripSource = d.grip_source || (d.vision_snapshot && d.vision_snapshot.grip_source) || '—';
+      var chain = d.chain_order_plus_x || {};
+      var chainOk = chain.ok_arm_behind_xt16_front_ahead_object;
+      var tips = [];
+      if (toolTip && targetDisp && toolTip.length >= 3 && targetDisp.length >= 3) {
+        var dx = (targetDisp[0] - toolTip[0]);
+        var dy = (targetDisp[1] - toolTip[1]);
+        var dz = (targetDisp[2] - toolTip[2]);
+        tips.push('Δ pinza→target = ' + (dx * 1000).toFixed(0) + ' / ' + (dy * 1000).toFixed(0) + ' / ' + (dz * 1000).toFixed(0) + ' mm');
+      }
+      if (chain && typeof chain === 'object') {
+        var order = [];
+        if (chain.arm_link00_x_m != null) order.push('arm=' + (chain.arm_link00_x_m * 1000).toFixed(0));
+        if (chain.lidar_x_m != null) order.push('lidar=' + (chain.lidar_x_m * 1000).toFixed(0));
+        if (chain.front_camera_x_m != null) order.push('front=' + (chain.front_camera_x_m * 1000).toFixed(0));
+        if (chain.object_x_m != null) order.push('obj=' + (chain.object_x_m * 1000).toFixed(0));
+        if (order.length) tips.push('X chain = ' + order.join(' < '));
+      }
+      if (chainOk != null) tips.push('chain_order_ok = ' + (chainOk ? 'YES' : 'NO'));
+      var detailLines = [];
+      detailLines.push('camera=' + selCam + ' | grip=' + gripSource + ' | target=' + (targetDisp ? arm3dFmtVec(targetDisp) : '—'));
+      detailLines.push('pinza=' + (toolTip ? arm3dFmtVec(toolTip) : '—') + ' | tag5=' + (tag5 ? arm3dFmtVec(tag5) : '—') + ' | front=' + (frontCam ? arm3dFmtVec(frontCam) : '—'));
+      if (stagePts.length) detailLines.push('path_pts=' + stagePts.length + ' | ' + stagePts.map(function (p, i) { return i + ':' + arm3dFmtVec(p); }).join(' → ') + (traj && traj.stages && traj.stages.length ? ' | stages=' + traj.stages.join(' → ') : ''));
+      if (tips.length) detailLines.push(tips.join(' | '));
+      if (chain && typeof chain === 'object') detailLines.push(JSON.stringify(chain, null, 2));
+      var summaryEl = document.getElementById('arm3dDebugSummary');
+      if (summaryEl) {
+        var warn = (chainOk === false) || String(selCam) === '6';
+        summaryEl.textContent = 'cam ' + selCam + ' · ' + (chainOk == null ? 'chain ?' : (chainOk ? 'chain ok' : 'chain NO'));
+        summaryEl.style.color = warn ? '#fca5a5' : '#a7f3d0';
+      }
+      var detailEl = document.getElementById('arm3dPathDetail');
+      if (detailEl) detailEl.textContent = detailLines.join('\n');
+      arm3d.lastGraspDebug = detailLines.join('\n');
+      arm3dRenderProjectionSvg('arm3dTopSvg', 'top', topNodes, topPath, 'X/Y');
+      arm3dRenderProjectionSvg('arm3dSideSvg', 'side', sideNodes, sidePath, 'X/Z');
+    }
+    function armTraceRenderFromPayload(d) {
+      if (!d) return;
+      var traj = d.ik_trajectory || arm3d.lastIkTrajectory || null;
+      if (d.ik_trajectory) arm3d.lastIkTrajectory = d.ik_trajectory;
+      var vis = d.vis_geometry_markers_arm_m || {};
+      var sg = d.scene_graph || {};
+      var vc = d.viewer_cameras_base_link_m || {};
+      var viewerLm = d.viewer_landmarks_base_link_m || {};
+      var nodes = [];
+      function pushNode(label, xyz, color, r) {
+        if (!xyz || xyz.length < 3) return;
+        nodes.push({ label: label, xyz: xyz, color: color, r: r || 4 });
+      }
+      var base = [0, 0, 0];
+      var armMount = sg.arm_mount_xyz_m || vis.arm_mount_m || null;
+      var jointCenters = sg.d1_joint_centers_base_link_m || [];
+      var tag5 = viewerLm.xt16_tag_m || vis.tag5_estimated_m || d.tag5_nominal_arm_base_m || null;
+      var frontCam = vc.front_display_base_link_m || viewerLm.front_camera_display_base_link_m || vis.front_camera_from_tag5_m || null;
+      var wristCam = vc.wrist_display_base_link_m || viewerLm.wrist_camera_display_base_link_m || viewerLm.wrist_camera_mjcf_m || vis.wrist_camera_display_m || null;
+      var toolTip = viewerLm.tool_tip_base_link_m || (traj && traj.fk_tool_xyz_m && traj.fk_tool_xyz_m.length ? traj.fk_tool_xyz_m[traj.fk_tool_xyz_m.length - 1] : null);
+      var targetDisp = viewerLm.object_target_base_link_m || viewerLm.object_target_display_base_link_m || viewerLm.object_grasp_target_display_base_link_m || d.object_target_base_xyz_m_display || d.object_target_base_xyz_m || null;
+      pushNode('BASE', base, '#e2e8f0', 4);
+      pushNode('MOUNT', armMount, '#64748b', 4);
+      (jointCenters || []).forEach(function (p, idx) { pushNode('GIUNTO ' + (idx + 1), p, '#1d4ed8', 4); });
+      pushNode('LIDAR', viewerLm.xt16_lidar_cylinder_base_link_m && viewerLm.xt16_lidar_cylinder_base_link_m.center_m ? viewerLm.xt16_lidar_cylinder_base_link_m.center_m : vis.go2_silhouette_anchor_arm_m || null, '#94a3b8', 4);
+      pushNode('CAMERA FRONT', frontCam, '#a855f7', 5);
+      pushNode('CAMERA POLSO', wristCam, '#eab308', 5);
+      pushNode('TAG 5', tag5, '#dc2626', 5);
+      pushNode('PINZA/TIP', toolTip, '#db2777', 5);
+      pushNode('TARGET', targetDisp, '#10b981', 6);
+      var pathPts = [];
+      if (toolTip && toolTip.length >= 3) pathPts.push(toolTip);
+      if (traj && traj.targets_xyz_m && traj.targets_xyz_m.length) {
+        traj.targets_xyz_m.forEach(function (p) {
+          if (p && p.length >= 3) pathPts.push(p);
+        });
+      }
+      var selCam = d.selected_camera != null ? d.selected_camera : ((d.vision_snapshot && d.vision_snapshot.selected_camera) != null ? d.vision_snapshot.selected_camera : '—');
+      var gripSource = d.grip_source || (d.vision_snapshot && d.vision_snapshot.grip_source) || '—';
+      var chain = d.chain_order_plus_x || {};
+      var chainOk = chain.ok_arm_behind_xt16_front_ahead_object;
+      var tips = [];
+      if (toolTip && targetDisp && toolTip.length >= 3 && targetDisp.length >= 3) {
+        var dx = (targetDisp[0] - toolTip[0]);
+        var dy = (targetDisp[1] - toolTip[1]);
+        var dz = (targetDisp[2] - toolTip[2]);
+        tips.push('Δ pinza→target = ' + (dx * 1000).toFixed(0) + ' / ' + (dy * 1000).toFixed(0) + ' / ' + (dz * 1000).toFixed(0) + ' mm');
+      }
+      if (chain && typeof chain === 'object') {
+        var order = [];
+        if (chain.arm_link00_x_m != null) order.push('arm=' + (chain.arm_link00_x_m * 1000).toFixed(0));
+        if (chain.lidar_x_m != null) order.push('lidar=' + (chain.lidar_x_m * 1000).toFixed(0));
+        if (chain.front_camera_x_m != null) order.push('front=' + (chain.front_camera_x_m * 1000).toFixed(0));
+        if (chain.object_x_m != null) order.push('obj=' + (chain.object_x_m * 1000).toFixed(0));
+        if (order.length) tips.push('X chain = ' + order.join(' < '));
+      }
+      if (chainOk != null) tips.push('chain_order_ok = ' + (chainOk ? 'YES' : 'NO'));
+      var detailLines = [];
+      detailLines.push('camera=' + selCam + ' | grip=' + gripSource + ' | target=' + (targetDisp ? arm3dFmtVec(targetDisp) : '—'));
+      detailLines.push('pinza=' + (toolTip ? arm3dFmtVec(toolTip) : '—') + ' | tag5=' + (tag5 ? arm3dFmtVec(tag5) : '—') + ' | front=' + (frontCam ? arm3dFmtVec(frontCam) : '—'));
+      if (pathPts.length) detailLines.push('path_pts=' + pathPts.length + ' | ' + pathPts.map(function (p, i) { return i + ':' + arm3dFmtVec(p); }).join(' → '));
+      if (tips.length) detailLines.push(tips.join(' | '));
+      if (chain && typeof chain === 'object') detailLines.push(JSON.stringify(chain, null, 2));
+      var summaryEl = document.getElementById('arm3dDebugSummary');
+      if (summaryEl) {
+        var warn = (chainOk === false) || String(selCam) === '6';
+        summaryEl.textContent = 'cam ' + selCam + ' · ' + (chainOk == null ? 'chain ?' : (chainOk ? 'chain ok' : 'chain NO'));
+        summaryEl.style.color = warn ? '#fca5a5' : '#a7f3d0';
+      }
+      var detailEl = document.getElementById('arm3dPathDetail');
+      if (detailEl) detailEl.textContent = detailLines.join('\n');
+      var topNodes = arm3dMountOriginTopNodes(nodes, armMount);
+      var topPath = arm3dMountOriginTopPath(pathPts, armMount);
+      arm3dRenderProjectionSvg('arm3dTopSvg', 'top', topNodes, topPath, 'X/Y · origin=mount');
+      arm3dRenderProjectionSvg('arm3dSideSvg', 'side', nodes, pathPts, 'X/Z');
+    }
+    async function armTracePoll() {
+      var st = document.getElementById('armTraceStatusLine');
+      if (st) st.textContent = 'Carico traiettoria completa…';
+      try {
+        var res = await fetch(dashboardApi('/api/arm/scene_3d?_=' + Date.now()), { cache: 'no-store' });
+        var j = await res.json();
+        if (j.ok) {
+          armTraceRenderFromPayload(j);
+          var st2 = document.getElementById('armTraceStatusLine');
+          if (st2) {
+            var cam = j.selected_camera != null ? j.selected_camera : '—';
+            var tgt = j.object_target_base_xyz_m_display || j.object_target_base_xyz_m || null;
+            var pts = j.ik_trajectory && j.ik_trajectory.targets_xyz_m ? j.ik_trajectory.targets_xyz_m.length : 0;
+            st2.textContent = 'cam ' + cam + ' · path ' + pts + ' punti · target ' + (tgt && tgt.length >= 3 ? '[' + tgt[0].toFixed(3) + ', ' + tgt[1].toFixed(3) + ', ' + tgt[2].toFixed(3) + ']' : '—');
+          }
+        } else if (st) {
+          st.textContent = j.error || 'traiettoria non disponibile';
+        }
+      } catch (e) {
+        if (st) st.textContent = String(e);
+      }
+    }
+    window.armTracePoll = armTracePoll;
     var arm3dSphereSlidersBound = false;
     var ARM3D_LS_SPHERE = {
       joint: 'arm3d_sphere_joint_mm',
@@ -3141,10 +4348,14 @@
         }
       }
       var lm = d.viewer_landmarks_base_link_m || {};
-      if (lm.depth_camera_mjcf_m && lm.depth_camera_mjcf_m.length >= 3) {
+      if (lm.front_camera_display_base_link_m && lm.front_camera_display_base_link_m.length >= 3) {
+        arm3dAddSphereRobotBl(lm.front_camera_display_base_link_m, COL_FRONT_CAM, RFront);
+      } else if (lm.depth_camera_mjcf_m && lm.depth_camera_mjcf_m.length >= 3) {
         arm3dAddSphereRobotBl(lm.depth_camera_mjcf_m, COL_FRONT_CAM, RFront);
       }
-      if (lm.wrist_camera_mjcf_m && lm.wrist_camera_mjcf_m.length >= 3) {
+      if (lm.wrist_camera_display_base_link_m && lm.wrist_camera_display_base_link_m.length >= 3) {
+        arm3dAddSphereRobotBl(lm.wrist_camera_display_base_link_m, COL_WRIST_CAM, RWrist);
+      } else if (lm.wrist_camera_mjcf_m && lm.wrist_camera_mjcf_m.length >= 3) {
         arm3dAddSphereRobotBl(lm.wrist_camera_mjcf_m, COL_WRIST_CAM, RWrist);
       }
       if (lm.xt16_tag_m && lm.xt16_tag_m.length >= 3) {
@@ -3192,6 +4403,10 @@
       if (tgtBl && tgtBl.length >= 3) {
         arm3dAddSphereRobotBl(tgtBl, COL_GRASP_TARGET, Math.max(RWrist, 0.009));
       }
+
+      try {
+        arm3dRenderGraspDebug(d);
+      } catch (eDbg) {}
 
       var bits = [];
       if (d.servo_feedback_ok) bits.push('servo');
@@ -4460,33 +5675,163 @@
         if (logEl) logEl.textContent = msg;
       }
     }
+    function lidarWrapAngleDeg(az) {
+      var n = Number(az);
+      if (!isFinite(n)) return 0;
+      var rel = ((n - 90) % 360 + 360) % 360;
+      return rel > 180 ? rel - 360 : rel;
+    }
+    function lidarFmtM(v) {
+      var n = Number(v);
+      if (!isFinite(n)) return '—';
+      return n.toFixed(n < 10 ? 2 : 1) + ' m';
+    }
+    function lidarBuildSummary(data) {
+      var pts = Array.isArray(data && data.points) ? data.points : [];
+      var stats = (data && data.stats) || {};
+      var labels = ['Fronte', 'Front dx', 'Destra', 'Rear dx', 'Retro', 'Rear sx', 'Sinistra', 'Front sx'];
+      var sectors = labels.map(function (label) {
+        return { label: label, count: 0, nearest: Infinity };
+      });
+      var nearest = null;
+      var closest = [];
+      pts.forEach(function (p) {
+        var az = Number(p[0]);
+        var dist = Number(p[1]);
+        var refl = Number(p[2]);
+        var ch = Number(p[3]);
+        if (!isFinite(az) || !isFinite(dist)) return;
+        var rel = lidarWrapAngleDeg(az);
+        var rel360 = (rel + 360) % 360;
+        var idx = Math.floor(((rel360 + 22.5) % 360) / 45) % 8;
+        if (idx < 0 || idx >= sectors.length) idx = 0;
+        sectors[idx].count += 1;
+        sectors[idx].nearest = Math.min(sectors[idx].nearest, dist);
+        var item = { az: az, rel: rel, dist: dist, refl: isFinite(refl) ? refl : 0, ch: isFinite(ch) ? ch : 0 };
+        closest.push(item);
+        if (!nearest || dist < nearest.dist) nearest = item;
+      });
+      sectors.forEach(function (s) {
+        if (!isFinite(s.nearest)) s.nearest = null;
+      });
+      closest.sort(function (a, b) { return a.dist - b.dist; });
+      var occupied = sectors.filter(function (s) { return s.count > 0; }).length;
+      var front = sectors[0];
+      var frontRight = sectors[1];
+      var right = sectors[2];
+      var rear = sectors[4];
+      var dominant = sectors.slice().sort(function (a, b) {
+        return (b.count - a.count) || ((a.nearest || Infinity) - (b.nearest || Infinity));
+      }).slice(0, 2);
+      var headline;
+      if (!pts.length) {
+        headline = 'Nessun ritorno valido: controlla routing UDP/2368, avvio del sensore o il filtro dei pacchetti.';
+      } else if (nearest && nearest.dist < 0.75) {
+        headline = 'Molto vicino: il ritorno più vicino è a ' + lidarFmtM(nearest.dist) + ' (' + Math.round(nearest.rel) + '°).';
+      } else if (front && front.nearest != null && front.nearest < 1.5) {
+        headline = 'Davanti il LiDAR vede ritorni fino a ' + lidarFmtM(front.nearest) + ' · attenzione a possibili ostacoli.';
+      } else if (occupied >= 6) {
+        headline = 'Scansione ampia: ritorni in ' + occupied + '/8 settori, con densità maggiore su ' + dominant.map(function (s) { return s.label; }).join(' e ') + '.';
+      } else {
+        headline = 'Ritorni sparsi: ' + occupied + '/8 settori attivi, zona più densa ' + (dominant[0] ? dominant[0].label : '—') + '.';
+      }
+      var sources = Object.entries((data && data.sources) || {}).sort(function (a, b) { return b[1] - a[1]; });
+      return {
+        points: pts,
+        stats: stats,
+        sectors: sectors,
+        nearest: nearest,
+        closest: closest.slice(0, 8),
+        headline: headline,
+        sources: sources,
+        occupied: occupied,
+      };
+    }
     function drawLidar(points, canvasId) {
       const id = canvasId || 'lidarCanvas';
       const canvas = document.getElementById(id);
       if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0,0,w,h);
-      const cx = w/2, cy = h/2;
-      const maxR = Math.min(w,h)*0.46;
-      const dot = Math.max(1.1, Math.min(2.8, w / 420));
-      ctx.strokeStyle = '#1e3a8a'; ctx.lineWidth = 1;
-      for (let r=0.2; r<=1; r+=0.2) { ctx.beginPath(); ctx.arc(cx,cy,maxR*r,0,Math.PI*2); ctx.stroke(); }
-      for (let a=0; a<360; a+=30) {
-        const rad=(a-90)*Math.PI/180;
-        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(rad)*maxR, cy+Math.sin(rad)*maxR); ctx.stroke();
+      const rect = canvas.getBoundingClientRect();
+      const cssW = Math.max(2, Math.round(rect.width || canvas.clientWidth || canvas.width || 900));
+      const cssH = Math.max(2, Math.round(rect.height || canvas.clientHeight || canvas.height || 620));
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const pxW = Math.max(2, Math.round(cssW * dpr));
+      const pxH = Math.max(2, Math.round(cssH * dpr));
+      if (canvas.width !== pxW || canvas.height !== pxH) {
+        canvas.width = pxW;
+        canvas.height = pxH;
       }
-      ctx.fillStyle = '#94a3b8'; ctx.fillRect(cx-4, cy-4, 8, 8);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+      const bg = ctx.createRadialGradient(cssW * 0.5, cssH * 0.5, cssH * 0.12, cssW * 0.5, cssH * 0.5, Math.min(cssW, cssH) * 0.68);
+      bg.addColorStop(0, 'rgba(15,23,42,.98)');
+      bg.addColorStop(1, 'rgba(2,6,23,.99)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, cssW, cssH);
+      const cx = cssW / 2;
+      const cy = cssH / 2;
+      const maxR = Math.min(cssW, cssH) * 0.46;
+      const dot = Math.max(1.4, Math.min(3.2, cssW / 400));
+      ctx.save();
+      ctx.strokeStyle = 'rgba(96,165,250,.18)';
+      ctx.lineWidth = 1;
+      for (let r = 0.2; r <= 1; r += 0.2) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, maxR * r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(148,163,184,.28)';
+      for (let a = 0; a < 360; a += 45) {
+        const rad = (a - 90) * Math.PI / 180;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(rad) * maxR, cy + Math.sin(rad) * maxR);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(cx - 3, cy - 3, 6, 6);
+      ctx.font = '12px Inter, Segoe UI, Arial, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText('FRONT', cx - 18, cy - maxR - 8);
+      ctx.fillText('REAR', cx - 12, cy + maxR + 16);
+      ctx.fillText('LEFT', cx - maxR - 28, cy + 4);
+      ctx.fillText('RIGHT', cx + maxR - 8, cy + 4);
+      let nearest = null;
       for (const p of points || []) {
-        const az = p[0], dist = p[1], refl = p[2];
-        const rad = (az - 90) * Math.PI / 180;
+        const az = Number(p[0]);
+        const dist = Number(p[1]);
+        const refl = Number(p[2]) || 0;
+        if (!isFinite(az) || !isFinite(dist)) continue;
+        const rel = lidarWrapAngleDeg(az);
+        const rad = (rel - 90) * Math.PI / 180;
         const rr = Math.min(dist / 30, 1) * maxR;
         const x = cx + Math.cos(rad) * rr;
         const y = cy + Math.sin(rad) * rr;
-        const hue = Math.min(160, 35 + refl * .6);
-        ctx.fillStyle = `hsl(${hue}, 90%, 58%)`;
-        ctx.fillRect(x, y, dot, dot);
+        const near = 1 - Math.min(1, dist / 30);
+        const hue = Math.max(0, Math.min(160, 200 - near * 140));
+        const alpha = 0.72 + Math.min(0.2, refl / 255 * 0.2);
+        ctx.fillStyle = `hsla(${hue}, 94%, ${dist < 1.2 ? 62 : 56}%, ${alpha})`;
+        const size = dist < 0.75 ? dot * 1.9 : dist < 1.5 ? dot * 1.35 : dot;
+        ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        if (!nearest || dist < nearest.dist) nearest = { az, rel, dist, refl, x, y };
       }
+      if (nearest) {
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(nearest.x, nearest.y);
+        ctx.stroke();
+        ctx.fillStyle = '#22d3ee';
+        ctx.beginPath();
+        ctx.arc(nearest.x, nearest.y, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 12px Inter, Segoe UI, Arial, sans-serif';
+        ctx.fillText(lidarFmtM(nearest.dist) + ' @ ' + Math.round(nearest.rel) + '°', Math.min(cssW - 120, nearest.x + 10), Math.max(14, nearest.y - 10));
+      }
+      ctx.restore();
     }
     async function refreshLidar() {
       const pill = document.getElementById('alwaysLidarPill');
@@ -4494,14 +5839,40 @@
         const res = await fetch(dashboardApi('/api/lidar/frame'));
         const data = await res.json();
         const pts = data.points || [];
+        const summary = lidarBuildSummary(data);
         drawLidar(pts, 'lidarCanvas');
         drawLidar(pts, 'alwaysLidarCanvas');
         const stats = data.stats || {};
         const lidarOk = !!data.ok;
+        const nowText = new Date().toLocaleTimeString();
         setText('lidarStatus', lidarOk ? 'streaming' : 'no points');
         const ls = document.getElementById('lidarStatus');
-        if (ls) ls.className = lidarOk ? 'ok' : 'bad';
-        setText('lidarMeta', `packets=${data.packets || 0} visible=${stats.visible_points || 0} analyzed=${stats.total_points_analyzed || 0} range=${stats.min_m ?? '-'}..${stats.max_m ?? '-'}m avg=${stats.avg_m ?? '-'}m source=${JSON.stringify(data.sources || {})}`);
+        if (ls) ls.className = 'pill ' + (lidarOk ? 'ok' : 'bad');
+        setText('lidarUpdatedAt', nowText);
+        setText('lidarVisiblePoints', String(stats.visible_points ?? pts.length ?? 0));
+        setText('lidarRangeStats', `${stats.min_m ?? '-'} .. ${stats.max_m ?? '-'} m · avg ${stats.avg_m ?? '-'}`);
+        setText('lidarPacketStats', `${data.packets || 0} pkt · ${Object.keys(data.sources || {}).length} src`);
+        setText('lidarHeadline', summary.headline);
+        const sectorEl = document.getElementById('lidarSectorList');
+        if (sectorEl) {
+          sectorEl.innerHTML = summary.sectors.map(function (s) {
+            const near = s.nearest == null ? '—' : lidarFmtM(s.nearest);
+            return `<div class="sector-chip"><b>${s.label}</b><small>${s.count} punti · min ${near}</small></div>`;
+          }).join('');
+        }
+        const closeEl = document.getElementById('lidarClosestList');
+        if (closeEl) {
+          closeEl.innerHTML = summary.closest.length ? summary.closest.map(function (p, idx) {
+            return `<li><div><strong>#${idx + 1} · ${lidarFmtM(p.dist)}</strong><span>ang ${Math.round(p.rel)}° · az ${Math.round(p.az)}° · refl ${p.refl} · ch ${p.ch}</span></div></li>`;
+          }).join('') : '<li class="scan-empty">Nessun punto ancora.</li>';
+        }
+        const sourcesEl = document.getElementById('lidarSources');
+        if (sourcesEl) {
+          sourcesEl.textContent = summary.sources.length
+            ? summary.sources.map(function (item) { return item[0] + ' × ' + item[1]; }).join(' · ')
+            : 'Nessuna sorgente UDP ancora vista';
+        }
+        setText('lidarMeta', `mode=${data.mode || 'n/a'} · age=${data.age_ms ?? '-'}ms · visible=${stats.visible_points || 0} · analyzed=${stats.total_points_analyzed || 0}`);
         if (pill) {
           const pk = data.packets != null ? String(data.packets) : '?';
           setText('alwaysLidarPill', lidarOk ? `LiDAR OK · ${pk} pkt` : 'LiDAR —');
@@ -4510,7 +5881,17 @@
       } catch (e) {
         setText('lidarStatus', 'error');
         const ls = document.getElementById('lidarStatus');
-        if (ls) ls.className = 'bad';
+        if (ls) ls.className = 'pill bad';
+        setText('lidarUpdatedAt', '—');
+        setText('lidarVisiblePoints', '—');
+        setText('lidarRangeStats', '—');
+        setText('lidarPacketStats', '—');
+        setText('lidarHeadline', 'Errore di lettura LiDAR: ' + String(e));
+        const sectorEl = document.getElementById('lidarSectorList');
+        if (sectorEl) sectorEl.innerHTML = '<div class="scan-empty">Nessun dato disponibile.</div>';
+        const closeEl = document.getElementById('lidarClosestList');
+        if (closeEl) closeEl.innerHTML = '<li class="scan-empty">Nessun punto disponibile.</li>';
+        setText('lidarSources', '—');
         if (pill) {
           setText('alwaysLidarPill', 'LiDAR err');
           pill.className = 'pill bad';
