@@ -15,9 +15,14 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 CAMERA_DEVICES: dict[int, str] = {
-    0: "Sonix HD 1080P PC-Camera (arm/external USB)",
+    0: "External USB wrist/arm camera",
     6: "Intel RealSense D435i RGB stream",
 }
+
+_USB_IDS_LOGICAL_0_ORBBEC = {("2bc5", "080b")}
+_USB_IDS_LOGICAL_0_SONIX = {("0735", "0269")}
+_USB_IDS_LOGICAL_0 = _USB_IDS_LOGICAL_0_ORBBEC | _USB_IDS_LOGICAL_0_SONIX
+_USB_IDS_REALSENSE = {("8086", "0b3a")}
 
 # Cache: logico dashboard → indice /dev/videoN (solo Linux, sysfs USB).
 _usb_auto_v4l_cache: dict[int, int] | None = None
@@ -137,6 +142,55 @@ def _try_set_realsense_mjpeg_fourcc(cap: Any) -> None:
         pass
 
 
+def _probe_generic_rgb_v4l(indices: list[int], *, default_env: str, fallback_default: int) -> int | None:
+    """Prova nodi V4L finché uno restituisce frame BGR plausibili (non neri / non mono replicato)."""
+    if cv2 is None or platform.system().lower() != "linux" or not indices:
+        return None
+    try:
+        pref = int(os.environ.get(default_env, str(fallback_default)).strip())
+    except ValueError:
+        pref = int(fallback_default)
+    order = sorted({int(idx) for idx in indices}, key=lambda idx: (abs(int(idx) - pref), int(idx)))
+    for idx in order:
+        cap = None
+        try:
+            path = _v4l_path(idx)
+            cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                if cap is not None:
+                    cap.release()
+                cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if cap is None or not cap.isOpened():
+                continue
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            except Exception:
+                pass
+            ok_streak = 0
+            for _ in range(14):
+                ok, fr = cap.read()
+                if ok and _frame_looks_like_rgb_color(fr):
+                    ok_streak += 1
+                    if ok_streak >= 2:
+                        return int(idx)
+                else:
+                    ok_streak = 0
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+    return None
+
+
 def _probe_realsense_rgb_v4l(rs_indices: list[int]) -> int | None:
     """Prova i nodi Intel (8086:0b3a) finché uno restituisce frame BGR non neri (spesso ≠ ``video6``)."""
     if cv2 is None or platform.system().lower() != "linux" or not rs_indices:
@@ -207,11 +261,36 @@ def usb_auto_v4l_mapping() -> dict[int, int]:
             return {}
         rows = _enumerate_v4l_usb_bindings()
         m: dict[int, int] = {}
-        for idx, vid, pid in rows:
-            if vid == "0735" and pid == "0269":
-                m[0] = idx
-                break
-        rs_idx = sorted({idx for idx, vid, pid in rows if vid == "8086" and pid == "0b3a"})
+        logical0_idx = sorted(
+            {
+                idx
+                for idx, vid, pid in rows
+                if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
+                or (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
+            }
+        )
+        if logical0_idx:
+            try:
+                pref0 = int(os.environ.get("GO2_ARM_CAMERA_V4L_DEFAULT", "0").strip())
+            except ValueError:
+                pref0 = 0
+            logical0_orbbec = [
+                idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
+            ]
+            logical0_sonix = [
+                idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
+            ]
+            logical0_candidates = sorted({int(idx) for idx in (logical0_orbbec or logical0_sonix)})
+            probed0 = _probe_generic_rgb_v4l(
+                logical0_candidates,
+                default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
+                fallback_default=pref0,
+            )
+            if probed0 is not None:
+                m[0] = int(probed0)
+            else:
+                m[0] = int(min(logical0_candidates, key=lambda x: abs(int(x) - pref0)))
+        rs_idx = sorted({idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_REALSENSE})
         if rs_idx:
             probed = _probe_realsense_rgb_v4l(rs_idx)
             if probed is not None:
@@ -238,9 +317,10 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
 
     1. ``GO2_VIDEO_INDEX_<logical>`` se impostato.
     2. Su Linux, mappa automatica USB (``GO2_CAMERA_AUTO_USB_MAP`` non ``0``/``false``):
-       Sonix 0735:0269 → logico ``0``; Intel RealSense 8086:0b3a → logico ``6``
+       Sonix 0735:0269 / Orbbec 2bc5:080b → logico ``0``; Intel RealSense 8086:0b3a → logico ``6``
        (indice RGB scelto con probe frame BGR se ``GO2_REALSENSE_VIDEO_PROBE`` non disattivo,
-       altrimenti ``GO2_REALSENSE_V4L_DEFAULT``, default ``6``).
+       altrimenti ``GO2_REALSENSE_V4L_DEFAULT``, default ``6``). Per la camera logica ``0``
+       il probe usa ``GO2_ARM_CAMERA_V4L_DEFAULT`` (default ``0``).
     3. Altrimenti ``logical == N`` → ``/dev/videoN``.
     """
     key = f"GO2_VIDEO_INDEX_{logical}"
