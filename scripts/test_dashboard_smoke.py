@@ -101,6 +101,10 @@ def main() -> int:
     assert "arm3dObjectStatus" in body
     assert "arm3dTrajectoryStatus" in body
     assert "arm3dAlignmentStatus" in body
+    assert 'data-op-tab="calibration"' in body
+    assert 'id="op-calibration"' in body
+    assert "tag5CalibStatus" in body
+    assert "Apre la procedura di calibrazione visuale" in body
 
     assert "graspPipelinePre" in body
     assert "saveTrueZeroPose" in body

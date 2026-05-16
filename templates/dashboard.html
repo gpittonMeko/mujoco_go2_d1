@@ -968,6 +968,7 @@
         <strong>LiDAR</strong> separato ·
         <strong>Sequenza presa</strong>: fasi live (fold → tag → START → ricerca → IK), pulsanti e log ·
         <strong>Braccio 3D</strong> ·
+        <strong>Calibrazione</strong>: tag5, coerenza front/polso/viewer ·
         poi Corpo Go2 e Drag.
       </p>
 
@@ -977,6 +978,7 @@
         <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Sequenza presa</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="graspdbg" aria-selected="false">Grasp debug</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Braccio 3D</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="calibration" aria-selected="false">Calibrazione</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="trace" aria-selected="false">Vista dall’alto</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="go2" aria-selected="false">Corpo Go2</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="drag" aria-selected="false">Drag mano</button>
@@ -1622,82 +1624,25 @@
             </p>
           </div>
         </div>
-        <details id="arm3d-calibration-guide" open style="margin-top:12px;">
-          <summary class="small muted" style="cursor:pointer;font-weight:600;color:#e2e8f0;">
-            Calibrazione visiva: landmark tag 5 + allineamento Three.js / planner
-          </summary>
-          <div class="flow-card" style="margin-top:10px;padding:12px 14px;">
-            <p class="small" style="margin:0 0 10px;line-height:1.45;color:#cbd5e1;">
-              <strong>arm_link00</strong> è l’origine del <strong>braccio</strong> (primo giunto), in metri: <strong>+X</strong> avanti rispetto al cane.
-              Il riferimento corretto che usiamo qui è <strong>assoluto</strong> nel frame base del servo: <strong>tag 5 = X 19 cm, Y 0, Z 8 cm</strong>.
-              Il <strong>LiDAR</strong> è reso come <strong>cilindro Ø10 cm × h 8 cm</strong> centrato su <strong>X 19 cm, Y 0</strong>; la <strong>camera frontale</strong> è a <strong>X 37,5 cm, Y 0, Z 1 cm</strong>.
-              Per <strong>tvec → base</strong> basta <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): di solito lo vede <strong>solo la camera polso (0)</strong>; la RealSense (6) può non inquadrarlo: va bene.
-              Il POST «Salva nominale» crea <code>data/tag5_calibration_arm_base.json</code>.
-              <strong>dual_probe</strong> (GET opzionale) confronta due stime <em>solo se</em> entrambe le camere vedono <em>lo stesso</em> tag 5 nello stesso istante; non calibra la mutua posa polso↔muso.
-              Per stimare bene quella geometria servirebbe un <strong>punto 3D comune</strong> visto da entrambe (es. tag a terra con posa nota): oggi <strong>non</strong> c’è un wizard dedicato; i cursori sotto servono solo al tuning interno del viewer.
-              I tag <strong>0–3 sulla scatola</strong> servono alla presa; usano la <strong>stessa</strong> correzione del landmark.
-            </p>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
-              <button type="button" class="primary-go" onclick="calibrationFlowReload()">Aggiorna guida e stato server</button>
-              <button type="button" onclick="tag5CalibRefresh()">Stato file calibrazione</button>
-              <label class="small muted" style="display:flex;align-items:center;gap:6px;">
-                <input type="checkbox" id="calibrationShowFullJson" /> Mostra JSON guida completo
-              </label>
-            </div>
-            <ol class="small" style="margin:0 0 12px 18px;line-height:1.5;color:#94a3b8;" id="calibrationStepsList">
-              <li>Apri questo tab per caricare i passi dalla NX…</li>
-            </ol>
-            <pre id="calibrationFlowJson" class="compact-pre small muted" style="margin-top:4px;max-height:160px;display:none;font-size:11px;">—</pre>
-            <h4 style="margin:14px 0 8px;font-size:13px;">Salva nominale tag 5</h4>
-            <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
-              Posizione <strong>nominale</strong> del centro tag 5 in <code>arm_link00</code> (metri). Opzionale se hai già
-              <code>GO2_TAG5_NOMINAL_ARM_BASE_M=x,y,z</code> nell’ambiente del server.
-            </p>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-              <label class="small">X <input type="number" step="0.001" id="tag5_nom_x" placeholder="0.19" style="width:92px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Y <input type="number" step="0.001" id="tag5_nom_y" placeholder="0" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Z <input type="number" step="0.001" id="tag5_nom_z" placeholder="0.08" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Camera
-                <select id="tag5_calib_camera" style="padding:4px 8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
-                  <option value="0" selected>Polso log. 0 (consigliata)</option>
-                  <option value="6">Frontale log. 6</option>
-                </select>
-              </label>
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;">
-              <button type="button" class="primary-go" onclick="tag5CalibSave()">Salva nominale (scrive JSON)</button>
-              <button type="button" onclick="tag5CalibClear()">Cancella file calibrazione</button>
-              <button type="button" onclick="openOpTab('arm3d'); setTimeout(function(){ try { jointEditorLoad(); } catch (e) {} }, 120);">Apri cursori giunti</button>
-            </div>
-            <p class="small muted" style="margin:8px 0 0;line-height:1.35;">
-              Per il tag 5 usa il <strong>polso (camera 0)</strong>: apri il tab <strong>Braccio 3D</strong>, attiva <em>Controllo live</em>
-              e fai micro-movimenti sui giunti finché <code>video0</code> vede bene il tag. La posa di partenza consigliata è quella di ricerca
-              (<code>SEARCH_POSES_D1</code>) e poi rifinitura a piccoli step.
-            </p>
-            <pre id="tag5CalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:200px;font-size:11px;">—</pre>
-            <h4 style="margin:16px 0 8px;font-size:13px;">Calibrazione doppia (stesso tag su polso + RealSense)</h4>
-            <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
-              Con lo <strong>stesso</strong> AprilTag inquadrato da <strong>video0</strong> e <strong>video6</strong> (anche su scatola/oggetto): nominale centro tag in <code>arm_link00</code> (m).
-              Per ID fuori 0–3 e 5 imposta <strong>lato tag</strong> (m). Scrive <code>offset_by_logical_camera_device_m</code> nel JSON — <strong>non</strong> sostituisce il salvataggio tag5/XT-16 sopra.
-            </p>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-              <label class="small">tag_id <input type="number" step="1" id="dual_tag_id" value="2" style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">lato tag (m, opz.) <input type="number" step="0.001" id="dual_tag_edge" placeholder="0.019" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-              <label class="small">Nom. X <input type="number" step="0.001" id="dual_nom_x" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Y <input type="number" step="0.001" id="dual_nom_y" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-              <label class="small">Z <input type="number" step="0.001" id="dual_nom_z" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-            </div>
-              <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva calibrazione 0+6 (stesso tag)</button>
-            <pre id="dualSharedCalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:180px;font-size:11px;">—</pre>
-            <p class="small muted" style="margin-top:10px;line-height:1.4;">
-              <strong>Coerenza viewer:</strong> dopo «Salva nominale» la pagina aggiorna <code>scene_3d</code> <strong>completo</strong> (con <code>/api/box/plan</code>) così la sfera rossa usa la visione quando il tag è nel piano; evita solo l’anteprima <code>?fast=1</code> subito dopo.
-              Nel riquadro dettaglio compaiono righe <code>Calib:</code> da <code>calibration_visual_alignment</code>.
-              Gli slider «Camera frontale» / frustum allineano il <strong>modello viola</strong> alla RealSense; non sostituiscono una calibrazione stereo polso↔muso (per quella servirebbe un riferimento comune visto da entrambe).
-            </p>
+        <div class="flow-card" style="margin-top:12px;padding:12px 14px;border:1px dashed #475569;background:rgba(15,23,42,0.35);">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+            <strong style="font-size:13px;color:#cbd5e1;">Calibrazione pronta da eseguire</strong>
+            <button type="button" class="primary-go" onclick="openOpTab('calibration', { user: true });">Apri tab Calibrazione</button>
           </div>
-        </details>
+          <p class="small muted" style="margin:8px 0 0;line-height:1.4;">
+            La calibrazione operativa completa è ora nel tab <strong>Calibrazione</strong>: lì trovi i passi server, il salvataggio del nominale tag5, la calibrazione condivisa 0+6 e la checklist di verifica viewer/IK.
+          </p>
+        </div>
+      </div>
+      <div id="op-calibration" class="op-panel" role="tabpanel" data-op-panel="calibration">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">Calibration / visual alignment</p>
+            <h2>Calibrazione visiva: tag 5, camera frontale, camera polso, viewer 3D</h2>
+          </div>
+          <p class="section-note">Questa sezione serve per portare in coerenza braccio, camere e target. Quando finisci qui, la pagina deve rendere chiaro se il target è stimato o validato e se la traiettoria IK è pronta.</p>
+        </div>
+        {% include "_calibration_panel.html" %}
       </div>
       <div id="op-trace" class="op-panel" role="tabpanel" data-op-panel="trace">
         <div class="flow-card" style="padding:12px 14px;border:1px solid #475569;background:rgba(15,23,42,.55);">
@@ -3171,6 +3116,12 @@
               void arm3dPoll(false);
             } catch (e2) {}
           }, 0);
+        } else if (tabId === 'calibration' && fromUserClick) {
+          setTimeout(function () {
+            try { calibrationFlowReload(); } catch (eCal) {}
+            try { tag5CalibRefresh(); } catch (eTag) {}
+            try { arm3dPoll(false); } catch (e3d) {}
+          }, 0);
         } else if (tabId === 'trace' && fromUserClick) {
           setTimeout(function () {
             try { armTracePoll(); } catch (eT) {}
@@ -3199,6 +3150,12 @@
             arm3dPoll(true);
             void arm3dPoll(false);
           } catch (eI0) {}
+        }, 0);
+      } else if (initial === 'calibration') {
+        setTimeout(function () {
+          try { calibrationFlowReload(); } catch (eC0) {}
+          try { tag5CalibRefresh(); } catch (eTg0) {}
+          try { arm3dPoll(false); } catch (eA0) {}
         }, 0);
       } else if (initial === 'trace') {
         setTimeout(function () {
