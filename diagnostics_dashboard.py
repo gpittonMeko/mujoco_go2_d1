@@ -6010,11 +6010,11 @@ def _camera_jpeg_for_mjpeg(device: int, last_cam_jpg: bytes | None) -> bytes | N
     return jpg
 
 
-_TAG_DRAW_FNS: Optional[tuple[Any, Any]] = None
+_TAG_DRAW_FNS: Optional[tuple[Any, Any, Any]] = None
 _TAG_DRAW_IMPORT_ERROR: Optional[str] = None
 
 
-def _box_planner_detect_draw() -> tuple[Any, Any] | None:
+def _box_planner_detect_draw() -> tuple[Any, Any, Any] | None:
     """Import lazy una tantum — evita costi e fallimenti ripetuti sul path MJPEG."""
     global _TAG_DRAW_FNS, _TAG_DRAW_IMPORT_ERROR
     if _TAG_DRAW_IMPORT_ERROR is not None:
@@ -6024,24 +6024,27 @@ def _box_planner_detect_draw() -> tuple[Any, Any] | None:
             scripts = str(PROJECT_ROOT / "scripts")
             if scripts not in sys.path:
                 sys.path.insert(0, scripts)
-            from box_grasp_planner import detect_box_tags, draw_tags
+            from box_grasp_planner import draw_grasp_overlay, plan_from_frame
+            from box_object_detector import detect_box_object
 
-            _TAG_DRAW_FNS = (detect_box_tags, draw_tags)
+            _TAG_DRAW_FNS = (plan_from_frame, detect_box_object, draw_grasp_overlay)
         except Exception as exc:
             _TAG_DRAW_IMPORT_ERROR = repr(exc)
             return None
     return _TAG_DRAW_FNS
 
 
-def _encode_apriltag_overlay_frame(frame: Any) -> bytes | None:
+def _encode_apriltag_overlay_frame(frame: Any, *, logical_camera_device: int | None = None) -> bytes | None:
     if cv2 is None:
         return None
-    pair = _box_planner_detect_draw()
-    if pair is None:
+    trio = _box_planner_detect_draw()
+    if trio is None:
         return None
-    detect_box_tags, draw_tags = pair
+    plan_from_frame, detect_box_object, draw_grasp_overlay = trio
     try:
-        out = draw_tags(frame, detect_box_tags(frame))
+        obj = detect_box_object(frame)
+        plan = plan_from_frame(frame, object_detection=obj, logical_camera_device=logical_camera_device)
+        out = draw_grasp_overlay(frame, plan)
         aq = int(os.environ.get("GO2_ANNOTATED_JPEG_QUALITY", "72"))
         aq = max(55, min(95, aq))
         ok, jpg = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), aq])
@@ -6050,9 +6053,9 @@ def _encode_apriltag_overlay_frame(frame: Any) -> bytes | None:
         return None
 
 
-def _jpeg_apply_apriltag_if_possible(jpg: bytes) -> bytes:
+def _jpeg_apply_apriltag_if_possible(jpg: bytes, *, logical_camera_device: int | None = None) -> bytes:
     """
-    Decodifica un JPEG camera → overlay tag → JPEG; se overlay fallisce o è disabilitato, ritorna il raw.
+    Decodifica un JPEG camera → overlay tag/detector/grip/preview → JPEG; se overlay fallisce o è disabilitato, ritorna il raw.
     Così lo stream ``tags.mjpg`` non resta mai nero mentre il MJPEG grezzo ha dati.
     """
     if cv2 is None:
@@ -6065,7 +6068,7 @@ def _jpeg_apply_apriltag_if_possible(jpg: bytes) -> bytes:
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
         return jpg
-    enc = _encode_apriltag_overlay_frame(frame)
+    enc = _encode_apriltag_overlay_frame(frame, logical_camera_device=logical_camera_device)
     return enc if enc is not None else jpg
 
 
@@ -6076,7 +6079,7 @@ def _apriltag_overlay_jpeg_bytes(device: int) -> bytes | None:
     jpg = _camera_jpeg_for_mjpeg(device, None)
     if jpg is None:
         return None
-    return _jpeg_apply_apriltag_if_possible(jpg)
+    return _jpeg_apply_apriltag_if_possible(jpg, logical_camera_device=device)
 
 
 def background_run() -> None:
@@ -6232,7 +6235,7 @@ def stream_robot_camera_tagsmjpeg(device: int) -> Response:
                     )
                 time.sleep(period)
                 continue
-            image = _jpeg_apply_apriltag_if_possible(jpg)
+            image = _jpeg_apply_apriltag_if_possible(jpg, logical_camera_device=device)
             last_sent = image
             yield (
                 b"--frame\r\n"

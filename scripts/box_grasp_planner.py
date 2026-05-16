@@ -268,6 +268,22 @@ def _camera_tvec_to_base_heuristic_xyz(camera_xyz_m: Sequence[float]) -> list[fl
     return [target_x, target_y, target_z]
 
 
+def camera_device_preview_offset_m(logical_camera_device: int | None) -> list[float]:
+    """Offset additivo per preview target/grasp per camera, configurabile da env senza toccare il landmark tag5."""
+    if logical_camera_device is None:
+        return [0.0, 0.0, 0.0]
+    raw = os.environ.get(f"GO2_BOX_TARGET_OFFSET_LOGICAL_{int(logical_camera_device)}_M", "").strip()
+    if not raw:
+        return [0.0, 0.0, 0.0]
+    try:
+        vals = [float(x.strip()) for x in raw.split(",")]
+        if len(vals) >= 3:
+            return [vals[0], vals[1], vals[2]]
+    except ValueError:
+        pass
+    return [0.0, 0.0, 0.0]
+
+
 def camera_tvec_to_base_xyz(
     camera_xyz_m: Sequence[float],
     *,
@@ -278,14 +294,16 @@ def camera_tvec_to_base_xyz(
     tvec OpenCV (centro tag) → stima nel frame **base braccio** (arm_link00 / FK).
     Se ``apply_tag5_calibration`` è True, applica l'offset da file calibrazione (solo per il
     landmark tag 5: è ``nominal - heuristic(tag5)`` e **non** va sommato ai tag scatola 0–3).
+    Per gli altri target può applicare un offset preview specifico per camera
+    (``GO2_BOX_TARGET_OFFSET_LOGICAL_<dev>_M=x,y,z``).
     """
     h = _camera_tvec_to_base_heuristic_xyz(camera_xyz_m)
-    if not apply_tag5_calibration:
-        return h
-    off = tag5_calibration_offset_arm_base_m(logical_camera_device)
-    if off is None:
-        return h
-    return [h[0] + off[0], h[1] + off[1], h[2] + off[2]]
+    if apply_tag5_calibration:
+        off = tag5_calibration_offset_arm_base_m(logical_camera_device)
+        if off is not None:
+            return [h[0] + off[0], h[1] + off[1], h[2] + off[2]]
+    cam_off = camera_device_preview_offset_m(logical_camera_device)
+    return [h[0] + cam_off[0], h[1] + cam_off[1], h[2] + cam_off[2]]
 
 
 def make_tag5_calibration_record(
@@ -519,7 +537,12 @@ def grip_point_from_tags(tags_result: dict[str, Any], frame_shape: tuple[int, in
     return out
 
 
-def target_base_from_object_detection(detection: dict[str, Any], frame: np.ndarray) -> dict[str, Any]:
+def target_base_from_object_detection(
+    detection: dict[str, Any],
+    frame: np.ndarray,
+    *,
+    logical_camera_device: int | None = None,
+) -> dict[str, Any]:
     if not detection.get("ok"):
         return {"ok": False, "error": detection.get("reason", "no object detection")}
     cam = CameraModel.from_frame(frame)
@@ -540,17 +563,25 @@ def target_base_from_object_detection(detection: dict[str, Any], frame: np.ndarr
     z = DEFAULT_CAMERA_HEIGHT_M - ((cy_px - cam.cy) / max(cam.fy, 1.0)) * depth - float(
         os.environ.get("GO2_BOX_TARGET_HEIGHT_OFFSET_M", "0.10")
     )
+    base_xyz = [
+        float(np.clip(depth, 0.18, 0.72)),
+        float(np.clip(lat, -0.35, 0.35)),
+        float(np.clip(z, 0.04, 0.24)),
+    ]
+    cam_off = camera_device_preview_offset_m(logical_camera_device)
+    base_xyz = [base_xyz[0] + cam_off[0], base_xyz[1] + cam_off[1], base_xyz[2] + cam_off[2]]
     return {
         "ok": True,
         "base_xyz_m": [
-            round(float(np.clip(depth, 0.18, 0.72)), 4),
-            round(float(np.clip(lat, -0.35, 0.35)), 4),
-            round(float(np.clip(z, 0.04, 0.24)), 4),
+            round(base_xyz[0], 4),
+            round(base_xyz[1], 4),
+            round(base_xyz[2], 4),
         ],
-        "calibration": "monocular bbox heuristic; AprilTag/RealSense depth preferred when available",
+        "calibration": "monocular bbox heuristic; AprilTag/RealSense depth preferred when available; optional per-camera preview offset supported",
         "source": detection.get("backend", "object_detection"),
         "bbox_width_px": round(bw, 2),
         "assumed_box_width_m": box_w_m,
+        "logical_camera_device": logical_camera_device,
     }
 
 
@@ -705,7 +736,11 @@ def plan_from_frame(
             if isinstance(p, dict):
                 p["logical_camera_device"] = int(logical_camera_device)
     tag_target = estimate_box_target_base(poses)
-    obj_target = target_base_from_object_detection(object_detection or {}, frame) if object_detection else {"ok": False}
+    obj_target = target_base_from_object_detection(
+        object_detection or {},
+        frame,
+        logical_camera_device=logical_camera_device,
+    ) if object_detection else {"ok": False}
     target = tag_target if tag_target.get("ok") else obj_target
     tag_grip = grip_point_from_tags(tags, frame.shape[:2])
     yaw = grip_tag_planar_yaw_rad(tag_grip)
@@ -720,6 +755,7 @@ def plan_from_frame(
     grip = merge_grip_point(tag_grip, obj_grip, prefer_tag_grip=bool(prefer_tag_grip))
     return {
         "ok": bool(preview.get("ok")),
+        "logical_camera_device": logical_camera_device,
         "tags": tags,
         "poses": poses,
         "target": target,
@@ -747,6 +783,91 @@ def draw_tags(frame: np.ndarray, tags_result: dict[str, Any]) -> np.ndarray:
         cv2.polylines(out, [pts], True, color, 2)
         cx, cy = map(int, tag["center_px"])
         cv2.putText(out, f"id {tid} ~{mm}mm", (cx + 6, cy - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
+    return out
+
+
+def draw_grasp_overlay(frame: np.ndarray, plan_result: dict[str, Any]) -> np.ndarray:
+    out = draw_tags(frame, (plan_result.get("tags") or {}))
+    h, w = out.shape[:2]
+    img_center = (int(round(w / 2.0)), int(round(h / 2.0)))
+    cv2.drawMarker(out, img_center, (255, 255, 255), cv2.MARKER_CROSS, 22, 1)
+
+    obj = (plan_result.get("object_detection") or {})
+    if obj.get("ok"):
+        bbox = obj.get("bbox_xyxy") or []
+        if len(bbox) >= 4:
+            x1, y1, x2, y2 = [int(round(float(v))) for v in bbox[:4]]
+            cv2.rectangle(out, (x1, y1), (x2, y2), (80, 200, 255), 2)
+            label = f"det {obj.get('backend', 'object')} conf {float(obj.get('confidence') or 0.0):.2f}"
+            cv2.putText(
+                out,
+                label,
+                (max(4, x1), max(18, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (80, 200, 255),
+                2,
+            )
+
+    grip = (plan_result.get("grip_point") or {})
+    if grip.get("ok"):
+        center = grip.get("grip_center_px") or []
+        axis = grip.get("grip_axis_px") or []
+        if len(axis) >= 2:
+            p0 = (int(round(float(axis[0][0]))), int(round(float(axis[0][1]))))
+            p1 = (int(round(float(axis[1][0]))), int(round(float(axis[1][1]))))
+            cv2.line(out, p0, p1, (255, 200, 0), 2)
+        if len(center) >= 2:
+            gc = (int(round(float(center[0]))), int(round(float(center[1]))))
+            cv2.circle(out, gc, 7, (0, 255, 255), 2)
+            cv2.line(out, img_center, gc, (0, 255, 255), 1)
+            err = grip.get("approach_error_px") or []
+            msg = f"grip {gc[0]},{gc[1]}"
+            if len(err) >= 2:
+                msg += f" err {float(err[0]):+.0f},{float(err[1]):+.0f}px"
+            cv2.putText(out, msg, (max(4, gc[0] + 8), max(20, gc[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 255), 2)
+
+    preview = (plan_result.get("preview") or {})
+    plan = preview.get("plan") or []
+    target = (plan_result.get("target") or {})
+    source = str((target.get("source") or grip.get("source") or "—"))
+    logical_camera_device = plan_result.get("logical_camera_device")
+    hud_lines = [
+        f"vision: {'OK' if plan_result.get('ok') else 'NO'} | src: {source}",
+        f"cam: {logical_camera_device if logical_camera_device is not None else '—'} | tags: {len(((plan_result.get('tags') or {}).get('tags') or []))} | stages: {len(plan)}",
+    ]
+    if logical_camera_device is not None:
+        hud_lines.append(
+            "preview: heuristic base estimate"
+            + (" + per-camera offset" if any(abs(v) > 1e-9 for v in camera_device_preview_offset_m(logical_camera_device)) else "")
+        )
+    base_xyz = target.get("base_xyz_m") or []
+    if len(base_xyz) >= 3:
+        hud_lines.append(
+            f"target xyz: {float(base_xyz[0]):.3f}, {float(base_xyz[1]):.3f}, {float(base_xyz[2]):.3f} m"
+        )
+    y0 = 22
+    for idx, line in enumerate(hud_lines):
+        yy = y0 + idx * 18
+        cv2.putText(out, line, (10, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 236, 245), 3)
+        cv2.putText(out, line, (10, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (15, 23, 42), 1)
+
+    if plan:
+        rail_left = 14
+        rail_right = max(rail_left + 32, w - 14)
+        rail_y = h - 28
+        cv2.line(out, (rail_left, rail_y), (rail_right, rail_y), (71, 85, 105), 2)
+        names = [str(step.get("stage") or f"s{i + 1}") for i, step in enumerate(plan)]
+        denom = max(1, len(names) - 1)
+        for idx, step_name in enumerate(names):
+            x = int(round(rail_left + (rail_right - rail_left) * (idx / denom))) if len(names) > 1 else int(round((rail_left + rail_right) / 2.0))
+            color = (16, 185, 129) if step_name == "grasp" else ((245, 158, 11) if step_name == "approach" else (147, 197, 253))
+            cv2.circle(out, (x, rail_y), 6, color, -1)
+            cv2.putText(out, step_name, (max(4, x - 22), rail_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 2)
+            step_xyz = (plan[idx].get("target_xyz_m") or []) if idx < len(plan) else []
+            if len(step_xyz) >= 3:
+                xyz_msg = f"{float(step_xyz[0]):.2f}/{float(step_xyz[1]):.2f}/{float(step_xyz[2]):.2f}"
+                cv2.putText(out, xyz_msg, (max(4, x - 24), min(h - 6, rail_y + 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (203, 213, 225), 1)
     return out
 
 
