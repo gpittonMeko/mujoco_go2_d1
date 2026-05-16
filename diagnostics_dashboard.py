@@ -6131,14 +6131,40 @@ def background_run() -> None:
 
 
 _DASHBOARD_HTML_PATH = PROJECT_ROOT / "templates" / "dashboard.html"
-_DASHBOARD_HTML_CACHE_MT: float | None = None
+_DASHBOARD_HTML_PARTIALS = {
+    '{% include "_always_cam_strip.html" %}': PROJECT_ROOT / "templates" / "_always_cam_strip.html",
+    '{% include "_calibration_panel.html" %}': PROJECT_ROOT / "templates" / "_calibration_panel.html",
+}
+_DASHBOARD_HTML_CACHE_MT: tuple[float | None, ...] | None = None
 _DASHBOARD_HTML_CACHE_TEXT: str = ""
+
+
+def _expand_dashboard_template_partials(raw: str) -> str:
+    out = raw
+    for needle, path in _DASHBOARD_HTML_PARTIALS.items():
+        try:
+            repl = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise TemplateNotFound(path.name) from exc
+        out = out.replace(needle, repl)
+    return out
+
+
+def _dashboard_template_mtimes() -> tuple[float | None, ...]:
+    paths = [_DASHBOARD_HTML_PATH, *_DASHBOARD_HTML_PARTIALS.values()]
+    vals: list[float | None] = []
+    for p in paths:
+        try:
+            vals.append(float(p.stat().st_mtime))
+        except OSError:
+            vals.append(None)
+    return tuple(vals)
 
 
 def _load_dashboard_html() -> str:
     """Carica il markup principale da file (evita monolite da migliaia di righe nel .py)."""
     try:
-        return _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+        return _expand_dashboard_template_partials(_DASHBOARD_HTML_PATH.read_text(encoding="utf-8"))
     except OSError as exc:
         return (
             "<!doctype html><html><head><meta charset=\"utf-8\"/><title>Dashboard</title></head>"
@@ -6147,15 +6173,12 @@ def _load_dashboard_html() -> str:
 
 
 def _get_dashboard_html() -> str:
-    """Markup della dashboard: ricarica da disco se ``dashboard.html`` cambia (no riavvio Flask)."""
+    """Markup della dashboard: ricarica da disco se ``dashboard.html`` o i partial cambiano (no riavvio Flask)."""
     global _DASHBOARD_HTML_CACHE_MT, _DASHBOARD_HTML_CACHE_TEXT
-    try:
-        mtime = float(_DASHBOARD_HTML_PATH.stat().st_mtime)
-    except OSError:
-        return _load_dashboard_html()
-    if _DASHBOARD_HTML_CACHE_MT != mtime or not _DASHBOARD_HTML_CACHE_TEXT:
-        _DASHBOARD_HTML_CACHE_TEXT = _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
-        _DASHBOARD_HTML_CACHE_MT = mtime
+    mtimes = _dashboard_template_mtimes()
+    if _DASHBOARD_HTML_CACHE_MT != mtimes or not _DASHBOARD_HTML_CACHE_TEXT:
+        _DASHBOARD_HTML_CACHE_TEXT = _load_dashboard_html()
+        _DASHBOARD_HTML_CACHE_MT = mtimes
     return _DASHBOARD_HTML_CACHE_TEXT
 
 
