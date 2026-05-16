@@ -1922,13 +1922,18 @@
         const data = await res.json();
         const pre = document.getElementById('planSnapshot');
         if (pre) pre.textContent = JSON.stringify(data, null, 2);
-        const label = data.ok ? 'target ok' : 'cerca tag';
+        const selA = data.selected_grasp_assessment || {};
+        let label = 'cerca tag/depth';
+        if (selA.validated_3d) label = '3D validato';
+        else if (selA.validated_source_3d) label = '3D osservato';
+        else if (selA.preview_only) label = 'preview euristica';
+        else if (data.ok) label = 'target ok';
         setText('boxStatus', label);
         const bs = document.getElementById('boxStatus');
-        if (bs) bs.className = data.ok ? 'ok' : 'warn';
+        if (bs) bs.className = selA.validated_3d ? 'ok' : (selA.preview_only ? 'warn' : (data.ok ? 'ok' : 'warn'));
         setText('alwaysBoxStatus', label);
         const bsa = document.getElementById('alwaysBoxStatus');
-        if (bsa) bsa.className = 'pill ' + (data.ok ? 'ok' : 'warn');
+        if (bsa) bsa.className = 'pill ' + (selA.validated_3d ? 'ok' : (selA.preview_only ? 'warn' : (data.ok ? 'ok' : 'warn')));
         updateBigTagState(data);
         updateTagSummaryFromPlan(data);
         appendAprilTagLog(data);
@@ -1961,6 +1966,9 @@
       const ids = []
         .concat((s0.ids || []).map((x) => 'cam0:' + x))
         .concat((s6.ids || []).map((x) => 'cam6:' + x));
+      const selA = data.selected_grasp_assessment || {};
+      const ds = data.object_detector || {};
+      const dsScope = data.object_detector_scope || {};
       if (tagBox) {
         tagBox.className = 'big-state ' + ((boxSeen || objectSeen) ? 'ok' : (anySeen ? 'warn' : 'bad'));
         tagBox.innerHTML =
@@ -1972,29 +1980,35 @@
         const gp = data.selected_grip_point || {};
         const err = gp.approach_error_px || [];
         const area = gp.box_area_px != null ? gp.box_area_px : '—';
-        gripBox.className = 'big-state ' + (gripSeen ? 'ok' : 'bad');
+        const title = selA.validated_3d ? 'CANDIDATO 3D VALIDATO' : (selA.validated_source_3d ? '3D OSSERVATO / IK NON PRONTA' : (selA.preview_only ? 'SOLO PREVIEW EURISTICA' : (gripSeen ? 'PUNTO PRESA OK' : 'PUNTO PRESA ASSENTE')));
+        gripBox.className = 'big-state ' + (selA.validated_3d ? 'ok' : ((selA.validated_source_3d || gripSeen) ? 'warn' : 'bad'));
         gripBox.innerHTML =
-          '<strong>' + (gripSeen ? 'PUNTO PRESA OK' : 'PUNTO PRESA ASSENTE') + '</strong>'
+          '<strong>' + title + '</strong>'
           + '<span class="small">src: ' + (gp.source || '—')
+          + ' · assessment: ' + (selA.label_it || '—')
           + ' · center: ' + (gp.grip_center_px ? gp.grip_center_px.join(',') : '—')
           + ' · err px: ' + (err.length ? err.join(',') : '—')
           + ' · area: ' + area + '</span>';
       }
       if (ikBox) {
-        ikBox.className = 'big-state ' + (data.ok ? 'ok' : 'warn');
+        const title = selA.execution_allowed ? 'ESEGUIBILE' : (selA.validated_source_3d ? '3D OSSERVATO / TARGET O IK DA CHIUDERE' : (selA.preview_only ? 'PREVIEW / NON ESEGUIRE' : (data.ok ? 'IK PRONTA' : 'IK NON PRONTA')));
+        ikBox.className = 'big-state ' + (selA.execution_allowed ? 'ok' : ((selA.preview_only || selA.validated_source_3d) ? 'warn' : (data.ok ? 'ok' : 'warn')));
         ikBox.innerHTML =
-          '<strong>' + (data.ok ? 'IK PRONTA' : 'IK NON PRONTA') + '</strong>'
-          + '<span class="small">camera scelta: ' + (data.selected_camera ?? '—') + '</span>';
+          '<strong>' + title + '</strong>'
+          + '<span class="small">camera scelta: ' + (data.selected_camera ?? '—')
+          + ' · source_kind: ' + (selA.source_kind || '—') + '</span>';
       }
       if (detBox) {
-        const ds = data.object_detector || {};
         const backend0 = s0.object_backend || '—';
         const backend6 = s6.object_backend || '—';
         const hasModel = !!ds.model_exists;
+        const labels = (dsScope.trained_labels || []).slice(0, 8);
         detBox.className = 'big-state ' + (objectSeen ? 'ok' : (hasModel ? 'warn' : 'warn'));
         detBox.innerHTML =
           '<strong>' + (objectSeen ? 'DETECTOR ATTIVO' : (hasModel ? 'MODELLO PRESENTE / NO BOX' : 'YOLO NON CONFIGURATO')) + '</strong>'
           + '<span class="small">cam0: ' + backend0 + ' · cam6: ' + backend6
+          + ' · scope: ' + (dsScope.label_it || '—')
+          + ' · labels: ' + (labels.length ? labels.join(', ') : 'n/d')
           + ' · model: ' + (ds.model_path || 'nessuno') + '</span>';
       }
     }
@@ -2004,12 +2018,13 @@
         const det = c.tags;
         const list = (det && det.tags) ? det.tags : [];
         const camErr = c.error || (det && det.error);
+        const ass = c.grasp_assessment || {};
         if (camErr) {
           return '<span class="bad">Camera / planner:</span> ' + String(camErr).slice(0, 200);
         }
         if (!list.length) {
           if (c.object_detection && c.object_detection.ok) {
-            return '<span class="ok">Box detector OK</span> · ' + (c.object_detection.backend || 'detector')
+            return '<span class="warn">' + (ass.label_it || 'Box detector OK') + '</span> · ' + (c.object_detection.backend || 'detector')
               + ' · conf ' + (c.object_detection.confidence ?? '—')
               + ' · grip ' + ((c.grip_point && c.grip_point.grip_center_px) ? c.grip_point.grip_center_px.join(',') : '—');
           }
@@ -2020,6 +2035,7 @@
         return (
           '<span class="ok">Sì — ' + list.length + ' tag (id: ' + ids + ')</span>'
           + (ik ? ' · <span class="ok">anteprima IK ok</span>' : ' · <span class="warn">IK non pronto (pose/niente target)</span>')
+          + ' · <span class="' + (ass.validated_3d ? 'ok' : 'warn') + '">' + (ass.label_it || 'assessment n/d') + '</span>'
           + (c.object_detection && c.object_detection.ok ? ' · detector ' + (c.object_detection.backend || 'ok') : '')
         );
       }
@@ -2205,6 +2221,8 @@
           fusion_ready_for_execute: d.fusion_ready_for_execute,
           grip_detection_any: d.grip_detection_any,
           selected_camera: d.selected_camera,
+          selected_grasp_assessment: d.selected_grasp_assessment,
+          grasp_assessment: d.grasp_assessment,
           candidates: d.candidates,
           diagnose_hints: d.diagnose_hints,
         };

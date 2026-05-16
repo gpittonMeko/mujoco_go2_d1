@@ -121,6 +121,8 @@ def main() -> int:
     assert isinstance(gp.get("narrative_it"), list)
     assert "candidates" in gp
     assert "true_zero_json" in gp
+    assert "grasp_assessment" in gp
+    assert "selected_grasp_assessment" in gp
     assert gp.get("front_first_flow_enabled") is True
     assert gp.get("preferred_execution_flow") == [
         "front_camera_detect_object",
@@ -128,6 +130,14 @@ def main() -> int:
         "grasp_from_start",
         "return_to_start",
     ]
+
+    r = client.get("/api/box/plan")
+    assert r.status_code == 200
+    bp = r.get_json()
+    assert bp.get("ok") in (True, False)
+    assert "grasp_assessment" in bp
+    assert "selected_grasp_assessment" in bp
+    assert "object_detector_scope" in bp
 
     r = client.get("/api/arm/ui_tuning")
     assert r.status_code == 200

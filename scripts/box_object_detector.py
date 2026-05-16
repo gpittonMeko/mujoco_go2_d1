@@ -19,11 +19,91 @@ import cv2
 import numpy as np
 
 _MODEL_CACHE: dict[str, Any] = {}
+_MODEL_META_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _infer_model_family(model_path: str | None) -> str | None:
+    if not model_path:
+        return None
+    name = Path(model_path).name.lower()
+    if "world" in name:
+        return "yolo_world"
+    if "ground" in name and "dino" in name:
+        return "grounding_dino"
+    if "owl" in name:
+        return "owl"
+    if name.endswith('.engine'):
+        return "tensorrt_engine"
+    if name.endswith('.onnx'):
+        return "onnx_detector"
+    if name.endswith('.pt'):
+        return "ultralytics_pt"
+    return "unknown"
+
+
+def _infer_training_scope(model_family: str | None, labels: list[str]) -> tuple[str, bool, str]:
+    fam = (model_family or "").lower()
+    if fam == "yolo_world" or fam in {"grounding_dino", "owl"}:
+        return (
+            "open_vocabulary_text_prompted",
+            True,
+            "Usalo per ricerca semantica 2D; per grasp 3D vero servono depth/pose/grasp separati.",
+        )
+    if labels:
+        return (
+            "closed_set_labels",
+            False,
+            "Modello chiuso: puoi usare con buona confidenza solo le classi elencate in trained_labels.",
+        )
+    return (
+        "heuristic_only",
+        False,
+        "Nessun modello oggetti configurato: resta solo il fallback 2D euristico per preview/debug.",
+    )
+
+
+def _model_metadata(model_path: str | None) -> dict[str, Any]:
+    if not model_path:
+        scope, open_vocab, note = _infer_training_scope(None, [])
+        return {
+            "model_family": None,
+            "trained_labels": [],
+            "training_scope": scope,
+            "open_vocabulary": open_vocab,
+            "recommended_use_it": note,
+        }
+    cached = _MODEL_META_CACHE.get(model_path)
+    if cached is not None:
+        return dict(cached)
+    labels: list[str] = []
+    family = _infer_model_family(model_path)
+    p = Path(model_path).expanduser()
+    if p.is_file() and p.suffix.lower() in {".pt", ".engine", ".onnx"}:
+        try:
+            model = _load_ultralytics_model(str(p))
+            names = getattr(model, "names", {}) or {}
+            if isinstance(names, dict):
+                labels = [str(v) for _, v in sorted(names.items(), key=lambda kv: kv[0])]
+            elif isinstance(names, (list, tuple)):
+                labels = [str(v) for v in names]
+        except Exception:
+            labels = []
+    scope, open_vocab, note = _infer_training_scope(family, labels)
+    meta = {
+        "model_family": family,
+        "trained_labels": labels,
+        "training_scope": scope,
+        "open_vocabulary": open_vocab,
+        "recommended_use_it": note,
+    }
+    _MODEL_META_CACHE[model_path] = dict(meta)
+    return meta
 
 
 def detector_status() -> dict[str, Any]:
     model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
     p = Path(model_path).expanduser() if model_path else None
+    meta = _model_metadata(str(p) if p else None)
     return {
         "ok": True,
         "backend_preference": "tensorrt/onnx/ultralytics",
@@ -31,7 +111,8 @@ def detector_status() -> dict[str, Any]:
         "model_exists": bool(p and p.is_file()),
         "classic_fallback_enabled": os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower()
         in {"1", "true", "yes"},
-        "recommended_models": ["YOLO26n TensorRT FP16", "YOLO11n TensorRT FP16"],
+        "recommended_models": ["YOLO-World small TensorRT FP16", "YOLO11n TensorRT FP16"],
+        **meta,
     }
 
 

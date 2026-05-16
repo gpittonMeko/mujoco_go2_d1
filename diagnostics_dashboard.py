@@ -52,6 +52,11 @@ from go2_dashboard.cameras import (
     _v4l_index_for_logical_camera,
     usb_auto_v4l_mapping,
 )
+from go2_dashboard.grasp_assessment import (
+    candidate_grasp_assessment,
+    detector_training_scope,
+    plan_grasp_assessment,
+)
 
 
 def _scene_mesh_manifest() -> dict[str, list[str]]:
@@ -1334,7 +1339,9 @@ def _candidate_ik_detail(c: dict[str, Any]) -> dict[str, Any]:
         "box_tag_ids": box_ids,
         "object_detection_ok": bool(obj.get("ok")),
         "object_detection_backend": obj.get("backend"),
+        "object_detection_label": obj.get("label"),
         "object_detection_confidence": obj.get("confidence"),
+        "object_bbox_area_ratio": obj.get("bbox_area_ratio"),
         "grip_point_ok": bool(grip.get("ok")),
         "grip_point_source": grip.get("source"),
         "grip_center_px": grip.get("grip_center_px"),
@@ -1351,20 +1358,17 @@ def _candidate_ik_detail(c: dict[str, Any]) -> dict[str, Any]:
         "ik_failed_stage": preview.get("failed_stage"),
         "plan_stage_count": len(preview.get("plan") or []),
         "candidate_top_ok": bool(c.get("ok")),
+        "grasp_assessment": candidate_grasp_assessment(c),
     }
 
 
 def _plan_ready_for_fused_ik(plan: dict[str, Any]) -> bool:
-    """True se il piano «dual-camera» ha una traiettoria IK eseguibile (camera selezionata dal punteggio)."""
+    """True solo se il piano selezionato è eseguibile **e** validato 3D, salvo override esplicito per preview euristiche."""
     if not plan.get("ok"):
         return False
-    sel = plan.get("selected")
-    if not isinstance(sel, dict):
-        return False
-    if not sel.get("absolute_ik_safe", True):
-        return False
-    preview = sel.get("preview") or {}
-    return bool(preview.get("ok") and (preview.get("plan") or []))
+    assessment = plan_grasp_assessment(plan)
+    selected = assessment.get("selected") or {}
+    return bool(selected.get("execution_allowed"))
 
 
 def _plan_has_grip_detection(plan: dict[str, Any]) -> bool:
@@ -1382,6 +1386,8 @@ def grasp_pipeline_status() -> dict[str, Any]:
     diag = arm_diagnose_motion()
     cands_raw = plan.get("candidates") or {}
     per_dev: dict[str, Any] = {str(d): _candidate_ik_detail(cands_raw.get(str(d)) or {}) for d in (0, 6)}
+    plan_assessment = plan_grasp_assessment(plan)
+    selected_assessment = plan_assessment.get("selected") or {}
     story: list[str] = []
     real = bool(diag.get("real_arm_env"))
     if not real:
@@ -1406,22 +1412,21 @@ def grasp_pipeline_status() -> dict[str, Any]:
     fusion_ok = bool(plan.get("ok"))
     sel = plan.get("selected_camera")
     grip_any = _plan_has_grip_detection(plan)
-    if fusion_ok:
-        safe_note = ""
-        selected_raw = plan.get("selected") if isinstance(plan.get("selected"), dict) else {}
-        if selected_raw and not selected_raw.get("absolute_ik_safe", True):
-            safe_note = " Nota: la camera scelta è polso e l'IK assoluta è marcata non sicura; verrà usata solo per visual-servo."
+    if selected_assessment.get("validated_3d"):
         story.append(
-            f"⑤ Piano IK globale OK (camera scelta: {sel}). Esecuzione: dopo doppio lock tag sul polso, "
-            "oppure — se abiliti GO2_GRASP_USE_FUSED_PLAN_IK=1 — due snapshot consecutivi con piano ok." + safe_note
+            f"⑤ Candidato grasp 3D validato (camera scelta: {sel}, sorgente: {selected_assessment.get('source_kind')})."
+        )
+    elif selected_assessment.get("preview_only"):
+        story.append(
+            f"⑤ Solo preview euristica 2D/monoculare (camera scelta: {sel}). Utile per debug/UI, non equivalente a grasp 3D validato."
         )
     elif grip_any:
         story.append(
-            "⑤ Punto presa 2D disponibile (tag o detector), ma IK globale non pronta: il visual servo può centrare/avvicinare prima dell'IK."
+            "⑤ Punto presa 2D disponibile, ma senza validazione 3D: il visual servo può centrare/avvicinare prima di una vera policy di grasp."
         )
     else:
         story.append(
-            "⑤ Piano IK globale non pronto: serve tag scatola 0–3 oppure detector box (YOLO/TensorRT o fallback) con punto presa."
+            "⑤ Piano grasp non pronto: servono tag scatola 0–3 oppure depth/pose 3D vera; il fallback bbox resta solo preview euristica."
         )
         for dev in (0, 6):
             d = per_dev[str(dev)]
@@ -1430,7 +1435,7 @@ def grasp_pipeline_status() -> dict[str, Any]:
                 continue
             if d.get("object_detection_ok"):
                 story.append(
-                    f"   · /dev/video{dev}: detector {d.get('object_detection_backend')} vede grip point, ma target/IK non ancora pronto."
+                    f"   · /dev/video{dev}: detector {d.get('object_detection_backend')} vede grip point, ma non è ancora un candidato 3D validato."
                 )
                 continue
             if not d.get("tag_ids_seen"):
@@ -1438,7 +1443,7 @@ def grasp_pipeline_status() -> dict[str, Any]:
                 continue
             if not d.get("has_box_tags_for_ik"):
                 story.append(
-                    f"   · /dev/video{dev}: vedi solo landmark (es. id5); per IK presa servono tag scatola 0–3 nel frame."
+                    f"   · /dev/video{dev}: vedi solo landmark (es. id5); per 3D box servono tag scatola 0–3 o depth/pose reale."
                 )
                 continue
             if not d.get("target_ok"):
@@ -1449,11 +1454,12 @@ def grasp_pipeline_status() -> dict[str, Any]:
                 story.append(f"   · /dev/video{dev}: target ok ma IK fallita (stage/err: {fe}).")
 
     fused_env = _effective_grasp_bool("use_fused_plan_ik", "GO2_GRASP_USE_FUSED_PLAN_IK")
-    if not fused_env and fusion_ok and not per_dev["0"].get("candidate_top_ok") and per_dev["6"].get("candidate_top_ok"):
+    if selected_assessment.get("preview_only") and not selected_assessment.get("allow_heuristic_execute"):
         story.append(
-            "Suggerimento: il RealSense ha piano ok ma il polso no — il loop resta in ricerca finché video0 non locka. "
-            "Per eseguire IK dalla camera migliore senza lock polso: GO2_GRASP_USE_FUSED_PLAN_IK=1 (solo se sicuro)."
+            "⑥ Safety gate: preview euristica 2D non promossa a esecuzione. Per sbloccarla esplicitamente: GO2_GRASP_ALLOW_HEURISTIC_EXECUTE=1 (rischioso)."
         )
+    elif fused_env and selected_assessment.get("validated_3d"):
+        story.append("⑥ Piano fuso utilizzabile: il candidato selezionato è validato 3D ed è ammesso all'esecuzione.")
 
     fusion_ready_exec = _plan_ready_for_fused_ik(plan)
     front_first_flow_enabled = _front_first_grasp_flow_enabled()
@@ -1476,6 +1482,7 @@ def grasp_pipeline_status() -> dict[str, Any]:
             "GO2_ENABLE_REAL_ARM": real,
             "GO2_GRASP_EXECUTE_ARM": "1" if _grasp_execute_enabled() else "0",
             "GO2_GRASP_USE_FUSED_PLAN_IK": "1" if fused_env else "0",
+            "GO2_GRASP_ALLOW_HEURISTIC_EXECUTE": os.environ.get("GO2_GRASP_ALLOW_HEURISTIC_EXECUTE", "0"),
             "GO2_FRONT_CAMERA_FALLBACK_GRASP": "1"
             if _effective_grasp_bool("front_camera_fallback_grasp", "GO2_FRONT_CAMERA_FALLBACK_GRASP")
             else "0",
@@ -1504,6 +1511,8 @@ def grasp_pipeline_status() -> dict[str, Any]:
         "front_first_flow_enabled": front_first_flow_enabled,
         "preferred_execution_flow": preferred_execution_flow,
         "candidates": per_dev,
+        "grasp_assessment": plan_assessment,
+        "selected_grasp_assessment": selected_assessment,
         "diagnose_hints": diag.get("hints") or [],
         "narrative_it": story,
     }
@@ -4591,12 +4600,21 @@ def publish_d1_arm_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
     selected = plan_payload.get("selected") or {}
     preview = selected.get("preview") or {}
     stages = preview.get("plan") or []
+    assessment = candidate_grasp_assessment(selected if isinstance(selected, dict) else {})
     if not (selected.get("absolute_ik_safe", True)):
         return {
             "ok": False,
             "attempted_motion": False,
             "reason": "selected_camera_absolute_ik_not_safe",
             "hint": "La camera polso vede il target in frame polso: usa visual-servo o frontale/calibrazione, non IK assoluta base.",
+        }
+    if not assessment.get("execution_allowed"):
+        return {
+            "ok": False,
+            "attempted_motion": False,
+            "reason": "selected_candidate_not_allowed_for_execute",
+            "grasp_assessment": assessment,
+            "hint": "Il candidato corrente è preview euristica/non validato 3D. Servono tag box o depth/pose valida, salvo override GO2_GRASP_ALLOW_HEURISTIC_EXECUTE=1.",
         }
     if not plan_payload.get("ok") or not preview.get("ok") or not stages:
         return {"ok": False, "attempted_motion": False, "reason": "No valid IK plan to execute"}
@@ -5587,7 +5605,8 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
         c6 = _camera_candidate(final_plan, 6)
         if c6.get("ok"):
             fp = c6
-    if fallback_ok and fp and fp.get("ok"):
+    fp_assessment = candidate_grasp_assessment(fp) if isinstance(fp, dict) else {}
+    if fallback_ok and fp and fp.get("ok") and fp_assessment.get("execution_allowed"):
         if ARM_GRASP_ABORT.is_set():
             return _grasp_abort_return(
                 log=log,
@@ -5609,6 +5628,19 @@ def run_wrist_guided_grasp_loop(max_cycles: int | None = None) -> dict[str, Any]
             "dry_run_plan": first_plan,
             "alignment_prelude": alignment_prelude,
             "warning": "Presa da IK solo RealSense (camera 6): il polso non ha confermato tag — solo se area libera e rischio accettabile.",
+        }
+
+    if fallback_ok and fp and fp.get("ok") and not fp_assessment.get("execution_allowed"):
+        return {
+            "ok": False,
+            "attempted_motion": _attempted_from_log(),
+            "grasp_policy": "front_camera_fallback_blocked_not_validated_3d",
+            "reason": "front_camera_fallback_not_validated_3d_candidate",
+            "grasp_assessment": fp_assessment,
+            "cycles": log,
+            "final_plan": final_plan,
+            "dry_run_plan": first_plan,
+            "alignment_prelude": alignment_prelude,
         }
 
     return {
@@ -6401,6 +6433,13 @@ def api_box_plan() -> Any:
                 "ik_ok": bool(((cand or {}).get("preview") or {}).get("ok")),
             }
         selected_grip = (selected or {}).get("grip_point") if selected else None
+        assessment = plan_grasp_assessment({
+            "ok": ok,
+            "selected_camera": None if selected is None else int(selected_key),
+            "selected": selected,
+            "candidates": candidates,
+        })
+        detector_scope = detector_training_scope(det_status)
         return jsonify({
             "ok": ok,
             "mode": "dual-camera-fusion",
@@ -6412,9 +6451,12 @@ def api_box_plan() -> Any:
             "object_visible_any": any_object,
             "grip_point_visible_any": any_grip,
             "selected_grip_point": selected_grip,
+            "selected_grasp_assessment": assessment.get("selected"),
+            "grasp_assessment": assessment,
             "visible_summary": visible_summary,
             "tag_calibration": tag_cal,
             "object_detector": det_status,
+            "object_detector_scope": detector_scope,
             "april_tag_pipeline": {
                 "go2_local": GO2_LOCAL,
                 "opencv_aruco_module": opencv_aruco,
