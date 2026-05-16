@@ -69,6 +69,8 @@ REMOTE_PUSH_FILES = [
     "scripts/udev/99-go2-realsense-dashboard.rules",
     "scripts/go2-visual-dashboard.service",
     "templates/dashboard.html",
+    "templates/_always_cam_strip.html",
+    "templates/_calibration_panel.html",
 ]
 # ``data/vis_geometry_presets.json`` è gestito a parte: non sovrascrivere i preset salvati in laboratorio
 # sulla NX (vedi blocco ``main()``). Primo deploy: copia dal repo se il file remoto non esiste.
