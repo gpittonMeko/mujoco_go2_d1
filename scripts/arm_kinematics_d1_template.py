@@ -149,15 +149,25 @@ def fk_wrist_camera_center_m(
     )
 
 
+def _mjcf_fixed_camera_rotation(ex: float, ey: float, ez: float) -> np.ndarray:
+    """Rotazione di una camera MJCF ``mode=\"fixed\"`` da Euler xyz verso world.
+
+    Per le camere del modello Go2/D1 la convenzione che allinea il frustum al muso reale è
+    ``Rx(ex) @ Ry(ey) @ Rz(ez)``. Con ``euler=\"0 -pi/2 -pi/2\"`` il versore vista ``-Z``
+    cade su ``+X`` del robot (avanti), coerente con la posa fisica della front camera.
+    """
+    rx = _axis_angle(np.array([1.0, 0.0, 0.0], dtype=float), ex)
+    ry = _axis_angle(np.array([0.0, 1.0, 0.0], dtype=float), ey)
+    rz = _axis_angle(np.array([0.0, 0.0, 1.0], dtype=float), ez)
+    return rx @ ry @ rz
+
+
 def fk_wrist_camera_optical_axis_unit_m(q: list | np.ndarray) -> np.ndarray:
     """Asse ottico ``wrist_camera`` come MJCF: ``euler="0 -1.5708 -1.5708"``, vista lungo -Z camera."""
     qn = _clamp_q(np.asarray(q, dtype=float))
     _, R_link = fk_full(qn)
     ex, ey, ez = 0.0, -float(np.pi) / 2.0, -float(np.pi) / 2.0
-    rz = _axis_angle(np.array([0.0, 0.0, 1.0], dtype=float), ez)
-    ry = _axis_angle(np.array([0.0, 1.0, 0.0], dtype=float), ey)
-    rx = _axis_angle(np.array([1.0, 0.0, 0.0], dtype=float), ex)
-    r_cam = rz @ ry @ rx
+    r_cam = _mjcf_fixed_camera_rotation(ex, ey, ez)
     v_local = r_cam @ np.array([0.0, 0.0, -1.0], dtype=float)
     v_arm = R_link @ v_local
     n = float(np.linalg.norm(v_arm))
@@ -177,18 +187,14 @@ def fk_wrist_camera_view_axis_unit_m(
 def depth_camera_optical_axis_unit_arm_base() -> np.ndarray:
     """
     Versore asse ottico ``depth_camera`` nel frame base braccio (arm_link00 = FK).
-    Usa gli stessi angoli ``euler`` del MJCF su base_link e convenzione MuJoCo (camera -Z).
-    Composizione rotazioni: Rz(ez) @ Ry(ey) @ Rx(ex) con ex,ey,ez = euler del file.
+    Con ``euler=\"0 -1.57 -1.57\"`` del MJCF il frustum corretto guarda lungo ``+X`` robot.
     """
     ex, ey, ez = 0.0, -float(np.pi) / 2.0, -float(np.pi) / 2.0
-    rz = _axis_angle(np.array([0.0, 0.0, 1.0], dtype=float), ez)
-    ry = _axis_angle(np.array([0.0, 1.0, 0.0], dtype=float), ey)
-    rx = _axis_angle(np.array([1.0, 0.0, 0.0], dtype=float), ex)
-    r = rz @ ry @ rx
+    r = _mjcf_fixed_camera_rotation(ex, ey, ez)
     v = r @ np.array([0.0, 0.0, -1.0], dtype=float)
     n = float(np.linalg.norm(v))
     if n < 1e-9:
-        return np.array([0.0, 0.0, -1.0], dtype=float)
+        return np.array([1.0, 0.0, 0.0], dtype=float)
     return (v / n).astype(float)
 
 

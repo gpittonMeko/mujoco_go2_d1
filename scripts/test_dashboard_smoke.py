@@ -91,8 +91,14 @@ def main() -> int:
     assert "refreshDetectionNow()" in body
     assert 'id="alwaysCamStrip"' in body or "alwaysCamStrip" in body
     assert "aprilTagLog" in body
+    assert 'function arm3dProjectionNiceStepM(' in body
+    assert 'function arm3dProjectionScaleBarInfo(' in body
+    assert 'viewer_topdown_footprint_base_link_m' in body
+    assert 'viewer_target_front_tag0_base_link_m' in body
+    assert body.count("'X/Y · origin=base_link'") >= 2
+    assert body.count("'X/Z · origin=base_link'") >= 2
     assert "armMotionDiagPre" in body
-    assert "tune_tag_wait_s" in body
+
     assert "graspPipelinePre" in body
     assert "saveTrueZeroPose" in body
     assert "gotoStartFromTrueZero" in body
@@ -189,7 +195,7 @@ def main() -> int:
     assert r.status_code == 200
     vg2 = r.get_json()
     assert vg2.get("ok") is True
-    assert abs(float(vg2["effective"]["arm_vs_tag5_x"]) + 0.2) < 1e-5
+    assert abs(float(vg2["effective"]["arm_vs_tag5_x"]) + 0.19) < 1e-5
 
     r = client.get("/api/arm/vis_geometry/presets")
     assert r.status_code == 200
@@ -326,6 +332,19 @@ def main() -> int:
     vsf = sf.get("vision_snapshot") or {}
     assert vsf.get("geometry_fast_preview") is True
     assert isinstance(sf.get("scene_graph"), dict)
+    vcf = sf.get("viewer_cameras_base_link_m") or {}
+    assert [round(float(x), 5) for x in (vcf.get("front_display_base_link_m") or [])] == [0.375, 0.0, 0.01]
+    lmf = sf.get("viewer_landmarks_base_link_m") or {}
+    assert [round(float(x), 5) for x in (lmf.get("xt16_tag_m") or [])] == [0.34, 0.0, 0.14]
+    fp = sf.get("viewer_topdown_footprint_base_link_m") or {}
+    assert [round(float(x), 4) for x in (fp.get("body_box_size_m") or [])] == [0.3762, 0.0935]
+    assert [round(float(x), 4) for x in (fp.get("front_nose_center_m") or [])] == [0.285, 0.0]
+    assert abs(float(fp.get("front_nose_radius_m") or 0.0) - 0.045) < 1e-6
+    xt16c = lmf.get("xt16_lidar_cylinder_base_link_m") or {}
+    assert [round(float(x), 5) for x in (xt16c.get("center_m") or [])] == [0.34, 0.0, 0.07]
+    assert abs(float(xt16c.get("radius_m") or 0.0) - 0.05) < 1e-6
+    assert abs(float(xt16c.get("height_m") or 0.0) - 0.08) < 1e-6
+    assert [round(float(x), 5) for x in (lmf.get("object_nominal_20cm_base_link_m") or [])] == [0.575, 0.0, 0.01]
 
     r = client.get("/api/arm/scene_meshes/go2/base_0.obj")
     assert r.status_code == 200
@@ -423,14 +442,16 @@ def main() -> int:
         return math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(3))) * 1000.0
 
     _t5 = [0.35, -0.02, 0.18]
-    _av = (-0.20, 0.0, 0.0)
-    _fv = (0.20, 0.0, -0.08)
+    _av = (-0.19, 0.0, -0.08)
+    _fv = (0.185, 0.0, -0.07)
     _mount = [_t5[0] + _av[0], _t5[1] + _av[1], _t5[2] + _av[2]]
     _front = [_t5[0] + _fv[0], _t5[1] + _fv[1], _t5[2] + _fv[2]]
-    assert abs(_dist_mm(_t5, _mount) - 200.0) < 0.05, "tag5↔mount deve essere 200 mm (solo ΔX)"
-    assert abs(_dist_mm(_t5, _front) - math.hypot(200.0, 80.0)) < 0.05, "tag5↔front default ΔX/ΔZ"
-    _exp_mount_front_mm = math.hypot(400.0, 80.0)
-    assert abs(_dist_mm(_mount, _front) - _exp_mount_front_mm) < 0.05, "mount↔front (Δ 400 mm X + 80 mm Z)"
+    _exp_tag5_mount_mm = math.hypot(190.0, 80.0)
+    _exp_tag5_front_mm = math.hypot(185.0, 70.0)
+    _exp_mount_front_mm = math.sqrt((375.0) ** 2 + (10.0) ** 2)
+    assert abs(_dist_mm(_t5, _mount) - _exp_tag5_mount_mm) < 0.05, "tag5↔mount default ΔX/ΔZ"
+    assert abs(_dist_mm(_t5, _front) - _exp_tag5_front_mm) < 0.05, "tag5↔front default ΔX/ΔZ"
+    assert abs(_dist_mm(_mount, _front) - _exp_mount_front_mm) < 0.05, "mount↔front default"
 
     class _FakePlanResp:
         def get_data(self, as_text: bool = True) -> str:
@@ -452,7 +473,58 @@ def main() -> int:
             }
         ]
 
-    with patch.object(dd, "api_box_plan", lambda: _FakePlanResp()), patch(
+    class _FakePlanRespTag0:
+        def get_data(self, as_text: bool = True) -> str:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "selected_camera": 0,
+                    "selected": {
+                        "target": {"ok": True, "base_xyz_m": [0.31, -0.04, 0.12]},
+                        "preview": {"ok": True, "plan": []},
+                        "tags": {"ok": True, "tags": [{"id": 5}, {"id": 2}]},
+                        "grip_point": {"ok": True, "source": "apriltag"},
+                    },
+                    "candidates": {
+                        "6": {
+                            "poses": {
+                                "ok": True,
+                                "poses": [
+                                    {"id": 0, "camera_xyz_m": [0.0, 0.0, 0.35], "range_m": 0.35, "logical_camera_device": 6}
+                                ],
+                            }
+                        },
+                        "0": {
+                            "poses": {
+                                "ok": True,
+                                "poses": [
+                                    {"id": 5, "camera_xyz_m": [0.01, 0.02, 0.55], "range_m": 0.55, "logical_camera_device": 0}
+                                ],
+                            }
+                        },
+                    },
+                }
+            )
+
+    def _fake_tag_estimates(_poses: dict) -> list:
+        return [
+            {
+                "id": 5,
+                "base_xyz_m": [0.35, -0.02, 0.18],
+                "range_m": 0.5,
+                "camera_xyz_m": [0.01, 0.02, 0.55],
+                "logical_camera_device": 0,
+            },
+            {
+                "id": 0,
+                "base_xyz_m": [0.46, 0.03, 0.11],
+                "range_m": 0.35,
+                "camera_xyz_m": [0.0, 0.0, 0.35],
+                "logical_camera_device": 6,
+            },
+        ]
+
+    with patch.object(dd, "api_box_plan", lambda: _FakePlanRespTag0()), patch(
         "box_grasp_planner.apriltag_tag_estimates_base_m", _fake_tag_estimates
     ):
         with dd.VIS_GEOMETRY_TUNING_LOCK:
@@ -460,18 +532,31 @@ def main() -> int:
         pl = dd._arm_scene_3d_payload()
         ch = pl.get("vis_geometry_chain_mm")
         assert ch is not None, "vis_geometry_chain_mm con tag5 sintetico"
-        assert abs(float(ch["tag5_to_arm_mount_mm"]) - 200.0) < 0.2
-        assert abs(float(ch["tag5_to_front_camera_model_mm"]) - math.hypot(200.0, 80.0)) < 0.2
+        assert abs(float(ch["tag5_to_arm_mount_mm"]) - _exp_tag5_mount_mm) < 0.2
+        assert abs(float(ch["tag5_to_front_camera_model_mm"]) - _exp_tag5_front_mm) < 0.2
         assert abs(float(ch["arm_mount_to_front_camera_model_mm"]) - _exp_mount_front_mm) < 0.2
         vm = pl["vis_geometry_markers_arm_m"]
-        assert vm["arm_mount_m"][0] == 0.15 and vm["front_camera_from_tag5_m"][0] == 0.55
+        assert [round(float(x), 5) for x in vm["arm_mount_m"]] == [0.16, -0.02, 0.1]
+        assert [round(float(x), 5) for x in vm["front_camera_from_tag5_m"]] == [0.535, -0.02, 0.11]
+        lm = pl.get("viewer_landmarks_base_link_m") or {}
+        assert [round(float(x), 5) for x in (lm.get("viewer_target_front_tag0_base_link_m") or [])] == [0.61, 0.03, 0.17]
+        assert [round(float(x), 5) for x in (lm.get("object_target_base_link_m") or [])] == [0.61, 0.03, 0.17]
 
     pl_direct = dd._arm_scene_3d_payload()
     osc = pl_direct.get("mjcf_depth_optical_selfcheck_mm") or {}
+    fp2 = pl_direct.get("viewer_topdown_footprint_base_link_m") or {}
+    assert [round(float(x), 4) for x in (fp2.get("body_box_size_m") or [])] == [0.3762, 0.0935]
+    assert [round(float(x), 4) for x in (fp2.get("front_nose_center_m") or [])] == [0.285, 0.0]
     assert abs(float(osc.get("projection_on_optical_axis_mm", 0)) - 200.0) < 0.6
     assert abs(float(osc.get("chord_depth_to_nominal_mm", 0)) - 200.0) < 0.6
     _lm = pl_direct.get("viewer_landmarks_base_link_m") or {}
-    assert isinstance(_lm.get("object_nominal_20cm_base_link_m"), list) and len(_lm["object_nominal_20cm_base_link_m"]) >= 3
+    assert [round(float(x), 5) for x in (_lm.get("object_nominal_20cm_base_link_m") or [])] == [0.575, 0.0, 0.01]
+
+    from arm_kinematics_d1_template import depth_camera_optical_axis_unit_arm_base, nominal_object_along_depth_optical_arm_m
+    _ax = depth_camera_optical_axis_unit_arm_base()
+    assert [round(float(x), 5) for x in _ax.tolist()] == [1.0, 0.0, 0.0]
+    _nom20 = nominal_object_along_depth_optical_arm_m(0.20)
+    assert [round(float(x), 5) for x in _nom20.tolist()] == [0.425, 0.0, -0.05]
 
     import numpy as np
 

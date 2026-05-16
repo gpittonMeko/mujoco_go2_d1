@@ -7241,6 +7241,11 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         },
     }
 
+    front_tag0_bl = _look_at_bl_from_tags(rows6, (0,))
+    target_raw_bl = None if raw_target is None else _ab_to_bl([float(raw_target[i]) for i in range(3)])
+    target_disp_bl = None if disp_t is None else _ab_to_bl([float(disp_t[i]) for i in range(3)])
+    viewer_target_bl = front_tag0_bl if front_tag0_bl is not None else target_raw_bl
+    viewer_target_disp_bl = front_tag0_bl if front_tag0_bl is not None else target_disp_bl
     lm: dict[str, Any] = {
         "depth_camera_mjcf_m": _ab_to_bl(_depth_vis_arm.tolist()),
         "wrist_camera_mjcf_m": _ab_to_bl(wc_vis),
@@ -7249,17 +7254,20 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         "xt16_tag_m": None,
         "front_camera_slider_m": None,
         "object_nominal_20cm_base_link_m": _ab_to_bl(_nom_obj_ab.tolist()),
-        # Target di presa convertito nel frame del viewer (base_link), sia raw sia smoothed.
+        "viewer_target_front_tag0_base_link_m": None
+        if front_tag0_bl is None
+        else [round(float(front_tag0_bl[i]), 5) for i in range(3)],
+        # Target visualizzato nel viewer (base_link): priorità tag0 camera frontale, fallback target planner.
         "object_target_base_link_m": None
-        if raw_target is None
-        else _ab_to_bl([float(raw_target[i]) for i in range(3)]),
+        if viewer_target_bl is None
+        else [round(float(viewer_target_bl[i]), 5) for i in range(3)],
         "object_target_display_base_link_m": None
-        if disp_t is None
-        else _ab_to_bl([float(disp_t[i]) for i in range(3)]),
+        if viewer_target_disp_bl is None
+        else [round(float(viewer_target_disp_bl[i]), 5) for i in range(3)],
         # Alias vecchio per compatibilità frontend.
         "object_grasp_target_display_base_link_m": None
-        if disp_t is None
-        else _ab_to_bl([float(disp_t[i]) for i in range(3)]),
+        if viewer_target_disp_bl is None
+        else [round(float(viewer_target_disp_bl[i]), 5) for i in range(3)],
     }
     for row in tags_view:
         if int(row.get("id", -1)) != 5:
@@ -7302,6 +7310,24 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
             "note_it": "Simbolo XT-16: cilindro Ø10 cm × h 8 cm, AprilTag 5 sul riferimento assoluto del frame base_link (X=19 cm, Y=0, Z=8 cm)."
         }
     payload["viewer_landmarks_base_link_m"] = lm
+    _body_half_x = 0.1881
+    _body_half_y = 0.04675
+    payload["viewer_topdown_footprint_base_link_m"] = {
+        "frame": "base_link",
+        "body_box_center_m": [0.0, 0.0],
+        "body_box_size_m": [round(_body_half_x * 2.0, 4), round(_body_half_y * 2.0, 4)],
+        "body_box_corners_m": [
+            [-round(_body_half_x, 5), -round(_body_half_y, 5)],
+            [round(_body_half_x, 5), -round(_body_half_y, 5)],
+            [round(_body_half_x, 5), round(_body_half_y, 5)],
+            [-round(_body_half_x, 5), round(_body_half_y, 5)],
+        ],
+        "front_nose_center_m": [0.285, 0.0],
+        "front_nose_radius_m": 0.045,
+        "front_camera_xy_m": [round(float(front_cam_display_bl[0]), 5), round(float(front_cam_display_bl[1]), 5)],
+        "arm_mount_xy_m": [round(float(_mount_bl[0]), 5), round(float(_mount_bl[1]), 5)],
+        "note_it": "Footprint top-down Go2 nel frame base_link: box collision + naso/front camera per orientamento assoluto.",
+    }
 
     _d1m = _d1_stl_disk_summary()
     payload["d1_mesh_assets"] = _d1m
