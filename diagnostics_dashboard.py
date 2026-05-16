@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from flask import Flask, Response, abort, jsonify, render_template_string, request, send_from_directory
+from jinja2 import TemplateNotFound
 
 try:
     import cv2
@@ -6136,17 +6137,29 @@ def favicon() -> Response:
 def index() -> Response:
     url_prefix = os.environ.get("GO2_DASHBOARD_URL_PREFIX", "").strip().rstrip("/")
     script_root = url_prefix or ((request.script_root or "").rstrip("/"))
-    html = render_template_string(
-        _get_dashboard_html(),
-        go2_host=GO2_HOST,
-        xt16_host=XT16_HOST,
-        servo_arm_host=SERVO_ARM_HOST,
-        dashboard_port=int(os.environ.get("GO2_DASHBOARD_PORT", "5050")),
-        dashboard_bind=GO2_DASHBOARD_BIND,
-        go2_local="1" if GO2_LOCAL else "0",
-        script_root=script_root,
-    )
-    return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+    template_text = _get_dashboard_html()
+    status_code = 200
+    try:
+        # ``dashboard.html`` viene riletto via mtime; svuotiamo la cache Jinja così anche gli ``include``
+        # (es. ``_always_cam_strip.html``) riflettono subito le modifiche senza riavviare Flask.
+        APP.jinja_env.cache.clear()
+        html = render_template_string(
+            template_text,
+            go2_host=GO2_HOST,
+            xt16_host=XT16_HOST,
+            servo_arm_host=SERVO_ARM_HOST,
+            dashboard_port=int(os.environ.get("GO2_DASHBOARD_PORT", "5050")),
+            dashboard_bind=GO2_DASHBOARD_BIND,
+            go2_local="1" if GO2_LOCAL else "0",
+            script_root=script_root,
+        )
+    except TemplateNotFound as exc:
+        status_code = 500
+        html = (
+            "<!doctype html><html><head><meta charset=\"utf-8\"/><title>Dashboard template missing</title></head>"
+            f"<body><pre>Template include mancante o illeggibile: {exc!r}</pre></body></html>"
+        )
+    return Response(html, status=status_code, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
 @APP.route("/api/lidar/frame")
