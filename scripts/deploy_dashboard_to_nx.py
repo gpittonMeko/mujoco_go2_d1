@@ -46,6 +46,7 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/app.py",
     "go2_dashboard/legacy_mount.py",
     "go2_dashboard/cameras.py",
+    "go2_dashboard/grasp_assessment.py",
     "go2_dashboard/blueprints/__init__.py",
     "go2_dashboard/blueprints/meta.py",
     "scripts/box_grasp_planner.py",
