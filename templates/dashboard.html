@@ -1598,6 +1598,20 @@
           </div>
           <p id="arm3dStatusLine" class="small muted" style="margin-top:8px;">Carico scena…</p>
           <pre id="arm3dSceneDetail" class="compact-pre small muted" style="margin-top:6px;max-height:100px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+          <div class="flow-grid" style="margin-top:10px;">
+            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+              <h4 style="margin-top:0;">Oggetto detectato / target 3D</h4>
+              <pre id="arm3dObjectStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+            </div>
+            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+              <h4 style="margin-top:0;">Movimento previsto del braccio</h4>
+              <pre id="arm3dTrajectoryStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+            </div>
+            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+              <h4 style="margin-top:0;">Allineamento / calibrazione camere ↔ braccio</h4>
+              <pre id="arm3dAlignmentStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+            </div>
+          </div>
           <div class="flow-card" style="margin-top:8px;padding:10px 12px;border:1px dashed #475569;background:rgba(15,23,42,0.28);">
             <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
               <strong style="font-size:13px;color:#cbd5e1;">Vista dall’alto separata dal Three.js</strong>
@@ -3537,6 +3551,34 @@
       tgt.add(line);
       return line;
     }
+    function arm3dAddBoxRobotBl(center, size, colorHex, opts, group) {
+      var tgt = group || arm3d.markers;
+      if (!center || center.length < 3 || !size || size.length < 3 || !tgt || typeof THREE === 'undefined') return null;
+      var sx = Math.max(0.01, Number(size[0]) || 0.01);
+      var sy = Math.max(0.01, Number(size[1]) || 0.01);
+      var sz = Math.max(0.01, Number(size[2]) || 0.01);
+      var box = new THREE.BoxGeometry(sx, sy, sz);
+      var estimated = !!(opts && opts.estimated);
+      var fill = new THREE.Mesh(
+        box,
+        new THREE.MeshPhongMaterial({
+          color: colorHex,
+          transparent: true,
+          opacity: estimated ? 0.12 : 0.22,
+          shininess: 24,
+        })
+      );
+      fill.position.set(center[0], center[1], center[2]);
+      tgt.add(fill);
+      var edges = new THREE.EdgesGeometry(box);
+      var outline = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: estimated ? 0.78 : 0.96 })
+      );
+      outline.position.set(center[0], center[1], center[2]);
+      tgt.add(outline);
+      return { fill: fill, outline: outline };
+    }
     function arm3dSvgEsc(s) {
       return String(s == null ? '' : s)
         .replace(/&/g, '&amp;')
@@ -4228,6 +4270,47 @@
         })(li, linkStl[li]);
       }
     }
+    function arm3dUpdateMissionCards(d) {
+      var objEl = document.getElementById('arm3dObjectStatus');
+      var trajEl = document.getElementById('arm3dTrajectoryStatus');
+      var alignEl = document.getElementById('arm3dAlignmentStatus');
+      var primitive = d.viewer_detected_object_primitive || {};
+      var ass = d.selected_grasp_assessment || {};
+      var lm = d.viewer_landmarks_base_link_m || {};
+      var scope = d.object_detector_scope || {};
+      var traj = d.ik_trajectory || {};
+      var chain = d.calibration_visual_alignment || {};
+      if (objEl) {
+        var objLines = [];
+        objLines.push('assessment=' + (ass.label_it || '—') + ' | source=' + (ass.source_kind || '—'));
+        objLines.push('tier=' + (ass.tier || '—') + ' | eseguibile=' + (ass.execution_allowed ? 'sì' : 'no'));
+        objLines.push('centro=' + (primitive.center_base_link_m ? arm3dFmtVec(primitive.center_base_link_m) : '—'));
+        objLines.push('size=' + (primitive.size_m ? arm3dFmtVec(primitive.size_m) : '—') + ' | stimato=' + (primitive.estimated ? 'sì' : 'no'));
+        objLines.push('detector_scope=' + (scope.label_it || '—'));
+        if (primitive.confidence != null) objLines.push('confidence=' + primitive.confidence + ' | bbox_area_ratio=' + primitive.bbox_area_ratio);
+        objEl.textContent = objLines.join('\n');
+      }
+      if (trajEl) {
+        var tLines = [];
+        var stages = traj.stages || [];
+        var tgts = traj.targets_xyz_m || [];
+        var tips = traj.fk_tool_xyz_m || [];
+        tLines.push('stages=' + (stages.length ? stages.join(' → ') : '—'));
+        tLines.push('n_target_pts=' + tgts.length + ' | n_tool_pts=' + tips.length);
+        if (tgts.length) tLines.push('target_final=' + arm3dFmtVec(tgts[tgts.length - 1]));
+        if (tips.length) tLines.push('tool_final=' + arm3dFmtVec(tips[tips.length - 1]));
+        trajEl.textContent = tLines.join('\n');
+      }
+      if (alignEl) {
+        var aLines = [];
+        aLines.push('front_cam=' + (lm.front_camera_display_base_link_m ? arm3dFmtVec(lm.front_camera_display_base_link_m) : '—'));
+        aLines.push('wrist_cam=' + (lm.wrist_camera_display_base_link_m ? arm3dFmtVec(lm.wrist_camera_display_base_link_m) : '—'));
+        aLines.push('tool_tip=' + (lm.tool_tip_base_link_m ? arm3dFmtVec(lm.tool_tip_base_link_m) : '—'));
+        aLines.push('tag5=' + (lm.xt16_tag_m ? arm3dFmtVec(lm.xt16_tag_m) : '—') + ' | source=' + (lm.xt16_tag_source || '—'));
+        if (chain && chain.align_hint_it) aLines.push(chain.align_hint_it);
+        alignEl.textContent = aLines.join('\n');
+      }
+    }
     function arm3dUpdateFromPayload(d) {
       if (typeof THREE === 'undefined') {
         var st0 = document.getElementById('arm3dStatusLine');
@@ -4383,10 +4466,22 @@
       if (tgtBl && tgtBl.length >= 3) {
         arm3dAddSphereRobotBl(tgtBl, COL_GRASP_TARGET, Math.max(RWrist, 0.009));
       }
+      var objPrim = d.viewer_detected_object_primitive || null;
+      if (objPrim && objPrim.center_base_link_m && objPrim.size_m) {
+        arm3dAddBoxRobotBl(
+          objPrim.center_base_link_m,
+          objPrim.size_m,
+          objPrim.estimated ? 0xf59e0b : 0x22c55e,
+          { estimated: !!objPrim.estimated }
+        );
+      }
 
       try {
         arm3dRenderGraspDebug(d);
       } catch (eDbg) {}
+      try {
+        arm3dUpdateMissionCards(d);
+      } catch (eCards) {}
 
       var bits = [];
       if (d.servo_feedback_ok) bits.push('servo');

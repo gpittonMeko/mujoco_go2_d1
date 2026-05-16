@@ -98,6 +98,9 @@ def main() -> int:
     assert body.count("'X/Y · origin=base_link'") >= 2
     assert body.count("'X/Z · origin=base_link'") >= 2
     assert "armMotionDiagPre" in body
+    assert "arm3dObjectStatus" in body
+    assert "arm3dTrajectoryStatus" in body
+    assert "arm3dAlignmentStatus" in body
 
     assert "graspPipelinePre" in body
     assert "saveTrueZeroPose" in body
@@ -184,6 +187,7 @@ def main() -> int:
     cva = s3b.get("calibration_visual_alignment")
     assert isinstance(cva, dict)
     assert cva.get("planner_viewer_tag_positions_aligned") is True
+    assert "viewer_detected_object_primitive" in s3b
 
     r = client.get("/api/arm/calibration_flow")
     assert r.status_code == 200

@@ -6965,6 +6965,9 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     sc = plan_blob.get("selected_camera")
     if sc is not None:
         payload["selected_camera"] = sc
+    payload["selected_grasp_assessment"] = plan_grasp_assessment(plan_blob).get("selected") if isinstance(plan_blob, dict) else None
+    if isinstance(plan_blob, dict):
+        payload["object_detector_scope"] = plan_blob.get("object_detector_scope")
     tags_sel = ((sel or {}).get("tags") or {}).get("tags") or []
     tid_seen = sorted({int(t.get("id", -1)) for t in tags_sel})
     gp = (sel or {}).get("grip_point") if isinstance(sel, dict) else {}
@@ -7304,6 +7307,32 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     target_disp_bl = None if disp_t is None else _ab_to_bl([float(disp_t[i]) for i in range(3)])
     viewer_target_bl = front_tag0_bl if front_tag0_bl is not None else target_raw_bl
     viewer_target_disp_bl = front_tag0_bl if front_tag0_bl is not None else target_disp_bl
+    sel_ass = payload.get("selected_grasp_assessment") if isinstance(payload.get("selected_grasp_assessment"), dict) else {}
+    obj_det = (sel or {}).get("object_detection") if isinstance(sel, dict) else {}
+    bbox_ratio = 0.0
+    try:
+        bbox_ratio = float((obj_det or {}).get("bbox_area_ratio") or 0.0)
+    except (TypeError, ValueError):
+        bbox_ratio = 0.0
+    obj_size = [0.12, 0.08, 0.08]
+    if bbox_ratio > 0.45:
+        obj_size = [0.16, 0.12, 0.10]
+    elif bbox_ratio > 0.18:
+        obj_size = [0.13, 0.10, 0.09]
+    elif bbox_ratio > 0.05:
+        obj_size = [0.10, 0.08, 0.08]
+    payload["viewer_detected_object_primitive"] = {
+        "kind": "box",
+        "center_base_link_m": None if viewer_target_disp_bl is None else [round(float(viewer_target_disp_bl[i]), 5) for i in range(3)],
+        "size_m": [round(float(obj_size[0]), 5), round(float(obj_size[1]), 5), round(float(obj_size[2]), 5)],
+        "tier": sel_ass.get("tier"),
+        "label_it": sel_ass.get("label_it"),
+        "source_kind": sel_ass.get("source_kind"),
+        "estimated": not bool(sel_ass.get("validated_3d")),
+        "confidence": (obj_det or {}).get("confidence"),
+        "bbox_area_ratio": round(bbox_ratio, 5),
+        "note_it": "Prisma UI: rappresentazione grafica del target/object detectato. Se non validato_3d è solo stimato/illustrativo.",
+    }
     lm: dict[str, Any] = {
         "depth_camera_mjcf_m": _ab_to_bl(_depth_vis_arm.tolist()),
         "wrist_camera_mjcf_m": _ab_to_bl(wc_vis),
