@@ -80,6 +80,7 @@ REMOTE_PUSH_FILES = [
     "scripts/verify_dashboard_http.py",
     "scripts/verify_anygrasp_worker_http.py",
     "scripts/probe_grasp_worker_network_on_nx.py",
+    "scripts/setup_rtx_grasp_worker.ps1",
     "scripts/udev/99-go2-realsense-dashboard.rules",
     "scripts/go2-visual-dashboard.service",
     "templates/dashboard.html",
