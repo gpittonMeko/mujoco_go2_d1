@@ -537,26 +537,152 @@ def grip_point_from_tags(tags_result: dict[str, Any], frame_shape: tuple[int, in
     return out
 
 
+def _depth_frame_to_meters(depth_frame: np.ndarray | None, *, depth_scale_m_per_unit: float | None = None) -> np.ndarray | None:
+    """Normalize a depth frame to meters.
+
+    Accepts single-channel or 3-channel input. If ``depth_scale_m_per_unit`` is not
+    provided, defaults to 1 mm/unit for integer arrays and 1.0 for float arrays.
+    """
+    if depth_frame is None:
+        return None
+    arr = np.asarray(depth_frame)
+    if arr.size == 0:
+        return None
+    if arr.ndim == 3:
+        arr = arr[:, :, 0]
+    if arr.ndim != 2:
+        return None
+    if depth_scale_m_per_unit is None:
+        depth_scale_m_per_unit = 1.0 if np.issubdtype(arr.dtype, np.floating) else 0.001
+    try:
+        scale = float(depth_scale_m_per_unit)
+    except (TypeError, ValueError):
+        scale = 0.001
+    out = arr.astype(np.float32, copy=False)
+    if np.issubdtype(out.dtype, np.floating):
+        out = out.astype(np.float32, copy=False)
+    out = out * scale
+    out[~np.isfinite(out)] = 0.0
+    out[out < 0.0] = 0.0
+    return out
+
+
+def _depth_roi_statistics(
+    depth_frame: np.ndarray | None,
+    bbox_xyxy: Sequence[float],
+    *,
+    depth_scale_m_per_unit: float | None = None,
+) -> dict[str, Any]:
+    meters = _depth_frame_to_meters(depth_frame, depth_scale_m_per_unit=depth_scale_m_per_unit)
+    if meters is None or len(bbox_xyxy) < 4:
+        return {"ok": False, "reason": "depth_frame_unavailable"}
+    h, w = meters.shape[:2]
+    x1, y1, x2, y2 = [int(round(float(v))) for v in bbox_xyxy[:4]]
+    x1 = max(0, min(w - 1, x1))
+    x2 = max(0, min(w, x2))
+    y1 = max(0, min(h - 1, y1))
+    y2 = max(0, min(h, y2))
+    if x2 <= x1 or y2 <= y1:
+        return {"ok": False, "reason": "empty_depth_roi", "roi_px": [x1, y1, x2, y2]}
+    roi = meters[y1:y2, x1:x2]
+    valid_mask = np.isfinite(roi) & (roi > 0.0)
+    valid = roi[valid_mask]
+    if valid.size == 0:
+        return {
+            "ok": False,
+            "reason": "no_valid_depth_samples",
+            "roi_px": [x1, y1, x2, y2],
+            "valid_fraction": 0.0,
+        }
+    q25, q50, q75 = [float(v) for v in np.percentile(valid, [25.0, 50.0, 75.0])]
+    iqr = max(0.0, q75 - q25)
+    support_fraction = float(valid.size) / float(roi.size)
+    std = float(np.std(valid)) if valid.size > 1 else 0.0
+    return {
+        "ok": True,
+        "roi_px": [x1, y1, x2, y2],
+        "sample_count": int(valid.size),
+        "roi_size_px": int(roi.size),
+        "valid_fraction": round(support_fraction, 5),
+        "median_m": round(q50, 5),
+        "p25_m": round(q25, 5),
+        "p75_m": round(q75, 5),
+        "iqr_m": round(iqr, 5),
+        "std_m": round(std, 5),
+        "depth_min_m": round(float(np.min(valid)), 5),
+        "depth_max_m": round(float(np.max(valid)), 5),
+    }
+
+
+def _depth_roi_supports_grasp(depth_stats: dict[str, Any]) -> bool:
+    if not depth_stats.get("ok"):
+        return False
+    valid_fraction = float(depth_stats.get("valid_fraction") or 0.0)
+    iqr_m = float(depth_stats.get("iqr_m") or 0.0)
+    min_fraction = float(os.environ.get("GO2_DEPTH_MIN_VALID_FRACTION", "0.18"))
+    max_iqr_m = float(os.environ.get("GO2_DEPTH_MAX_IQR_M", "0.12"))
+    return valid_fraction >= min_fraction and iqr_m <= max_iqr_m
+
+
 def target_base_from_object_detection(
     detection: dict[str, Any],
     frame: np.ndarray,
     *,
     logical_camera_device: int | None = None,
+    depth_frame: np.ndarray | None = None,
+    depth_scale_m_per_unit: float | None = None,
 ) -> dict[str, Any]:
     if not detection.get("ok"):
         return {"ok": False, "error": detection.get("reason", "no object detection")}
+
     cam = CameraModel.from_frame(frame)
     bbox = detection.get("bbox_xyxy") or []
     center = detection.get("bbox_center_px") or detection.get("grip_center_px")
     if len(bbox) < 4 or not center:
         return {"ok": False, "error": "detection missing bbox/center"}
+
+    cx_px, cy_px = float(center[0]), float(center[1])
+    depth_stats = _depth_roi_statistics(depth_frame, bbox, depth_scale_m_per_unit=depth_scale_m_per_unit)
+    if depth_stats.get("ok") and _depth_roi_supports_grasp(depth_stats):
+        depth_m = float(depth_stats["median_m"])
+        sx = float(os.environ.get("GO2_BOX_TVEC_SIGN_X", "1"))
+        sy = float(os.environ.get("GO2_BOX_TVEC_SIGN_Y", "1"))
+        sz = float(os.environ.get("GO2_BOX_TVEC_SIGN_Z", "1"))
+        cam_xyz = [
+            ((cx_px - cam.cx) / max(cam.fx, 1.0)) * depth_m * sx,
+            ((cy_px - cam.cy) / max(cam.fy, 1.0)) * depth_m * sy,
+            depth_m * sz,
+        ]
+        base_xyz = camera_tvec_to_base_xyz(
+            cam_xyz,
+            logical_camera_device=logical_camera_device,
+            apply_tag5_calibration=False,
+        )
+        cam_off = camera_device_preview_offset_m(logical_camera_device)
+        base_xyz = [base_xyz[0] + cam_off[0], base_xyz[1] + cam_off[1], base_xyz[2] + cam_off[2]]
+        return {
+            "ok": True,
+            "base_xyz_m": [round(base_xyz[0], 4), round(base_xyz[1], 4), round(base_xyz[2], 4)],
+            "calibration": "rgbd depth ROI fusion; AprilTag excluded from operational loop",
+            "source": "rgbd_depth_fused",
+            "bbox_width_px": round(max(1.0, float(bbox[2]) - float(bbox[0])), 2),
+            "depth_support_ok": True,
+            "depth_support_fraction": depth_stats.get("valid_fraction"),
+            "depth_sample_count": depth_stats.get("sample_count"),
+            "depth_roi_px": depth_stats.get("roi_px"),
+            "depth_median_m": depth_stats.get("median_m"),
+            "depth_iqr_m": depth_stats.get("iqr_m"),
+            "depth_std_m": depth_stats.get("std_m"),
+            "camera_xyz_m": [round(float(cam_xyz[0]), 5), round(float(cam_xyz[1]), 5), round(float(cam_xyz[2]), 5)],
+            "logical_camera_device": logical_camera_device,
+        }
+
     bw = max(1.0, float(bbox[2]) - float(bbox[0]))
     # Approximate monocular depth from apparent box width. This is deliberately
-    # conservative and only used when AprilTags are absent.
+    # conservative and only used when AprilTags / depth ROI are absent.
     box_w_m = float(os.environ.get("GO2_BOX_APPROX_WIDTH_M", "0.16"))
     depth = (box_w_m * cam.fx) / bw
     depth = float(np.clip(depth, 0.20, 0.70))
-    cx_px, cy_px = float(center[0]), float(center[1])
     lat = ((cx_px - cam.cx) / max(cam.fx, 1.0)) * depth
     if os.environ.get("GO2_BOX_TARGET_NEGATE_LATERAL", "0").lower() in {"1", "true", "yes"}:
         lat = -lat
@@ -572,16 +698,13 @@ def target_base_from_object_detection(
     base_xyz = [base_xyz[0] + cam_off[0], base_xyz[1] + cam_off[1], base_xyz[2] + cam_off[2]]
     return {
         "ok": True,
-        "base_xyz_m": [
-            round(base_xyz[0], 4),
-            round(base_xyz[1], 4),
-            round(base_xyz[2], 4),
-        ],
-        "calibration": "monocular bbox heuristic; AprilTag/RealSense depth preferred when available; optional per-camera preview offset supported",
+        "base_xyz_m": [round(base_xyz[0], 4), round(base_xyz[1], 4), round(base_xyz[2], 4)],
+        "calibration": "monocular bbox heuristic; AprilTag/depth preferred when available; optional per-camera preview offset supported",
         "source": detection.get("backend", "object_detection"),
         "bbox_width_px": round(bw, 2),
         "assumed_box_width_m": box_w_m,
         "logical_camera_device": logical_camera_device,
+        "depth_support_ok": False,
     }
 
 
@@ -625,16 +748,10 @@ def merge_grip_point(
         out = dict(tag_grip)
         out["source"] = "apriltag_preferred"
         return out
-    if tag_grip.get("ok") and object_grip.get("ok"):
-        out = dict(tag_grip)
-        out["source"] = "apriltag+object_detection"
-        out["object_detection"] = object_grip
-        out["confidence"] = round(max(float(tag_grip.get("confidence", 0.0)), float(object_grip.get("confidence", 0.0))), 4)
-        return out
-    if tag_grip.get("ok"):
-        return tag_grip
     if object_grip.get("ok"):
         return object_grip
+    if tag_grip.get("ok"):
+        return tag_grip
     return {"ok": False, "source": "none", "reason": tag_grip.get("reason") or object_grip.get("reason") or "no grip point"}
 
 
@@ -728,6 +845,8 @@ def plan_from_frame(
     logical_camera_device: int | None = None,
     include_tag_ids: frozenset[int] | None = None,
     tag_edge_length_overrides: dict[int, float] | None = None,
+    depth_frame: np.ndarray | None = None,
+    depth_scale_m_per_unit: float | None = None,
 ) -> dict[str, Any]:
     tags = detect_box_tags(frame, include_tag_ids=include_tag_ids)
     poses = estimate_tag_poses(frame, tags, tag_edge_length_overrides=tag_edge_length_overrides)
@@ -735,21 +854,47 @@ def plan_from_frame(
         for p in poses.get("poses") or []:
             if isinstance(p, dict):
                 p["logical_camera_device"] = int(logical_camera_device)
+
     tag_target = estimate_box_target_base(poses)
+    obj_in = dict(object_detection or {}) if object_detection else {"ok": False, "backend": "not_run"}
     obj_target = target_base_from_object_detection(
-        object_detection or {},
+        obj_in,
         frame,
         logical_camera_device=logical_camera_device,
+        depth_frame=depth_frame,
+        depth_scale_m_per_unit=depth_scale_m_per_unit,
     ) if object_detection else {"ok": False}
-    target = tag_target if tag_target.get("ok") else obj_target
+
+    # AprilTag stays diagnostic/calibration only; for operation prefer RGBD/object target.
+    target = obj_target if obj_target.get("ok") else tag_target
+    depth_observation = None
+    if obj_target.get("source") == "rgbd_depth_fused":
+        depth_observation = {
+            "ok": True,
+            "source": "rgbd_depth_fused",
+            "depth_support_fraction": obj_target.get("depth_support_fraction"),
+            "depth_sample_count": obj_target.get("depth_sample_count"),
+            "depth_roi_px": obj_target.get("depth_roi_px"),
+            "depth_median_m": obj_target.get("depth_median_m"),
+            "depth_iqr_m": obj_target.get("depth_iqr_m"),
+            "depth_std_m": obj_target.get("depth_std_m"),
+        }
+        obj_in = dict(obj_in)
+        obj_in["backend"] = "rgbd_depth_fused"
+        obj_in.update({k: v for k, v in obj_target.items() if k.startswith("depth_") or k in {"camera_xyz_m", "depth_support_ok"}})
+        if target.get("ok"):
+            target = dict(target)
+            target.update({k: v for k, v in obj_target.items() if k.startswith("depth_") or k == "source"})
+            target["source"] = "rgbd_depth_fused"
+
     tag_grip = grip_point_from_tags(tags, frame.shape[:2])
     yaw = grip_tag_planar_yaw_rad(tag_grip)
-    if target.get("ok") and yaw is not None:
+    if target.get("ok") and yaw is not None and target.get("source") != "rgbd_depth_fused":
         target = dict(target)
         target["tag_planar_yaw_rad"] = round(float(yaw), 6)
         target["tag_planar_yaw_deg"] = round(float(math.degrees(yaw)), 3)
     preview = build_grasp_preview(target)
-    obj_grip = grip_point_from_object_detection(object_detection or {}, frame.shape[:2]) if object_detection else {"ok": False}
+    obj_grip = grip_point_from_object_detection(obj_in, frame.shape[:2]) if object_detection else {"ok": False}
     if prefer_tag_grip is None:
         prefer_tag_grip = os.environ.get("GO2_GRASP_PREFER_TAG_GRIP", "0").lower() in {"1", "true", "yes"}
     grip = merge_grip_point(tag_grip, obj_grip, prefer_tag_grip=bool(prefer_tag_grip))
@@ -760,7 +905,8 @@ def plan_from_frame(
         "poses": poses,
         "target": target,
         "target_sources": {"apriltag": tag_target, "object_detection": obj_target},
-        "object_detection": object_detection or {"ok": False, "backend": "not_run"},
+        "object_detection": obj_in,
+        "depth_observation": depth_observation,
         "grip_point": grip,
         "preview": preview,
         "tag_calibration": {
@@ -832,10 +978,20 @@ def draw_grasp_overlay(frame: np.ndarray, plan_result: dict[str, Any]) -> np.nda
     target = (plan_result.get("target") or {})
     source = str((target.get("source") or grip.get("source") or "—"))
     logical_camera_device = plan_result.get("logical_camera_device")
+    depth_bits = []
+    if target.get("depth_support_ok"):
+        if target.get("depth_median_m") is not None:
+            depth_bits.append(f"depth {float(target.get('depth_median_m')):.3f}m")
+        if target.get("depth_iqr_m") is not None:
+            depth_bits.append(f"iqr {float(target.get('depth_iqr_m')):.3f}m")
+        if target.get("depth_support_fraction") is not None:
+            depth_bits.append(f"valid {float(target.get('depth_support_fraction')):.2f}")
     hud_lines = [
         f"vision: {'OK' if plan_result.get('ok') else 'NO'} | src: {source}",
         f"cam: {logical_camera_device if logical_camera_device is not None else '—'} | tags: {len(((plan_result.get('tags') or {}).get('tags') or []))} | stages: {len(plan)}",
     ]
+    if depth_bits:
+        hud_lines.append("RGBD: " + " | ".join(depth_bits))
     if logical_camera_device is not None:
         hud_lines.append(
             "preview: heuristic base estimate"

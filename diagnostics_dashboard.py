@@ -3016,6 +3016,82 @@ PY
         return None
 
 
+def _depth_v4l_index_for_logical_camera(device: int) -> int | None:
+    key = f"GO2_DEPTH_VIDEO_INDEX_{int(device)}"
+    raw = os.environ.get(key, os.environ.get("GO2_DEPTH_VIDEO_INDEX", "")).strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def robot_depth_frame(device: int) -> Any | None:
+    if not GO2_LOCAL or cv2 is None:
+        return None
+    v4l = _depth_v4l_index_for_logical_camera(device)
+    if v4l is None:
+        return None
+    cap = None
+    try:
+        cap = _cv_videocapture(v4l)
+        if not cap.isOpened():
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        try:
+            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        except Exception:
+            pass
+        frame = None
+        ok = False
+        for _ in range(5):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                break
+        if not ok or frame is None:
+            return None
+        import numpy as np
+
+        arr = np.asarray(frame)
+        if arr.ndim == 3 and arr.shape[2] == 3 and not _depth_v4l_index_for_logical_camera(device):
+            return None
+        return arr
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+
+def robot_depth_jpeg(device: int) -> bytes | None:
+    if cv2 is None:
+        return None
+    depth = robot_depth_frame(device)
+    if depth is None:
+        return None
+    import numpy as np
+
+    arr = depth.astype(np.float32)
+    if arr.ndim == 3:
+        arr = arr[:, :, 0].astype(np.float32)
+    valid = arr[np.isfinite(arr) & (arr > 0)]
+    if valid.size == 0:
+        return None
+    lo, hi = np.percentile(valid, [5.0, 95.0])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(np.min(valid)), float(np.max(valid))
+    norm = np.clip((arr - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    gray = (norm * 255.0).astype(np.uint8)
+    color = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
+    ok, buf = cv2.imencode(".jpg", color, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+    return buf.tobytes() if ok else None
+
+
 def remote_robot_inventory() -> dict[str, Any]:
     command = r"""
 set -o pipefail
@@ -6335,6 +6411,9 @@ def api_cameras_status() -> Any:
     }
     if GO2_LOCAL and cv2 is not None:
         payload["v4l_index_by_logical"] = {str(d): _v4l_index_for_logical_camera(d) for d in CAMERA_DEVICES}
+        depth_map = {str(d): _depth_v4l_index_for_logical_camera(d) for d in CAMERA_DEVICES}
+        if any(v is not None for v in depth_map.values()):
+            payload["depth_v4l_index_by_logical"] = depth_map
         auto_m = usb_auto_v4l_mapping()
         if auto_m:
             payload["v4l_usb_auto_map"] = {str(k): int(v) for k, v in sorted(auto_m.items())}
@@ -6365,13 +6444,28 @@ def api_box_plan() -> Any:
         for device in (0, 6):
             cache_row = (CAMERA_CACHE.stats().get(str(device)) if GO2_LOCAL else None)
             v4l_idx = _v4l_index_for_logical_camera(device)
+            depth_v4l_idx = _depth_v4l_index_for_logical_camera(device)
             frame = frame_from_camera(device)
+            depth_frame = robot_depth_frame(device) if GO2_LOCAL else None
+            try:
+                depth_scale = float(
+                    os.environ.get(
+                        f"GO2_DEPTH_SCALE_M_PER_UNIT_{device}",
+                        os.environ.get("GO2_DEPTH_SCALE_M_PER_UNIT", "0.001"),
+                    )
+                )
+            except ValueError:
+                depth_scale = 0.001
             per_cam_pipeline[str(device)] = {
                 "logical_device": device,
                 "v4l_index": v4l_idx,
                 "dev_path": f"/dev/video{v4l_idx}",
                 "frame_ok": frame is not None,
                 "frame_shape_hw": (list(frame.shape[:2]) if frame is not None else None),
+                "depth_v4l_index": depth_v4l_idx,
+                "depth_frame_ok": depth_frame is not None,
+                "depth_frame_shape_hw": (list(depth_frame.shape[:2]) if depth_frame is not None and hasattr(depth_frame, "shape") and len(depth_frame.shape) >= 2 else None),
+                "depth_scale_m_per_unit": depth_scale,
                 "camera_cache": cache_row,
             }
             if frame is None:
@@ -6391,6 +6485,8 @@ def api_box_plan() -> Any:
                 object_detection=object_det,
                 prefer_tag_grip=prefer_tag,
                 logical_camera_device=device,
+                depth_frame=depth_frame,
+                depth_scale_m_per_unit=depth_scale,
             )
             result["camera_device"] = device
             result["camera_label"] = CAMERA_DEVICES.get(device, "unknown")
@@ -6431,16 +6527,21 @@ def api_box_plan() -> Any:
         any_box_tag = False
         any_object = False
         any_grip = False
+        any_depth = False
         for key, cand in candidates.items():
             tags = ((cand or {}).get("tags") or {}).get("tags") or []
             ids = [int(t.get("id", -1)) for t in tags]
             box_ids = [i for i in ids if i in BOX_TAG_IDS_IK]
             obj = (cand or {}).get("object_detection") or {}
             grip = (cand or {}).get("grip_point") or {}
+            depth_obs = (cand or {}).get("depth_observation") or {}
+            target_blob = (cand or {}).get("target") if isinstance((cand or {}).get("target"), dict) else {}
+            depth_support_ok = bool(target_blob.get("depth_support_ok"))
             any_tag = any_tag or bool(ids)
             any_box_tag = any_box_tag or bool(box_ids)
             any_object = any_object or bool(obj.get("ok"))
             any_grip = any_grip or bool(grip.get("ok"))
+            any_depth = any_depth or bool(depth_support_ok or depth_obs.get("ok"))
             visible_summary[key] = {
                 "tag_visible": bool(ids),
                 "box_tag_visible": bool(box_ids),
@@ -6453,6 +6554,10 @@ def api_box_plan() -> Any:
                 "approach_error_px": grip.get("approach_error_px"),
                 "ids": ids,
                 "box_ids": box_ids,
+                "depth_support_ok": depth_support_ok,
+                "depth_observation_ok": bool(depth_obs.get("ok")),
+                "depth_median_m": ((cand or {}).get("target") or {}).get("depth_median_m") if isinstance((cand or {}).get("target"), dict) else None,
+                "depth_iqr_m": ((cand or {}).get("target") or {}).get("depth_iqr_m") if isinstance((cand or {}).get("target"), dict) else None,
                 "ik_ok": bool(((cand or {}).get("preview") or {}).get("ok")),
             }
         selected_grip = (selected or {}).get("grip_point") if selected else None
@@ -6473,6 +6578,7 @@ def api_box_plan() -> Any:
             "box_tag_visible_any": any_box_tag,
             "object_visible_any": any_object,
             "grip_point_visible_any": any_grip,
+            "depth_visible_any": any_depth,
             "selected_grip_point": selected_grip,
             "selected_grasp_assessment": assessment.get("selected"),
             "grasp_assessment": assessment,
@@ -7332,6 +7438,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
     viewer_target_disp_bl = front_tag0_bl if front_tag0_bl is not None else target_disp_bl
     sel_ass = payload.get("selected_grasp_assessment") if isinstance(payload.get("selected_grasp_assessment"), dict) else {}
     obj_det = (sel or {}).get("object_detection") if isinstance(sel, dict) else {}
+    target = (sel or {}).get("target") if isinstance(sel, dict) else {}
     bbox_ratio = 0.0
     try:
         bbox_ratio = float((obj_det or {}).get("bbox_area_ratio") or 0.0)
@@ -7354,6 +7461,13 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         "estimated": not bool(sel_ass.get("validated_3d")),
         "confidence": (obj_det or {}).get("confidence"),
         "bbox_area_ratio": round(bbox_ratio, 5),
+        "depth_support_ok": bool((target or {}).get("depth_support_ok")),
+        "depth_support_fraction": (target or {}).get("depth_support_fraction"),
+        "depth_sample_count": (target or {}).get("depth_sample_count"),
+        "depth_median_m": (target or {}).get("depth_median_m"),
+        "depth_iqr_m": (target or {}).get("depth_iqr_m"),
+        "depth_std_m": (target or {}).get("depth_std_m"),
+        "depth_roi_px": (target or {}).get("depth_roi_px"),
         "note_it": "Prisma UI: rappresentazione grafica del target/object detectato. Se non validato_3d è solo stimato/illustrativo.",
     }
     lm: dict[str, Any] = {

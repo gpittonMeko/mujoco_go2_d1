@@ -3,7 +3,7 @@
 Verifica da questo PC che la dashboard HTTP risponda (stessa LAN del robot).
 
 Uso (PowerShell / bash):
-  python scripts/verify_dashboard_http.py http://192.168.123.18:5050
+  python scripts/verify_dashboard_http.py http://192.168.123.18:5052
 
 Exit 0 se /api/health e la home rispondono come atteso; altrimenti exit 1 con dettaglio errore.
 """
@@ -22,7 +22,7 @@ def _get(url: str, limit: int) -> tuple[int, bytes]:
 
 
 def main() -> int:
-    base = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5050").rstrip("/")
+    base = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5052").rstrip("/")
     errs: list[str] = []
 
     health_url = f"{base}/api/health"
@@ -48,8 +48,8 @@ def main() -> int:
         code, body = _get(home_url, 65536)
         if code != 200:
             errs.append(f"{home_url} status {code}")
-        elif b"Go2 Diagnostics Dashboard" not in body:
-            errs.append(f"{home_url} body senza titolo atteso (dashboard vecchia o pagina sbagliata?)")
+        elif b"Go2 Diagnostics Dashboard" not in body and b"Dashboard operator" not in body:
+            errs.append(f"{home_url} body senza titolo dashboard atteso (monolite o operator)")
         else:
             print("OK", home_url, "bytes", len(body))
     except urllib.error.HTTPError as exc:

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Go2 operator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ script_root|default('') }}/static/css/operators.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <h1>Dashboard operator</h1>
+      <p class="sub">host={{ go2_host }} · porta={{ dashboard_port }} · GO2_LOCAL={{ go2_local }}</p>
+    </header>
+
+    <main class="tab-panels">
+      <section class="tab-panel active" data-tab="scene">
+        <div class="banner">
+          <strong>Orbbec Gemini</strong> (USB <code>2bc5:080b</code>) è mappata su <strong>camera logica 0</strong> (RGB UVC dopo auto‑map). Intel RealSense su <strong>logico 6</strong>.
+          Guida ufficiale: <a href="https://www.orbbec.com/docs/orbbec-gemini-335-335l-documentation/" target="_blank" rel="noopener">Orbbec Gemini 335 / 335L</a>.
+        </div>
+        <div class="card">
+          <h2>URL stream (LAN)</h2>
+          <p style="margin:0 0 8px;color:var(--muted);font-size:0.82rem;">Sostituisci host con l’IP della NX (es. <code>{{ go2_host }}</code>). Stessa porta HTTP della dashboard (<code>{{ dashboard_port }}</code>).</p>
+          <ul class="url-list" style="margin:0;padding-left:1.1rem;font-size:0.8rem;color:var(--text);">
+            <li><strong>Orbbec RGB live (MJPEG):</strong> <code id="urlOrbbecMjpg">…</code></li>
+            <li><strong>Orbbec RGB singolo frame (JPEG):</strong> <code id="urlOrbbecJpg">…</code></li>
+            <li><strong>RealSense RGB live:</strong> <code id="urlRsMjpg">…</code></li>
+            <li><strong>RealSense JPEG:</strong> <code id="urlRsJpg">…</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>Stato camere (API)</h2>
+          <p style="margin:0 0 8px;color:var(--muted);font-size:0.82rem;"><code>GET /api/cameras/status</code> — mappa V4L, rgb_like, errori cache.</p>
+          <div class="btn-grid" style="margin-bottom:8px;">
+            <button type="button" class="op-btn" onclick="operatorsRefreshCamerasStatus()">Aggiorna stato</button>
+          </div>
+          <pre id="cameraStatusPre" class="status-dump">Carico…</pre>
+        </div>
+        <div class="cam-grid">
+          <div class="cam-tile">
+            <div class="label">Orbbec Gemini · RGB · <strong>log.0</strong> → <code>/dev/video*</code> (vedi stato sopra)</div>
+            <img alt="orbbec rgb" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg" />
+          </div>
+          <div class="cam-tile">
+            <div class="label">Intel RealSense · RGB · <strong>log.6</strong></div>
+            <img alt="realsense rgb" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg" />
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab="3d">
+        <div class="card">
+          <h2>Viewer 3D (scene_3d)</h2>
+          <p class="muted small" style="margin:0 0 10px;">
+            Poll su <code>GET /api/arm/scene_3d</code> (implementazione <strong>solo operator</strong>: FK + geometria file, niente <code>api_box_plan</code> del monolite). <strong>fast</strong> / <strong>full</strong> usano lo stesso payload; <code>full=1</code> non avvia il planner legacy.
+            Serve rete verso <code>cdn.jsdelivr.net</code> per Three.js (come <code>dashboard.html</code>).
+          </p>
+          <div class="btn-grid scene3d-toolbar">
+            <button type="button" class="op-btn ok" onclick="operatorsScene3dStart()">Avvia aggiornamento</button>
+            <button type="button" class="op-btn warn" onclick="operatorsScene3dStop()">Ferma</button>
+            <label class="op-inline"><input type="radio" name="scene3dMode" value="fast" checked /> fast</label>
+            <label class="op-inline"><input type="radio" name="scene3dMode" value="full" /> full</label>
+            <label class="op-inline" style="flex:1 1 140px;min-width:120px;">Intervallo ms <input type="number" id="scene3dIntervalMs" min="400" step="100" value="1500" style="width:5rem;margin-left:6px;" /></label>
+          </div>
+          <div id="operatorsScene3dCanvasWrap" class="scene3d-wrap">
+            <canvas id="operatorsScene3dCanvas" aria-label="Viewer scena braccio"></canvas>
+          </div>
+          <pre id="operatorsScene3dHint" class="status-dump" style="margin-top:8px;max-height:200px;">Premi «Avvia aggiornamento» (consigliato). Dopo «Piano»/«Execute», il viewer ridisegna anche senza poll se già inizializzato. Nuvola azzurra: array <code>operators_grasp_points_base_link_m</code> (triple in metri, frame <strong>base_link</strong>) oppure chiavi euristiche (<code>point_cloud</code>, <code>points_xyz</code>, …). Marker bianco: <code>grasp_display_base_link_m</code> o <code>translation</code> (anche sotto <code>data</code>).</pre>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab="calib">
+        <div class="card">
+          <h2>Calibrazione</h2>
+          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem;">
+            Marker ArUco «5» + hand-eye: implementazione dedicata. API utili già montate: <code>/api/arm/tag5_calibration</code>, <code>/api/arm/vis_geometry</code>, <code>/api/alignment/start_pose</code>.
+          </p>
+          <div class="btn-grid">
+            <button type="button" class="op-btn" onclick="window.open('{{ script_root|default('') }}/api/alignment/start_pose', '_blank')">GET start_pose</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab="robot">
+        <div class="card">
+          <h2>Base (Sport)</h2>
+          <div class="btn-grid">
+            <button type="button" class="op-btn ok" onclick="operatorsBaseMotion('stand_up')">Stand</button>
+            <button type="button" class="op-btn warn" onclick="operatorsBaseMotion('crouch')">Crouch</button>
+          </div>
+          <p style="margin:10px 0 0;font-size:0.8rem;color:var(--muted);">
+            Richiede <code>GO2_ENABLE_BASE_MOTION=1</code>. Esito: <span id="basePill" class="pill warn">—</span>
+          </p>
+          <pre id="sportLast" class="status-dump" style="margin-top:8px;">sport_last…</pre>
+        </div>
+        <div class="card">
+          <h2>Presa (AnyGrasp) + diagnostica pipeline</h2>
+          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem;">
+            Worker opzionale <code>GO2_ANYGRASP_WORKER_URL</code> (default <code>127.0.0.1:8765</code>). Questa app <strong>non</strong> carica <code>diagnostics_dashboard</code>: niente <code>/api/box/plan</code>; <code>scene_3d</code> è implementato in <code>go2_dashboard/operator_scene.py</code> (FK + file geometria).
+          </p>
+          <div class="btn-grid">
+            <button type="button" class="op-btn" onclick="operatorsGraspHealth()">Health grasp</button>
+            <button type="button" class="op-btn" onclick="operatorsGraspPipeline()">Pipeline presa</button>
+            <button type="button" class="op-btn primary" onclick="operatorsGraspPlan()">Piano (POST)</button>
+            <button type="button" class="op-btn ok" onclick="operatorsGraspExecute()">Execute (POST)</button>
+            <button type="button" class="op-btn" onclick="operatorsRefreshGraspPreviewFrame()">Aggiorna frame polso</button>
+            <button type="button" class="op-btn" onclick="operatorsGraspDrawOverlay()">Ridisegna overlay</button>
+          </div>
+          <p style="margin:10px 0 6px;font-size:0.8rem;color:var(--muted);">Corpo JSON per <code>/api/grasp/plan</code> e <code>/api/grasp/execute</code> (modifica secondo il tuo worker).</p>
+          <textarea id="graspPlanJson" class="grasp-json-ta" rows="5" spellcheck="false">{}</textarea>
+          <label class="op-check" style="display:block;margin:8px 0;font-size:0.82rem;color:var(--text);">
+            <input type="checkbox" id="graspExecuteMergeLast" checked />
+            In Execute, unisci l’ultima risposta «Piano» sotto il JSON sopra (campi omonimi: vince il textarea)
+          </label>
+          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Anteprima polso (log.0) + overlay 2D</h3>
+          <p style="margin:0 0 8px;font-size:0.78rem;color:var(--muted);">
+            Frame JPEG da <code>/api/robot/camera/0.jpg</code>. Cerchi azzurri: <code>grip_point.cx/cy</code> pixel, <code>grip_point.u/v</code> normalizzati, <code>operators_overlay_uv</code>, oppure <code>operators_overlay_points: [{&quot;x&quot;,&quot;y&quot;,&quot;label&quot;}]</code>. Per il tab <strong>3D</strong>, passa anche <code>operators_grasp_points_base_link_m</code> (nuvola) nello stesso frame del marker.
+          </p>
+          <div class="grasp-preview-stack">
+            <img id="graspWristImg" alt="polso rgb" src="{{ script_root|default('') }}/api/robot/camera/0.jpg" />
+            <canvas id="graspOverlayCanvas" class="grasp-overlay-canvas" width="640" height="480"></canvas>
+          </div>
+          <p id="graspOverlayDbg" class="muted small" style="margin:6px 0 0;">—</p>
+          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Pipeline (riassunto)</h3>
+          <pre id="graspPipelinePre" class="status-dump" style="max-height:220px;">Premi «Pipeline presa».</pre>
+          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Risposta grasp / execute</h3>
+          <pre id="graspPhase" class="status-dump grasp-phase" style="margin-top:6px;">In attesa…</pre>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab="stato">
+        <div class="card">
+          <h2>Stato NX</h2>
+          <div class="btn-grid" style="margin-bottom:10px;">
+            <button type="button" class="op-btn" onclick="operatorsRefreshStack()">Aggiorna</button>
+          </div>
+          <pre id="stackStatus" class="status-dump">Carico…</pre>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tab-bar" aria-label="Tab principali">
+      <button type="button" data-tab="scene" class="active" onclick="operatorsSwitchTab('scene')">Scene</button>
+      <button type="button" data-tab="3d" onclick="operatorsSwitchTab('3d')">3D</button>
+      <button type="button" data-tab="calib" onclick="operatorsSwitchTab('calib')">Calib</button>
+      <button type="button" data-tab="robot" onclick="operatorsSwitchTab('robot')">Robot</button>
+      <button type="button" data-tab="stato" onclick="operatorsSwitchTab('stato')">Stato</button>
+    </nav>
+  </div>
+
+  <script>
+    window.__OPERATORS_SCRIPT_ROOT__ = {{ script_root|default('')|tojson }};
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="{{ script_root|default('') }}/static/js/operators.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_scene3d.js" defer></script>
+</body>
+</html>

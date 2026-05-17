@@ -7,11 +7,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from go2_dashboard.grasp_assessment import candidate_grasp_assessment, detector_training_scope, plan_grasp_assessment
+from box_grasp_planner import plan_from_frame
 import diagnostics_dashboard as dd
 
 
@@ -61,6 +66,33 @@ class GraspAssessmentTests(unittest.TestCase):
         self.assertTrue(out["preview_only"])
         self.assertFalse(out["execution_allowed"])
         self.assertIn("object_pose_not_validated_3d", out["warnings"])
+
+    def test_plan_from_frame_uses_depth_roi_as_validated_3d_source(self) -> None:
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        frame[:, :, 1] = 40
+        frame[:, :, 2] = 12
+        depth = np.full((240, 320), 420, dtype=np.uint16)
+        depth[80:170, 100:220] = 380
+        fake_det = {
+            "ok": True,
+            "backend": "yolo11n",
+            "confidence": 0.93,
+            "bbox_xyxy": [96.0, 74.0, 224.0, 178.0],
+            "bbox_center_px": [160.0, 126.0],
+            "grip_center_px": [160.0, 126.0],
+            "grip_axis_px": [[96.0, 126.0], [224.0, 126.0]],
+        }
+        plan = plan_from_frame(frame, object_detection=fake_det, depth_frame=depth, logical_camera_device=6)
+        self.assertTrue(plan["ok"])
+        self.assertEqual((plan.get("object_detection") or {}).get("backend"), "rgbd_depth_fused")
+        target = plan.get("target") or {}
+        self.assertTrue(target.get("ok"))
+        self.assertEqual(target.get("source"), "rgbd_depth_fused")
+        self.assertGreater(float(target.get("depth_support_fraction") or 0.0), 0.0)
+        assess = candidate_grasp_assessment(plan)
+        self.assertEqual(assess["tier"], "validated_3d_grasp_candidate")
+        self.assertTrue(assess["execution_allowed"])
+        self.assertEqual(assess["source_kind"], "depth_3d_estimate")
 
     def test_heuristic_execute_override_is_explicit(self) -> None:
         cand = {

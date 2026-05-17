@@ -11,6 +11,7 @@ dal deploy per evitare doppio avvio con cron).
 ``GO2_DEPLOY_OVERWRITE_PRESETS=1`` sul PC che lancia lo script.
 
 Env: GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD. Probe rapido da PC: ``python scripts/probe_nx_general.py``.
+URL worker grasp sulla NX (generato in ``nx_dashboard_env.sh``): ``GO2_DEPLOY_ANYGRASP_WORKER_URL`` sul PC al deploy (default ``http://192.168.123.4:8765``).
 """
 import os
 import paramiko
@@ -44,11 +45,19 @@ REMOTE_PUSH_FILES = [
     "scripts/d1_arm_servo_read_python.py",
     "go2_dashboard/__init__.py",
     "go2_dashboard/app.py",
+    "go2_dashboard/lite_app.py",
     "go2_dashboard/legacy_mount.py",
     "go2_dashboard/cameras.py",
+    "go2_dashboard/paths.py",
+    "go2_dashboard/d1_servo_feedback.py",
+    "go2_dashboard/sport_lane.py",
+    "go2_dashboard/operator_stack.py",
+    "go2_dashboard/operator_scene.py",
     "go2_dashboard/grasp_assessment.py",
     "go2_dashboard/blueprints/__init__.py",
     "go2_dashboard/blueprints/meta.py",
+    "go2_dashboard/blueprints/grasp.py",
+    "go2_dashboard/blueprints/operator_api.py",
     "scripts/box_grasp_planner.py",
     "scripts/box_object_detector.py",
     "scripts/arm_kinematics_d1_template.py",
@@ -62,16 +71,33 @@ REMOTE_PUSH_FILES = [
     "scripts/sync_d1_meshes_from_package.py",
     "scripts/fetch_d1_550_from_jeewantha_github.py",
     "scripts/serve_dashboard_modular.py",
+    "scripts/serve_dashboard_lite.py",
     "scripts/nx_serve_foreground.sh",
     "scripts/nx_dashboard_supervise.sh",
     "scripts/nx_machine_diag.sh",
     "scripts/nx_peripheral_probe.sh",
     "scripts/probe_nx_dds_servo.py",
+    "scripts/verify_dashboard_http.py",
+    "scripts/verify_anygrasp_worker_http.py",
+    "scripts/probe_grasp_worker_network_on_nx.py",
     "scripts/udev/99-go2-realsense-dashboard.rules",
     "scripts/go2-visual-dashboard.service",
     "templates/dashboard.html",
+    "templates/dashboard_operators.html",
     "templates/_always_cam_strip.html",
     "templates/_calibration_panel.html",
+    "static/css/operators.css",
+    "static/js/operators.js",
+    "static/js/operators_scene3d.js",
+    "docs/OPERATORS_DASHBOARD_NX.md",
+    "external/openvla_worker/README.md",
+    "external/openvla_worker/requirements.txt",
+    "external/openvla_worker/app.py",
+    "external/openvla_worker/planner_runtime.py",
+    "external/openvla_worker/Dockerfile",
+    "external/openvla_worker/bootstrap_worker_host.sh",
+    "external/openvla_worker/bootstrap_worker_host.ps1",
+    "external/openvla_worker/setup_windows_worker.py",
 ]
 # ``data/vis_geometry_presets.json`` è gestito a parte: non sovrascrivere i preset salvati in laboratorio
 # sulla NX (vedi blocco ``main()``). Primo deploy: copia dal repo se il file remoto non esiste.
@@ -117,13 +143,17 @@ export GO2_SPORT_ASYNC_STAND_MODES=1
 export GO2_SPORT_SUBPROCESS_STAND_MODES=1
 export GO2_GRASP_EXECUTE_ARM=1
 export GO2_DASHBOARD_HOST=0.0.0.0
-export GO2_DASHBOARD_PORT=5050
-# Ritardo tra crash Flask e riavvio (loop nx_dashboard_supervise.sh)
+export GO2_DASHBOARD_PORT=5052
+# Dashboard operator: non avviare thread LiDAR se non serve (default 1).
+export GO2_LITE_SKIP_LIDAR=1
+# AnyGrasp / OpenVLA worker HTTP: URL effettivo aggiunto da _nx_dashboard_env_sh() (default PC lab).
+# export GO2_ANYGRASP_CHECKPOINT=/path/to/checkpoint.tar  # solo SDK AnyGrasp ufficiale
 # export GO2_DASHBOARD_RESTART_DELAY_S=15
 export GO2_VIS_GEOMETRY_DEFAULT_PRESET=2
 export GO2_CAMERA_AUTO_USB_MAP=1
 export GO2_REALSENSE_V4L_DEFAULT=6
 export GO2_REALSENSE_VIDEO_PROBE=1
+export GO2_ORBBEC_PREFER_MJPEG=1
 export D1_SEARCH_MAX_CYCLES=10
 export GO2_GRASP_USE_FUSED_PLAN_IK=1
 export GO2_GRASP_FUSED_WITH_CENTER=1
@@ -215,10 +245,17 @@ export D1_POST_MOTION_HOLD_DELAY_MS=60
 
 
 def _nx_dashboard_env_sh() -> str:
+    grasp_url = (os.environ.get("GO2_DEPLOY_ANYGRASP_WORKER_URL") or "http://192.168.123.4:8765").strip()
+    extra = (
+        "\n# --- Worker grasp HTTP (proxy Flask /api/grasp/*) ---\n"
+        f"export GO2_ANYGRASP_WORKER_URL={grasp_url}\n"
+        "export GO2_ANYGRASP_PROXY=1\n"
+    )
     return (
         "#!/bin/bash\n# Sorgente unica env dashboard (deploy_dashboard_to_nx.py).\n"
         "# shellcheck disable=SC2034\n"
         + NX_EXPORTS
+        + extra
         + "\n"
     )
 
@@ -231,19 +268,20 @@ source "{REMOTE_BASE}/scripts/nx_dashboard_env.sh"
 pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
 pkill -f diagnostics_dashboard 2>/dev/null || true
 pkill -f serve_dashboard_modular 2>/dev/null || true
+pkill -f serve_dashboard_lite 2>/dev/null || true
 sleep 1
 python3 -c "import diagnostics_dashboard as d; print('legacy_module_ok', d.GO2_LOCAL, d.GO2_DASHBOARD_BIND)"
 nohup bash scripts/nx_dashboard_supervise.sh >> dashboard_supervise.log 2>&1 &
 echo $! > dashboard.pid
 sleep 4
-python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/api/health', timeout=10); print('HTTP_HEALTH_OK')" || (
+python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=10); print('HTTP_HEALTH_OK')" || (
   echo HTTP_HEALTH_FAIL
   tail -40 dashboard_run.log
   tail -20 dashboard_supervise.log 2>/dev/null || true
   exit 1
 )
 echo "Remote checks done (full smoke: run on PC: python scripts/test_dashboard_smoke.py)"
-echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://{host}:5050"
+echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://{host}:5052"
 """
 
 
@@ -265,11 +303,12 @@ LOG="{log}"
   pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
   pkill -f diagnostics_dashboard 2>/dev/null || true
   pkill -f serve_dashboard_modular.py 2>/dev/null || true
+  pkill -f serve_dashboard_lite.py 2>/dev/null || true
   sleep 2
   nohup bash scripts/nx_dashboard_supervise.sh >> dashboard_supervise.log 2>&1 &
   echo $! > dashboard.pid || true
   sleep 8
-  if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/api/health', timeout=20)" 2>/dev/null; then
+  if python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=20)" 2>/dev/null; then
     echo "HTTP_HEALTH_OK (boot)"
   else
     echo "WARN: health non risponde subito dopo boot (vedi dashboard_run.log e dashboard_supervise.log)"
@@ -447,6 +486,10 @@ def main() -> None:
         f"{REMOTE_BASE}/go2_dashboard/blueprints "
         f"{REMOTE_BASE}/msg "
         f"{REMOTE_BASE}/templates "
+        f"{REMOTE_BASE}/static/css "
+        f"{REMOTE_BASE}/static/js "
+        f"{REMOTE_BASE}/docs "
+        f"{REMOTE_BASE}/external/openvla_worker "
         f"{REMOTE_BASE}/data "
         f"{REMOTE_BASE}/bin "
         f"{REMOTE_BASE}/scripts/udev"
@@ -523,7 +566,7 @@ def main() -> None:
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_print_cyclone_diag.sh", 0o755)
     # Checkout Windows può lasciare CRLF negli .sh — bash sulla NX si rompe (set: +\r).
     strip_stdin, strip_stdout, strip_stderr = ssh.exec_command(
-        f"bash -lc \"sed -i 's/\\\\r$//' {REMOTE_BASE}/scripts/*.sh 2>/dev/null || true\""
+        f"bash -lc \"sed -i 's/\\\\r$//' {REMOTE_BASE}/scripts/*.sh {REMOTE_BASE}/external/openvla_worker/*.sh 2>/dev/null || true\""
     )
     strip_stdout.channel.recv_exit_status()
     sftp.close()

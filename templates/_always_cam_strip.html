@@ -1,7 +1,6 @@
 <section class="card always-cam-strip" id="alwaysCamStrip">
   <p class="small muted" style="margin:0 0 10px;">
-    Anteprima <strong>LiDAR XT-16</strong> a destra delle due cam (stessi dati del tab Operazioni). I tab completi
-    (<strong>Camere</strong>, <strong>LiDAR</strong>, <strong>Sequenza</strong>, …) sono nella sezione <strong>Operazioni</strong> sotto.
+    Anteprima principale: <strong>camera 0 RGB pulita</strong> + <strong>LiDAR XT-16</strong>. La <strong>camera 6</strong> resta disponibile nei dettagli/debug quando serve confronto frontale.
   </p>
   <div class="quick-op-row">
     <strong>Camere &amp; AprilTag</strong>
@@ -20,20 +19,16 @@
     <button type="button" class="green" onclick="saveTrueZeroPose()" title="Scrive data/true_zero_pose.json (usa editor giunti sotto per angoli esatti)">Salva ZERO</button>
     <button type="button" onclick="gotoTrueZeroPose()" title="Movimento lento verso file ZERO">Vai a ZERO</button>
     <button type="button" class="primary-go" style="background:#0f766e;border-color:#0d9488;" onclick="gotoSavedStartPose()" title="Vai direttamente alla posa START salvata (start_alignment.json)">Vai a START</button>
-    <button type="button" onclick="openOpTab('graspseq')">Sequenza/debug</button>
-    <button type="button" class="primary-go" style="background:#1d4ed8;border-color:#2563eb;" onclick="openOpTab('arm3d')" title="Apre il tab e scorre alla sezione Operazioni">Braccio 3D</button>
+    <button type="button" onclick="openOpTab('graspseq')">Presa / debug</button>
+    <button type="button" class="primary-go" style="background:#1d4ed8;border-color:#2563eb;" onclick="openOpTab('arm3d')" title="Apre il tab e scorre alla sezione Operazioni">Grasp 3D</button>
     <button type="button" class="primary-go" style="background:#7c3aed;border-color:#8b5cf6;" onclick="openOpTab('calibration')" title="Apre la procedura di calibrazione visuale">Calibrazione</button>
     <button type="button" class="primary-go" style="background:#0f766e;border-color:#0d9488;" onclick="openOpTab('trace')" title="Apri la vista pulita dall'alto">Vista dall’alto</button>
-    <button type="button" onclick="toggleAlwaysCamDetails()">Mostra camere GRANDI/debug</button>
+    <button type="button" onclick="toggleAlwaysCamDetails()">Apri confronto / debug</button>
     <div class="quick-vision-row">
       <div class="quick-cams">
         <div class="cam-thumb-wrap">
-          <img id="alwaysCam0" alt="cam0 polso" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg">
-          <div class="cam-thumb-caption">Polso / <strong>Orbbec RGB</strong> <strong>log.0</strong><br><code class="js-v4l-path-0">/dev/video0</code></div>
-        </div>
-        <div class="cam-thumb-wrap">
-          <img id="alwaysCam6" alt="cam6 frontale" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg">
-          <div class="cam-thumb-caption">Frontale <strong>log.6</strong> (RealSense RGB, non depth image)<br><code class="js-v4l-path-6">/dev/video6</code></div>
+          <img id="alwaysCam0" alt="cam0 polso RGB raw" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg">
+          <div class="cam-thumb-caption">Polso / <strong>RGB raw</strong> per AprilTag · <strong>log.0</strong><br><code class="js-v4l-path-0">/dev/video0</code></div>
         </div>
       </div>
       <div class="quick-lidar-wrap" title="Piano XY live (UDP 2368 sulla NX). Clic per vista grande.">
@@ -42,6 +37,7 @@
       </div>
     </div>
   </div>
+  <div class="small muted" style="margin-top:8px;">Camera frontale <strong>log.6</strong> solo nei dettagli/debug e nella calibrazione opzionale.</div>
   <div class="always-cam-more" id="alwaysCamMore">
     <p class="small muted" style="margin:0 0 8px;">
       Overlay tag = <strong>stesso MJPEG</strong> delle raw (flusso unico in &lt;img&gt;), nessun canvas nascosto.

@@ -5,4 +5,4 @@ set -a
 # shellcheck disable=SC1091
 source /home/unitree/go2_visual_dashboard/scripts/nx_dashboard_env.sh
 set +a
-exec /usr/bin/python3 /home/unitree/go2_visual_dashboard/scripts/serve_dashboard_modular.py
+exec /usr/bin/python3 /home/unitree/go2_visual_dashboard/scripts/serve_dashboard_lite.py

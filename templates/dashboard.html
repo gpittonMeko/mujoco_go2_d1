@@ -366,6 +366,59 @@
       display: block;
       background:#020617;
     }
+    .vision-large-tile.is-primary img,
+    .vision-large-tile.is-primary canvas {
+      height: min(58vh, 620px);
+      min-height: 380px;
+    }
+    .vision-large-tile.is-secondary img,
+    .vision-large-tile.is-secondary canvas {
+      height: min(40vh, 430px);
+      min-height: 260px;
+    }
+    .cam-primary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 12px 0 14px;
+    }
+    @media (max-width: 960px) { .cam-primary-grid { grid-template-columns: 1fr; } }
+    .cam-compare-acc {
+      margin-top: 12px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .cam-compare-acc summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: #e2e8f0;
+      font-weight: 800;
+    }
+    .cam-compare-acc summary::-webkit-details-marker { display: none; }
+    .cam-compare-acc .summary-note { color: #94a3b8; font-weight: 500; font-size: 12px; }
+    .cam-compare-body { padding: 0 14px 14px; }
+    .cam-compare-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    @media (max-width: 900px) { .cam-compare-grid { grid-template-columns: 1fr; } }
+    .cam-status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 12px;
+    }
+    .cam-status-row .pill { font-size: 12px; }
     .vision-large-tile img.bad-frame,
     .vision-large-tile canvas.bad-frame {
       outline: 3px solid #dc2626;
@@ -975,9 +1028,9 @@
       <div class="op-tabs" role="tablist" aria-label="Sezioni operative">
         <button type="button" class="op-tab is-active" role="tab" data-op-tab="camtag" aria-selected="true">Camere &amp; AprilTag</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="lidar" aria-selected="false">LiDAR XT-16</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Sequenza presa</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Presa / debug</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="graspdbg" aria-selected="false">Grasp debug</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Braccio 3D</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Grasp 3D</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="calibration" aria-selected="false">Calibrazione</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="trace" aria-selected="false">Vista dall’alto</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="go2" aria-selected="false">Corpo Go2</button>
@@ -985,48 +1038,57 @@
       </div>
 
       <div id="op-camtag" class="op-panel is-active" role="tabpanel" data-op-panel="camtag">
-        <p class="small muted" style="margin-bottom:12px;">
-          Vista grande per controllare se i tag sono davvero in frame. Tag scatola <strong>0–3</strong>, landmark <strong>5</strong>.
+        <p class="small muted" style="margin-bottom:10px;">
+          Vista operativa pulita: <strong>camera 0 RGB raw</strong> in primo piano per il tag 5, con overlay AprilTag separato; <strong>camera 6</strong> resta solo come confronto opzionale.
         </p>
-        <p class="small" style="margin-bottom:10px;">
-          Stato camere (dup): <span id="cameraStatus" class="warn">warming</span> · Planner: <span id="boxStatus" class="warn">dry-run</span>
-        </p>
-        <div class="vision-large-grid">
-          <div class="vision-large-tile">
+        <div class="cam-status-row">
+          <span class="pill ok">camera 0 = primaria</span>
+          <span class="pill warn">camera 6 = confronto/debug</span>
+          <span class="pill warn" id="cameraStatus">warming</span>
+          <span class="pill warn">Planner: <span id="boxStatus">dry-run</span></span>
+        </div>
+        <div class="cam-primary-grid">
+          <div class="vision-large-tile is-primary">
+            <img id="camtagRaw0" alt="camera 0 RGB raw" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg">
+            <strong>Camera 0 RGB raw — base AprilTag <code class="js-v4l-path-0">/dev/video0</code></strong>
+            <span>Questo è il flusso da guardare per il tag 5 sulla Orbbec RGB; l'overlay è nel riquadro accanto.</span>
+          </div>
+          <div class="vision-large-tile is-primary">
             <canvas id="camtagBox0" width="640" height="480"></canvas>
             <strong>Overlay AprilTag — polso <code class="js-v4l-path-0">/dev/video0</code></strong>
             <span>Copia in tempo reale dallo strip sopra (stesso stream).</span>
           </div>
-          <div class="vision-large-tile">
-            <canvas id="camtagBox6" width="640" height="480"></canvas>
-            <strong>Overlay AprilTag — frontale RealSense <code class="js-v4l-path-6">/dev/video6</code></strong>
-            <span>Copia dallo strip · Se nera: <code>GO2_VIDEO_INDEX_6</code> sulla NX.</span>
-          </div>
-          <div class="vision-large-tile">
-            <img id="camtagRaw0" alt="Raw grande polso" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg">
-            <strong>Raw polso <code class="js-v4l-path-0">/dev/video0</code></strong>
-            <span>Stream MJPEG live senza overlay.</span>
-          </div>
-          <div class="vision-large-tile">
-            <img id="camtagRaw6" alt="Raw grande frontale" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg">
-            <strong>Raw frontale <code class="js-v4l-path-6">/dev/video6</code></strong>
-            <span>Stream MJPEG live senza overlay.</span>
-          </div>
         </div>
-        <div class="flow-grid" style="margin-bottom:14px;">
-          <div class="flow-card">
-            <h4>AprilTag — polso <code class="js-v4l-path-0">/dev/video0</code></h4>
-            <p id="tagSummary0" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
+        <details class="cam-compare-acc">
+          <summary>
+            <span>Confronto camera 6 / debug frontale</span>
+            <span class="summary-note">Apri solo se vuoi verificare il fronte o la calibrazione opzionale</span>
+          </summary>
+          <div class="cam-compare-body">
+            <div class="cam-compare-grid">
+              <div class="vision-large-tile is-secondary">
+                <img id="camtagRaw6" alt="Raw grande frontale" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg">
+                <strong>Raw frontale opzionale — RealSense <code class="js-v4l-path-6">/dev/video6</code></strong>
+                <span>Usalo solo per confronto/debug: la calibrazione base parte da camera 0.</span>
+              </div>
+              <div class="vision-large-tile is-secondary">
+                <canvas id="camtagBox6" width="640" height="480"></canvas>
+                <strong>Overlay AprilTag — frontale RealSense <code class="js-v4l-path-6">/dev/video6</code></strong>
+                <span>Copia dallo strip · Se nera: <code>GO2_VIDEO_INDEX_6</code> sulla NX.</span>
+              </div>
+            </div>
+            <div class="flow-grid" style="margin-top:14px;">
+              <div class="flow-card">
+                <h4>AprilTag — polso <code class="js-v4l-path-0">/dev/video0</code></h4>
+                <p id="tagSummary0" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
+              </div>
+              <div class="flow-card">
+                <h4>AprilTag — frontale <code class="js-v4l-path-6">/dev/video6</code></h4>
+                <p id="tagSummary6" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
+              </div>
+            </div>
           </div>
-          <div class="flow-card">
-            <h4>AprilTag — frontale <code class="js-v4l-path-6">/dev/video6</code></h4>
-            <p id="tagSummary6" class="small" style="margin:0;color:#94a3b8;">Carico…</p>
-          </div>
-        </div>
-        <article class="card" style="margin-top:14px;">
-          <h2>Anteprima IK · <code>/api/box/plan</code> <span class="small warn">aggiornamento ~1,6s</span></h2>
-          <pre id="planSnapshot" class="small compact-pre">Loading dry-run plan...</pre>
-        </article>
+        </details>
       </div>
 
       <div id="op-lidar" class="op-panel" role="tabpanel" data-op-panel="lidar">
@@ -1105,7 +1167,7 @@
             </div>
             <div id="detectorStateBig" class="big-state warn">
               <strong>DETECTOR: fallback</strong>
-              <span class="small">YOLO26/YOLO11 TensorRT o fallback se manca il tag</span>
+              <span class="small">YOLO 2D/TensorRT o fallback; 3D vero solo con tag/depth</span>
             </div>
           </div>
             <div class="mission-actions">
@@ -1293,8 +1355,22 @@
               <pre id="graspDbgEventsPre" class="small compact-pre" style="max-height:200px;">—</pre>
             </div>
           </div>
-          <details class="diag-acc">
-            <summary><strong>JSON raw completo</strong> <span class="muted small">job + pipeline + session</span></summary>
+          <div class="flow-grid" style="margin-bottom:12px;">
+            <div class="flow-card" style="border:1px solid #334155; grid-column: 1 / -1;">
+              <h4 style="margin-top:0;">Visione 3D / oggetto</h4>
+              <p class="small muted" style="margin:0 0 6px;">Qui vedi il riassunto della scena 3D: se l'oggetto non compare, di solito il planner non ha un candidato valido.</p>
+              <pre id="graspDbgScenePre" class="small compact-pre" style="max-height:240px;">—</pre>
+            </div>
+          </div>
+          <details class="diag-acc" style="margin-top:12px;">
+            <summary><strong>Box detector 2D / debug interno</strong> <span class="muted small">spostato qui per non occupare la vista operativa</span></summary>
+            <div style="margin-top:10px;">
+              <p class="small muted" style="margin:0 0 8px;">Questo è il vecchio panel planner: utile solo quando vuoi controllare la selezione 2D, non per l'operazione quotidiana.</p>
+              <pre id="planSnapshot" class="small compact-pre">Loading dry-run plan...</pre>
+            </div>
+          </details>
+          <details class="diag-acc" style="margin-top:12px;">
+            <summary><strong>JSON raw completo</strong> <span class="muted small">job + pipeline + session + scene_3d</span></summary>
             <pre id="graspDbgRawPre" class="small compact-pre" style="margin-top:10px;max-height:360px;">—</pre>
           </details>
         </div>
@@ -1573,7 +1649,7 @@
             <code style="font-size:11px;">GO2_DEPLOY_OVERWRITE_PRESETS=1</code> sul PC quando lanci <code>deploy_dashboard_to_nx.py</code>.
           </p>
           <p class="small muted" style="margin:0 0 10px;line-height:1.35;">
-            <strong>Detection oggetto / due camere:</strong> polso e RealSense elaborano <strong>due immagini distinte</strong> (bounding box in pixel + YOLO/fallback).
+            <strong>Detection oggetto / due camere:</strong> polso e RealSense elaborano <strong>due immagini distinte</strong> (YOLO/fallback qui è <strong>2D</strong>; il 3D vero arriva da AprilTag/depth quando disponibile).
             La coerenza «stesso oggetto / stessa geometria» in <code class="small">base_link</code> dipende dalla catena tag5 → mount → camera front; i cursori qui sotto sono solo <strong>tuning interno</strong> per rifinire il modello, mentre la vista usa sempre il frame assoluto. In 3D controlla le sfere e il campo <code class="small">vis_geometry_chain_mm</code> in <code class="small">/api/arm/scene_3d</code>.
           </p>
           <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
@@ -1600,28 +1676,43 @@
           </div>
           <p id="arm3dStatusLine" class="small muted" style="margin-top:8px;">Carico scena…</p>
           <pre id="arm3dSceneDetail" class="compact-pre small muted" style="margin-top:6px;max-height:100px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
-          <div class="flow-grid" style="margin-top:10px;">
-            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
-              <h4 style="margin-top:0;">Oggetto detectato / target 3D</h4>
-              <pre id="arm3dObjectStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
-            </div>
-            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
-              <h4 style="margin-top:0;">Movimento previsto del braccio</h4>
-              <pre id="arm3dTrajectoryStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
-            </div>
-            <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
-              <h4 style="margin-top:0;">Allineamento / calibrazione camere ↔ braccio</h4>
-              <pre id="arm3dAlignmentStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
-            </div>
-          </div>
-          <div class="flow-card" style="margin-top:8px;padding:10px 12px;border:1px dashed #475569;background:rgba(15,23,42,0.28);">
+          <div class="flow-card" style="margin-top:10px;padding:12px 14px;border:1px solid #334155;background:rgba(15,23,42,0.42);">
             <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
-              <strong style="font-size:13px;color:#cbd5e1;">Vista dall’alto separata dal Three.js</strong>
-              <button type="button" onclick="openOpTab('trace', { user: true })">Apri vista dall’alto</button>
+              <strong style="font-size:13px;color:#cbd5e1;">Preview presa 3D</strong>
+              <span class="small muted">braccio attuale + braccio previsto + oggetto identificato</span>
             </div>
-            <p class="small muted" style="margin:8px 0 0;line-height:1.4;">
-              Qui resta solo il viewer avanzato. Se vuoi capire cosa sta facendo il braccio senza rumore, usa il tab <strong>Vista dall’alto</strong>.
+            <p class="small muted" style="margin:8px 0 0;line-height:1.45;">
+              Nel canvas sopra vedi il <strong>braccio reale</strong>, il <strong>target</strong>, il <strong>pezzo 3D identificato</strong> e la <strong>previsione del planner</strong>.
+              I dettagli testuali restano sotto e chiusi di default.
             </p>
+            <details class="diag-acc" style="margin-top:10px;">
+              <summary><strong>Dettagli testuali / debug</strong> <span class="small muted">chiusi di default</span></summary>
+              <div style="margin-top:10px;">
+                <div class="flow-grid" style="margin-top:0;">
+                  <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+                    <h4 style="margin-top:0;">Oggetto detectato / target 3D</h4>
+                    <pre id="arm3dObjectStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+                  </div>
+                  <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+                    <h4 style="margin-top:0;">Movimento previsto del braccio</h4>
+                    <pre id="arm3dTrajectoryStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+                  </div>
+                  <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+                    <h4 style="margin-top:0;">Allineamento / calibrazione camere ↔ braccio</h4>
+                    <pre id="arm3dAlignmentStatus" class="compact-pre small muted" style="margin-top:8px;max-height:150px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
+                  </div>
+                </div>
+                <div class="flow-card" style="margin-top:8px;padding:10px 12px;border:1px dashed #475569;background:rgba(15,23,42,0.28);">
+                  <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <strong style="font-size:13px;color:#cbd5e1;">Vista dall’alto separata dal Three.js</strong>
+                    <button type="button" onclick="openOpTab('trace', { user: true })">Apri vista dall’alto</button>
+                  </div>
+                  <p class="small muted" style="margin:8px 0 0;line-height:1.4;">
+                    Qui resta solo il viewer avanzato. Se vuoi capire cosa sta facendo il braccio senza rumore, usa il tab <strong>Vista dall’alto</strong>.
+                  </p>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
         <div class="flow-card" style="margin-top:12px;padding:12px 14px;border:1px dashed #475569;background:rgba(15,23,42,0.35);">
@@ -1645,16 +1736,24 @@
         {% include "_calibration_panel.html" %}
       </div>
       <div id="op-trace" class="op-panel" role="tabpanel" data-op-panel="trace">
+        <div class="section-head" style="margin-bottom:12px;">
+          <div>
+            <p class="section-kicker">Path / top view</p>
+            <h2>Traiettoria pulita dall’alto</h2>
+          </div>
+          <p class="section-note">Vista separata dal Three.js: qui leggi solo path, target e frame di riferimento.</p>
+        </div>
         <div class="flow-card" style="padding:12px 14px;border:1px solid #475569;background:rgba(15,23,42,.55);">
-          <h4 style="margin-top:0;">Vista dall’alto</h4>
-          <p class="small muted" style="margin:0 0 10px;line-height:1.45;">
-            Vista separata dal Three.js: qui leggi solo path, target e frame di riferimento.
-          </p>
+          <div class="cam-status-row" style="margin-bottom:12px;">
+            <span class="pill ok">path</span>
+            <span class="pill">target</span>
+            <span class="pill warn">frame</span>
+          </div>
           <div class="btn-row" style="margin:0 0 8px;align-items:center;gap:8px;flex-wrap:wrap;">
             <button type="button" class="primary-go" onclick="armTracePoll()">Carica traiettoria completa</button>
             <span id="armTraceStatusLine" class="small muted">—</span>
           </div>
-          <div style="display:grid;grid-template-columns:1.55fr 0.75fr;gap:10px;align-items:start;">
+          <div style="display:grid;grid-template-columns:1.65fr 0.85fr;gap:10px;align-items:start;">
             <div>
               <div class="small muted" style="margin-bottom:4px;">Vista dall’alto X/Y</div>
               <svg id="arm3dTopSvg" viewBox="0 0 360 220" style="width:100%;height:240px;background:#08101c;border:1px solid #334155;border-radius:8px;"></svg>
@@ -1816,26 +1915,31 @@
         document.querySelectorAll('.js-v4l-path-6').forEach(function (el) {
           el.textContent = '/dev/video' + v6;
         });
-        const pathHint = 'polso→/dev/video' + v0 + ' · front→/dev/video' + v6;
+        const pathHint = 'polso RGB→/dev/video' + v0 + ' · front opzionale→/dev/video' + v6;
+        const camStatusBits = [];
         for (const dev of [0, 6]) {
           const c = (data.cameras || {})[String(dev)] || {};
           allOk = allOk && !!c.available;
           const v4l = vmap[String(dev)] != null ? `→V4L${vmap[String(dev)]} ` : '';
-          const line = `log${dev} ${v4l}| ${c.label || 'camera'} | ${c.available ? 'OK' : 'warming'} | age=${c.age_ms ?? '-'}ms${c.error ? ' | ' + c.error : ''}`;
+          const chroma = (c.color_chroma != null && Number.isFinite(Number(c.color_chroma))) ? Number(c.color_chroma) : null;
+          const kind = c.rgb_like ? 'RGB' : (chroma != null ? 'mono/IR' : 'n/d');
+          const chromaBit = chroma != null ? ` | chroma=${chroma.toFixed(2)}` : '';
+          const line = `log${dev} ${v4l}| ${c.label || 'camera'} | ${kind} | ${c.available ? 'OK' : 'warming'} | age=${c.age_ms ?? '-'}ms${chromaBit}${c.error ? ' | ' + c.error : ''}`;
           setText(`cam${dev}Status`, line);
           setText(`alwaysCam${dev}Status`, line);
+          camStatusBits.push(`cam${dev} ${c.available ? kind + ' OK' : 'warming'}`);
         }
-        setText('cameraStatus', allOk ? 'streaming' : 'warming');
+        setText('cameraStatus', camStatusBits.join(' · '));
         setText('alwaysCameraStatus', (allOk ? 'cam OK · ' : 'cam warming · ') + pathHint);
         const el = document.getElementById('cameraStatus');
-        if (el) el.className = allOk ? 'ok' : 'warn';
+        if (el) el.className = 'pill ' + (allOk ? 'ok' : 'warn');
         const elA = document.getElementById('alwaysCameraStatus');
         if (elA) elA.className = 'pill ' + (allOk ? 'ok' : 'warn');
       } catch (e) {
         setText('cameraStatus', 'error');
         setText('alwaysCameraStatus', 'cam errore');
         const el = document.getElementById('cameraStatus');
-        if (el) el.className = 'bad';
+        if (el) el.className = 'pill bad';
         const elA = document.getElementById('alwaysCameraStatus');
         if (elA) elA.className = 'pill bad';
       }
@@ -3168,7 +3272,7 @@
       }
       window.openOpTab = openOpTab;
     }
-    var graspDbgState = { job: null, pipeline: null, session: null };
+    var graspDbgState = { job: null, pipeline: null, session: null, scene3d: null };
     function graspDbgStringify(v) {
       try {
         return JSON.stringify(v, null, 2);
@@ -3265,16 +3369,59 @@
         var j = r.json || {};
         graspDbgState.session = j;
         if (out) out.textContent = graspDbgStringify(j);
-        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: graspDbgState.job, pipeline: graspDbgState.pipeline, session: j }));
+        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: graspDbgState.job, pipeline: graspDbgState.pipeline, session: j, scene3d: graspDbgState.scene3d }));
         graspDbgSetText('graspDbgTopLine', 'Sessione aggiornata · ' + graspDbgSummary());
       } catch (e) {
         if (out) out.textContent = String(e);
         graspDbgSetText('graspDbgTopLine', 'Sessione non letta: ' + String(e));
       }
     }
+    async function graspDbgRefreshScene() {
+      var out = document.getElementById('graspDbgScenePre');
+      try {
+        var r = await graspDbgFetchJson('/api/arm/scene_3d');
+        var j = r.json || {};
+        graspDbgState.scene3d = j;
+        var obj = j.viewer_detected_object_primitive || {};
+        var ass = j.selected_grasp_assessment || {};
+        var summary = {
+          selected_camera: j.selected_camera,
+          vision_snapshot: j.vision_snapshot,
+          object: {
+            label_it: obj.label_it,
+            tier: obj.tier,
+            estimated: obj.estimated,
+            center_base_link_m: obj.center_base_link_m,
+            size_m: obj.size_m,
+            depth_support_ok: obj.depth_support_ok,
+            depth_median_m: obj.depth_median_m,
+          },
+          grasp_assessment: {
+            label_it: ass.label_it,
+            tier: ass.tier,
+            execution_allowed: ass.execution_allowed,
+            validated_3d: ass.validated_3d,
+            source_kind: ass.source_kind,
+          },
+          warnings: j.viewer_3d_warnings || []
+        };
+        if (out) out.textContent = graspDbgStringify(summary);
+        var line = [];
+        line.push('cam=' + (j.selected_camera != null ? j.selected_camera : '—'));
+        line.push('obj=' + (obj.label_it || '—'));
+        line.push('tier=' + (ass.tier || '—'));
+        line.push(obj.center_base_link_m ? 'obj3d=on' : 'obj3d=none');
+        line.push((ass.execution_allowed ? 'exec=YES' : 'exec=NO'));
+        graspDbgSetText('graspDbgTopLine', line.join(' · ') + ' · ' + graspDbgSummary());
+        graspDbgSetText('graspDbgRawPre', graspDbgStringify({ job: graspDbgState.job, pipeline: graspDbgState.pipeline, session: graspDbgState.session, scene3d: j }));
+      } catch (e) {
+        if (out) out.textContent = String(e);
+        graspDbgSetText('graspDbgTopLine', 'Scene 3D non letta: ' + String(e));
+      }
+    }
     async function graspDbgRefreshAll() {
       graspDbgSetText('graspDbgTopLine', 'Aggiorno stato grasp…');
-      await Promise.all([graspDbgRefreshJob(), graspDbgRefreshPipeline(), graspDbgRefreshSession()]);
+      await Promise.all([graspDbgRefreshJob(), graspDbgRefreshPipeline(), graspDbgRefreshSession(), graspDbgRefreshScene()]);
       graspDbgSetText('graspDbgTopLine', graspDbgSummary());
     }
     async function graspDbgStart(afterCrouch) {
@@ -3508,6 +3655,21 @@
       tgt.add(line);
       return line;
     }
+    function arm3dAddChainRobotBl(points, colorHex, group, opts) {
+      var tgt = group || arm3d.markers;
+      if (!points || points.length < 2 || !tgt || typeof THREE === 'undefined') return null;
+      var line = arm3dAddLineRobotBl(points, colorHex, tgt);
+      if (line && line.material) {
+        line.material.transparent = true;
+        line.material.opacity = opts && opts.opacity != null ? Math.max(0.04, Math.min(0.95, Number(opts.opacity))) : 0.34;
+      }
+      var sphereR = opts && opts.sphereR != null ? Number(opts.sphereR) : 0.0045;
+      points.forEach(function (p, idx) {
+        if (!p || p.length < 3) return;
+        arm3dAddSphereRobotBl(p, colorHex, idx === 0 ? sphereR * 1.1 : sphereR, tgt);
+      });
+      return line;
+    }
     function arm3dAddBoxRobotBl(center, size, colorHex, opts, group) {
       var tgt = group || arm3d.markers;
       if (!center || center.length < 3 || !size || size.length < 3 || !tgt || typeof THREE === 'undefined') return null;
@@ -3521,8 +3683,9 @@
         new THREE.MeshPhongMaterial({
           color: colorHex,
           transparent: true,
-          opacity: estimated ? 0.12 : 0.22,
+          opacity: estimated ? 0.34 : 0.54,
           shininess: 24,
+          emissive: new THREE.Color(colorHex).multiplyScalar(0.12),
         })
       );
       fill.position.set(center[0], center[1], center[2]);
@@ -4239,12 +4402,22 @@
       var chain = d.calibration_visual_alignment || {};
       if (objEl) {
         var objLines = [];
+        objLines.push('scene_3d=' + (primitive.center_base_link_m ? 'box visibile nel viewer' : 'nessun candidato: box non mostrato'));
         objLines.push('assessment=' + (ass.label_it || '—') + ' | source=' + (ass.source_kind || '—'));
         objLines.push('tier=' + (ass.tier || '—') + ' | eseguibile=' + (ass.execution_allowed ? 'sì' : 'no'));
         objLines.push('centro=' + (primitive.center_base_link_m ? arm3dFmtVec(primitive.center_base_link_m) : '—'));
         objLines.push('size=' + (primitive.size_m ? arm3dFmtVec(primitive.size_m) : '—') + ' | stimato=' + (primitive.estimated ? 'sì' : 'no'));
         objLines.push('detector_scope=' + (scope.label_it || '—'));
         if (primitive.confidence != null) objLines.push('confidence=' + primitive.confidence + ' | bbox_area_ratio=' + primitive.bbox_area_ratio);
+        if (primitive.depth_support_ok) {
+          var dBits = [];
+          if (primitive.depth_median_m != null) dBits.push('median=' + Number(primitive.depth_median_m).toFixed(3) + 'm');
+          if (primitive.depth_iqr_m != null) dBits.push('iqr=' + Number(primitive.depth_iqr_m).toFixed(3) + 'm');
+          if (primitive.depth_support_fraction != null) dBits.push('support=' + Number(primitive.depth_support_fraction).toFixed(2));
+          if (primitive.depth_sample_count != null) dBits.push('samples=' + primitive.depth_sample_count);
+          if (primitive.depth_roi_px && primitive.depth_roi_px.length >= 4) dBits.push('roi=' + primitive.depth_roi_px.join(','));
+          objLines.push('depth=' + dBits.join(' | '));
+        }
         objEl.textContent = objLines.join('\n');
       }
       if (trajEl) {
@@ -4431,6 +4604,17 @@
           objPrim.estimated ? 0xf59e0b : 0x22c55e,
           { estimated: !!objPrim.estimated }
         );
+      }
+      var ghostChains = traj && traj.ghost_chains_m && traj.ghost_chains_m.length ? traj.ghost_chains_m : [];
+      if (ghostChains.length && arm3d.trajectory) {
+        ghostChains.forEach(function (chain, idx) {
+          if (!chain || chain.length < 2) return;
+          var tail = idx === ghostChains.length - 1;
+          arm3dAddChainRobotBl(chain, tail ? 0x22c55e : 0x94a3b8, arm3d.trajectory, {
+            opacity: tail ? 0.46 : 0.22,
+            sphereR: tail ? 0.0048 : 0.0038,
+          });
+        });
       }
 
       try {

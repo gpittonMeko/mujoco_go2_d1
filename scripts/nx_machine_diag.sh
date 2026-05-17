@@ -25,7 +25,7 @@ echo "=== top RSS memory (15) ==="
 ps aux --sort=-rss 2>/dev/null | head -16
 echo ""
 echo "=== dashboard / supervise ==="
-pgrep -af 'serve_dashboard_modular|diagnostics_dashboard|nx_dashboard_supervise' 2>/dev/null || echo "(none)"
+pgrep -af 'serve_dashboard_lite|serve_dashboard_modular|diagnostics_dashboard|nx_dashboard_supervise' 2>/dev/null || echo "(none)"
 echo ""
 echo "=== python3 cmdlines (first 20) ==="
 pgrep -af python3 2>/dev/null | head -20

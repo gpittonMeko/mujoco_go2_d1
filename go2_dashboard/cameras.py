@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 CAMERA_DEVICES: dict[int, str] = {
-    0: "External USB wrist/arm camera",
+    0: "Wrist RGB (Orbbec Gemini / Sonix UVC — auto-map USB)",
     6: "Intel RealSense D435i RGB stream",
 }
 
@@ -129,17 +129,35 @@ def _frame_looks_like_rgb_color(frame: Any) -> bool:
         return False
 
 
-def _try_set_realsense_mjpeg_fourcc(cap: Any) -> None:
-    """Lo stream colore UVC spesso espone MJPEG; depth/IR spesso no."""
+def _frame_rgb_diagnostics(frame: Any) -> dict[str, Any]:
+    """Sintesi leggera del frame per capire se è RGB vero o più simile a IR/grayscale."""
+    chroma = _frame_channel_chroma_bgr(frame)
+    rgb_like = _frame_looks_like_rgb_color(frame)
+    if frame is None or not getattr(frame, "size", 0):
+        return {"color_chroma": None, "rgb_like": False}
+    return {
+        "color_chroma": round(float(chroma), 3),
+        "rgb_like": bool(rgb_like),
+        "stream_kind": "rgb" if rgb_like else ("mono_or_ir" if chroma >= 0.0 else "unknown"),
+    }
+
+
+def _try_set_uvc_mjpeg_fourcc(cap: Any, *, prefer_env: str = "GO2_REALSENSE_PREFER_MJPEG") -> None:
+    """Preferisci MJPEG su stream colore UVC (RealSense, Orbbec Gemini UVC, ecc.)."""
     if cv2 is None:
         return
-    flag = os.environ.get("GO2_REALSENSE_PREFER_MJPEG", "1").strip().lower()
+    flag = os.environ.get(prefer_env, "1").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     except Exception:
         pass
+
+
+def _try_set_realsense_mjpeg_fourcc(cap: Any) -> None:
+    """Compat: stesso comportamento di ``_try_set_uvc_mjpeg_fourcc`` con env RealSense."""
+    _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
 
 
 def _probe_generic_rgb_v4l(indices: list[int], *, default_env: str, fallback_default: int) -> int | None:
@@ -224,7 +242,7 @@ def _probe_realsense_rgb_v4l(rs_indices: list[int]) -> int | None:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
                 pass
-            _try_set_realsense_mjpeg_fourcc(cap)
+            _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
             try:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -417,10 +435,11 @@ class CameraCache:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     except Exception:
                         pass
-                    if int(device) == 6:
-                        usb = _usb_vid_pid_for_video_index(v4l_idx)
-                        if usb == ("8086", "0b3a"):
-                            _try_set_realsense_mjpeg_fourcc(cap)
+                    usb = _usb_vid_pid_for_video_index(v4l_idx)
+                    if int(device) == 6 and usb == ("8086", "0b3a"):
+                        _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
+                    elif int(device) == 0 and usb == ("2bc5", "080b"):
+                        _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     cap.set(cv2.CAP_PROP_FPS, 15)
@@ -460,12 +479,16 @@ class CameraCache:
                     [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
                 )
                 if enc_ok:
+                    diag = _frame_rgb_diagnostics(frame)
                     with self._lock:
                         self.frames[device] = {
                             "jpg": jpg.tobytes(),
                             "ts": time.time(),
                             "shape": list(frame.shape),
                             "label": self.devices[device],
+                            "color_chroma": diag.get("color_chroma"),
+                            "rgb_like": bool(diag.get("rgb_like")),
+                            "stream_kind": diag.get("stream_kind"),
                         }
                         self.errors.pop(device, None)
             else:
@@ -512,6 +535,9 @@ class CameraCache:
                     "started": device in self._started_devices,
                     "age_ms": None if device not in self.frames else round((now - self.frames[device]["ts"]) * 1000, 1),
                     "shape": None if device not in self.frames else self.frames[device]["shape"],
+                    "color_chroma": None if device not in self.frames else self.frames[device].get("color_chroma"),
+                    "rgb_like": False if device not in self.frames else bool(self.frames[device].get("rgb_like")),
+                    "stream_kind": None if device not in self.frames else self.frames[device].get("stream_kind"),
                     "error": self.errors.get(device),
                 }
                 for device in self.devices

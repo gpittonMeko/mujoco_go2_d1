@@ -1,0 +1,6 @@
+# Server HTTP + modalità ``planner`` (box_grasp_planner dal repo).
+# OpenVLA (torch/transformers) non è incluso: vedi README se lo aggiungete in seguito.
+flask>=3.0.0,<4
+gunicorn>=22.0.0,<24
+numpy>=1.23,<3
+opencv-python-headless>=4.8,<5

@@ -3,11 +3,10 @@
     <strong>arm_link00</strong> è l’origine del <strong>braccio</strong> (primo giunto), in metri: <strong>+X</strong> avanti rispetto al cane.
     Il riferimento corretto che usiamo qui è <strong>assoluto</strong> nel frame base del servo: <strong>tag 5 = X 19 cm, Y 0, Z 8 cm</strong>.
     Il <strong>LiDAR</strong> è reso come <strong>cilindro Ø10 cm × h 8 cm</strong> centrato su <strong>X 19 cm, Y 0</strong>; la <strong>camera frontale</strong> è a <strong>X 37,5 cm, Y 0, Z 1 cm</strong>.
-    Per <strong>tvec → base</strong> basta <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): di solito lo vede <strong>solo la camera polso (0)</strong>; la RealSense (6) può non inquadrarlo: va bene.
+    Per <strong>tvec → base</strong> il riferimento principale è <strong>un AprilTag 25h9 ID 5</strong> sul robot (vicino XT-16): usa prima di tutto la <strong>camera 0 / polso RGB</strong> perché è quella che deve vedere il tag 5.
+    Se stai guardando i <strong>punti</strong> o l’overlay, non è la raw RGB: torna a <strong>Raw polso</strong> nello strip camere.
     Il POST «Salva nominale» crea <code>data/tag5_calibration_arm_base.json</code>.
-    <strong>dual_probe</strong> (GET opzionale) confronta due stime <em>solo se</em> entrambe le camere vedono <em>lo stesso</em> tag 5 nello stesso istante; non calibra la mutua posa polso↔muso.
-    Per stimare bene quella geometria servirebbe un <strong>punto 3D comune</strong> visto da entrambe (es. tag a terra con posa nota): oggi <strong>non</strong> c’è un wizard dedicato; i cursori sotto servono solo al tuning interno del viewer.
-    I tag <strong>0–3 sulla scatola</strong> servono alla presa; usano la <strong>stessa</strong> correzione del landmark.
+    <strong>dual_probe</strong> (GET opzionale) confronta due stime <em>solo se</em> entrambe le camere vedono <em>lo stesso</em> tag 5 nello stesso istante; è un controllo avanzato, non il flusso base.
   </p>
   <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
     <button type="button" class="primary-go" onclick="calibrationFlowReload()">Aggiorna guida e stato server</button>
@@ -25,7 +24,7 @@
     <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
       <h4 style="margin-top:0;">Step A — landmark tag 5</h4>
       <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
-        Usa la <strong>camera polso</strong> per inquadrare bene il tag 5, poi salva il nominale nel frame <code>arm_link00</code>.
+        Usa la <strong>camera polso RGB (0)</strong> per inquadrare bene il tag 5, poi salva il nominale nel frame <code>arm_link00</code>.
       </p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
         <label class="small">X <input type="number" step="0.001" id="tag5_nom_x" placeholder="0.19" style="width:92px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
@@ -33,8 +32,8 @@
         <label class="small">Z <input type="number" step="0.001" id="tag5_nom_z" placeholder="0.08" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
         <label class="small">Camera
           <select id="tag5_calib_camera" style="padding:4px 8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;">
-            <option value="0" selected>Polso log. 0 (consigliata)</option>
-            <option value="6">Frontale log. 6</option>
+            <option value="0" selected>Polso log. 0 (RGB / consigliata)</option>
+            <option value="6">Frontale log. 6 (opzionale)</option>
           </select>
         </label>
       </div>
@@ -49,26 +48,30 @@
       </p>
       <pre id="tag5CalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:200px;font-size:11px;">—</pre>
     </div>
-    <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
-      <h4 style="margin-top:0;">Step B — stessa feature su polso + RealSense</h4>
-      <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
-        Con lo <strong>stesso</strong> AprilTag inquadrato da <strong>video0</strong> e <strong>video6</strong> (anche su scatola/oggetto): nominale centro tag in <code>arm_link00</code> (m).
-      </p>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-        <label class="small">tag_id <input type="number" step="1" id="dual_tag_id" value="2" style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-        <label class="small">lato tag (m, opz.) <input type="number" step="0.001" id="dual_tag_edge" placeholder="0.019" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+    <details class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
+      <summary style="cursor:pointer;list-style:none;outline:none;">
+        <h4 style="margin:0;display:inline-block;">Step B opzionale — stessa feature su polso + RealSense</h4>
+      </summary>
+      <div style="margin-top:10px;">
+        <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
+          Con lo <strong>stesso</strong> AprilTag inquadrato da <strong>video0</strong> e <strong>video6</strong> (anche su scatola/oggetto): nominale centro tag in <code>arm_link00</code> (m).
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+          <label class="small">tag_id <input type="number" step="1" id="dual_tag_id" value="2" style="width:56px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+          <label class="small">lato tag (m, opz.) <input type="number" step="0.001" id="dual_tag_edge" placeholder="0.019" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+          <label class="small">Nom. X <input type="number" step="0.001" id="dual_nom_x" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+          <label class="small">Y <input type="number" step="0.001" id="dual_nom_y" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+          <label class="small">Z <input type="number" step="0.001" id="dual_nom_z" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
+        </div>
+        <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva calibrazione 0+6 (stesso tag)</button>
+        <pre id="dualSharedCalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:180px;font-size:11px;">—</pre>
+        <p class="small muted" style="margin-top:10px;line-height:1.4;">
+          Questo migliora la coerenza tra <strong>camera frontale</strong>, <strong>camera polso</strong> e <strong>viewer 3D</strong>, ma non sostituisce una calibrazione stereo completa.
+        </p>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-        <label class="small">Nom. X <input type="number" step="0.001" id="dual_nom_x" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-        <label class="small">Y <input type="number" step="0.001" id="dual_nom_y" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-        <label class="small">Z <input type="number" step="0.001" id="dual_nom_z" style="width:78px;padding:4px 6px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;" /></label>
-      </div>
-      <button type="button" class="primary-go" onclick="sharedDualCalibSave()">Salva calibrazione 0+6 (stesso tag)</button>
-      <pre id="dualSharedCalibStatus" class="compact-pre small muted" style="margin-top:8px;max-height:180px;font-size:11px;">—</pre>
-      <p class="small muted" style="margin-top:10px;line-height:1.4;">
-        Questo migliora la coerenza tra <strong>camera frontale</strong>, <strong>camera polso</strong> e <strong>viewer 3D</strong>, ma non sostituisce una calibrazione stereo completa.
-      </p>
-    </div>
+    </details>
     <div class="flow-card" style="padding:10px 12px;border:1px solid #334155;background:rgba(15,23,42,0.45);">
       <h4 style="margin-top:0;">Step C — verifica operativa</h4>
       <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
