@@ -714,6 +714,7 @@ def main() -> None:
         f"{REMOTE_BASE}/data/hermes_skills "
         f"{REMOTE_BASE}/data/hermes_skills/example_lab "
         f"{REMOTE_BASE}/bin "
+        f"{REMOTE_BASE}/scripts/lab "
         f"{REMOTE_BASE}/scripts/udev"
     )
     stdout.channel.recv_exit_status()
