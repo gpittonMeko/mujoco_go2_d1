@@ -32,6 +32,9 @@ Thumbs.db
 *.log
 *.tmp
 MUJOCO_LOG.TXT
+# Agent/lab one-off (non committare)
+scripts/_tmp*.py
+scripts/_patch*.py
 
 # CycloneDDS build (opzionale, se compilato in-place)
 cyclonedds/build/
@@ -40,6 +43,13 @@ cyclonedds/build/
 bin/
 
 # Saved START alignment snapshot on NX (operator-specific scene geometry)
+data/grasp_coach_memory.jsonl
+data/operator_session_memory.jsonl
 data/start_alignment.json
 # Calibrated folded "true zero" pose on NX (operator-specific)
 data/true_zero_pose.json
+
+# Secrets (mai committare — es. token Telegram per Hermes Nous)
+hermestoken.txt
+*_token.txt
+**/hermestoken.txt

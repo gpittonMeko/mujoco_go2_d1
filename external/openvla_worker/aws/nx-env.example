@@ -1,0 +1,12 @@
+# Variabili NX per worker VLA su AWS (non committare token reali).
+# Aggiungi a scripts/nx_secrets_dashboard.sh sulla Jetson:
+#
+#   export GO2_WORKER_TOKEN=<stesso valore di aws/.env>
+
+export GO2_ANYGRASP_WORKER_URL=https://vla-worker.example.com
+export GO2_ANYGRASP_PROXY=1
+export GO2_GRASP_CLOUD_MODE=1
+
+# Esecuzione braccio da ultimo piano VLA
+export GO2_ENABLE_REAL_ARM=1
+export GO2_ENABLE_ARM_PLAN_EXECUTE=1

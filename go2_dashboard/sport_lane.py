@@ -123,33 +123,15 @@ def sport_accompany_subprocess(
     return out
 
 
-def accompany_mode_handle(request: Any) -> tuple[dict[str, Any], int]:
-    """Stessa semantica di ``/api/base/accompany_mode`` del monolite (GET query o POST JSON)."""
+def accompany_execute_json(
+    body: dict[str, Any],
+    *,
+    query_sync_flag: bool = False,
+) -> tuple[dict[str, Any], int]:
+    """Esegue Sport/DDS da un dizionario JSON (stesso contratto di POST ``/api/base/accompany_mode``)."""
     ok_gate, reason = base_motion_allowed()
     if not ok_gate:
         return {"ok": False, "reason": reason}, 403
-
-    if request.method == "GET":
-        if os.environ.get("GO2_ALLOW_GET_BASE_MOTION", "1").lower() not in {"1", "true", "yes", "on"}:
-            return {"ok": False, "reason": "GET disabled (set GO2_ALLOW_GET_BASE_MOTION=1)"}, 405
-        mq = (request.args.get("mode") or "").strip().lower()
-        if not mq:
-            return {"ok": False, "reason": "missing_query_parameter_mode"}, 400
-        body: dict[str, Any] = {"mode": mq, "enable": True, "stand_up_first": False}
-        if request.args.get("stand_up_first", "").lower() in {"1", "true", "yes"}:
-            body["stand_up_first"] = True
-        if request.args.get("enable", "").lower() in {"0", "false", "no"}:
-            body["enable"] = False
-        sl = request.args.get("speed_level")
-        if sl is not None and str(sl).strip() != "":
-            try:
-                body["speed_level"] = int(sl)
-            except ValueError:
-                pass
-        if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
-            body["sync"] = True
-    else:
-        body = request.get_json(silent=True) or {}
 
     enable = bool(body.get("enable", True))
     stand_first = bool(body.get("stand_up_first", False))
@@ -159,6 +141,21 @@ def accompany_mode_handle(request: Any) -> tuple[dict[str, Any], int]:
     iface = GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None
     mode = str(body.get("mode") or "joystick").strip().lower()
     dds_iface_report = iface if iface else None
+
+    def _maybe_float(key: str) -> float | None:
+        raw = body.get(key)
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    vx_f = _maybe_float("vx")
+    vy_f = _maybe_float("vy")
+    vyaw_f = _maybe_float("vyaw")
+    pre_bal_raw = body.get("pre_balance")
+    pre_balance = True if pre_bal_raw is None else bool(pre_bal_raw)
 
     def _sport_call() -> Any:
         if mode in {"crouch", "stand_up"} and sport_stand_modes_use_subprocess():
@@ -179,10 +176,14 @@ def accompany_mode_handle(request: Any) -> tuple[dict[str, Any], int]:
             mode=mode,
             stand_up_first=stand_first,
             speed_level=speed_level,
+            vx=vx_f,
+            vy=vy_f,
+            vyaw=vyaw_f,
+            pre_balance=pre_balance,
         )
 
     sync = os.environ.get("GO2_SPORT_RPC_SYNC", "0").lower() in {"1", "true", "yes"}
-    if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
+    if query_sync_flag:
         sync = True
     if isinstance(body.get("sync"), bool) and body.get("sync"):
         sync = True
@@ -237,6 +238,34 @@ def accompany_mode_handle(request: Any) -> tuple[dict[str, Any], int]:
     sport_record_last(mode=mode, sync=True, result=result, error=None)
     status = 200 if result.get("ok") else 502
     return result, status
+
+
+def accompany_mode_handle(request: Any) -> tuple[dict[str, Any], int]:
+    """GET query o POST JSON verso ``accompany_execute_json``."""
+    if request.method == "GET":
+        if os.environ.get("GO2_ALLOW_GET_BASE_MOTION", "1").lower() not in {"1", "true", "yes", "on"}:
+            return {"ok": False, "reason": "GET disabled (set GO2_ALLOW_GET_BASE_MOTION=1)"}, 405
+        mq = (request.args.get("mode") or "").strip().lower()
+        if not mq:
+            return {"ok": False, "reason": "missing_query_parameter_mode"}, 400
+        body: dict[str, Any] = {"mode": mq, "enable": True, "stand_up_first": False}
+        if request.args.get("stand_up_first", "").lower() in {"1", "true", "yes"}:
+            body["stand_up_first"] = True
+        if request.args.get("enable", "").lower() in {"0", "false", "no"}:
+            body["enable"] = False
+        sl = request.args.get("speed_level")
+        if sl is not None and str(sl).strip() != "":
+            try:
+                body["speed_level"] = int(sl)
+            except ValueError:
+                pass
+        if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
+            body["sync"] = True
+    else:
+        body = request.get_json(silent=True) or {}
+
+    qsync = request.args.get("sync", "").lower() in {"1", "true", "yes"}
+    return accompany_execute_json(body, query_sync_flag=qsync)
 
 
 def sport_last_payload() -> dict[str, Any]:

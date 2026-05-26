@@ -8,9 +8,10 @@ Worker HTTP compatibile con go2_dashboard/blueprints/grasp.py:
 Modalità (env ``GO2_GRASP_WORKER_BACKEND``):
   - ``planner`` (default): piano **reale** via ``scripts/box_grasp_planner.py`` (serve clone repo +
     JPEG da ``WORKER_CAMERA_JPG_URL`` o ``image_url`` nel JSON).
+  - ``openvla``: stub, adapter, **HTTP /act** locale (`OPENVLA_ACT_SERVER_URL`), oppure inferenza **Hugging Face**
+    (`OPENVLA_USE_HF=1`, default `openvla/openvla-7b`). Ordine in `openvla_runtime.py`.
   - ``stub``: risposta fissa per test UI senza OpenCV.
 
-OpenVLA (policy VLM) **non** è incluso qui: richiede pesi e integrazione azione→robot separata.
 Il backend ``planner`` **non** importa ``diagnostics_dashboard`` / monolite: solo ``scripts/box_grasp_planner.py``.
 """
 from __future__ import annotations
@@ -21,6 +22,23 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
+
+
+def _worker_token_expected() -> str:
+    return (os.environ.get("GO2_WORKER_TOKEN") or "").strip()
+
+
+@app.before_request
+def _check_worker_token() -> Any:
+    expected = _worker_token_expected()
+    if not expected:
+        return None
+    if request.path == "/health" and request.method == "GET":
+        return None
+    got = (request.headers.get("X-Worker-Token") or "").strip()
+    if got != expected:
+        return jsonify({"ok": False, "reason": "unauthorized", "hint_it": "Header X-Worker-Token mancante o errato."}), 401
+    return None
 
 
 def _backend() -> str:
@@ -50,6 +68,9 @@ def health() -> Any:
     mode = _backend()
     planner_ok = False
     planner_err = None
+    openvla_ok = False
+    openvla_err = None
+    openvla_meta: dict[str, Any] | None = None
     if mode == "planner":
         try:
             from planner_runtime import planner_import_ok
@@ -57,14 +78,33 @@ def health() -> Any:
             planner_ok, planner_err = planner_import_ok()
         except Exception as exc:
             planner_err = repr(exc)
+    elif mode == "openvla":
+        try:
+            from openvla_runtime import openvla_import_ok, openvla_status
+
+            openvla_ok, openvla_err = openvla_import_ok()
+            openvla_meta = openvla_status()
+        except Exception as exc:
+            openvla_err = repr(exc)
+    hint = (
+        "openvla=openvla_runtime (stub → adapter → OPENVLA_ACT_SERVER_URL → HF); planner=box_grasp_planner; "
+        "vedi external/openvla_worker/README.md."
+        if mode == "openvla"
+        else "planner=box_grasp_planner sul repo; stub=test UI."
+    )
     return jsonify(
         {
             "ok": True,
+            "implementation": "mujoco_go2_d1/external/openvla_worker/app.py",
+            "routes": {"GET": ["/health"], "POST": ["/plan", "/execute"]},
             "backend": mode,
             "planner_import_ok": planner_ok,
             "planner_import_error": planner_err,
+            "openvla_import_ok": openvla_ok,
+            "openvla_import_error": openvla_err,
+            "openvla_status": openvla_meta,
             "camera_jpg_url": os.environ.get("WORKER_CAMERA_JPG_URL", ""),
-            "hint_it": "planner=box_grasp_planner sul repo; OpenVLA non è in questo processo.",
+            "hint_it": hint,
         }
     )
 
@@ -75,6 +115,25 @@ def plan() -> Any:
     mode = _backend()
     if mode == "stub":
         return jsonify(_stub_plan(body))
+    if mode == "openvla":
+        try:
+            from openvla_runtime import openvla_import_ok, plan_from_openvla_json
+
+            ok, err = openvla_import_ok()
+            if not ok:
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "reason": "openvla_import_failed",
+                            "detail": err,
+                        }
+                    ),
+                    503,
+                )
+            return jsonify(plan_from_openvla_json(body))
+        except Exception as exc:
+            return jsonify({"ok": False, "reason": "openvla_exception", "detail": repr(exc)}), 500
     try:
         from planner_runtime import plan_from_http_json, planner_import_ok
 
@@ -102,6 +161,13 @@ def execute() -> Any:
     mode = _backend()
     if mode == "stub":
         return jsonify({"ok": True, "backend": "stub", "merged_preview": body})
+    if mode == "openvla":
+        try:
+            from openvla_runtime import execute_openvla_echo
+
+            return jsonify(execute_openvla_echo(body))
+        except Exception as exc:
+            return jsonify({"ok": False, "reason": "openvla_execute_exception", "detail": repr(exc)}), 500
     try:
         from planner_runtime import execute_echo
 

@@ -2,7 +2,18 @@
 # Un solo file da lanciare sul PC worker (stessa rete della Jetson, es. 192.168.123.x).
 # Uso:  bash bootstrap_worker_host.sh
 #       bash bootstrap_worker_host.sh --skip-install   # solo avvio (venv già pronto)
+#       bash bootstrap_worker_host.sh --with-openvla   # clone repo openvla in ~/source/openvla (solo git)
+#       bash bootstrap_worker_host.sh --install-openvla-hf   # pip HF (con --skip-install: solo HF deps)
 set -euo pipefail
+
+WITH_OPENVLA=0
+SKIP_INSTALL=0
+INSTALL_OPENVLA_HF=0
+for arg in "$@"; do
+  if [[ "$arg" == "--skip-install" ]]; then SKIP_INSTALL=1; fi
+  if [[ "$arg" == "--with-openvla" ]]; then WITH_OPENVLA=1; fi
+  if [[ "$arg" == "--install-openvla-hf" ]]; then INSTALL_OPENVLA_HF=1; fi
+done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -20,7 +31,21 @@ echo "=== Grasp worker host (Flask; default backend=planner / box_grasp_planner)
 echo "Directory worker: $ROOT"
 echo "Repo root:        $REPO_ROOT"
 
-if [[ "${1:-}" != "--skip-install" ]]; then
+if [[ "$WITH_OPENVLA" == "1" ]]; then
+  OV_DEST="${HOME}/source/openvla"
+  mkdir -p "$(dirname "$OV_DEST")"
+  if [[ ! -d "$OV_DEST/.git" ]]; then
+    echo ">>> --with-openvla: git clone openvla -> $OV_DEST"
+    git clone "https://github.com/openvla/openvla.git" "$OV_DEST"
+  else
+    echo ">>> --with-openvla: git pull in $OV_DEST"
+    (cd "$OV_DEST" && git pull)
+  fi
+  export OPENVLA_REPO_ROOT="$OV_DEST"
+  echo "export OPENVLA_REPO_ROOT=$OV_DEST"
+fi
+
+if [[ "$SKIP_INSTALL" != "1" ]]; then
   if ! command -v python3 >/dev/null 2>&1; then
     echo "ERRORE: installa python3 (es. sudo apt install -y python3 python3-venv python3-pip)"
     exit 1
@@ -34,9 +59,17 @@ if [[ "${1:-}" != "--skip-install" ]]; then
   echo ">>> pip install -r requirements.txt"
   pip install -U pip wheel
   pip install -r requirements.txt
+  if [[ "$INSTALL_OPENVLA_HF" == "1" ]]; then
+    echo ">>> pip install -r requirements-openvla.txt (Hugging Face OpenVLA)"
+    pip install -r "${ROOT}/requirements-openvla.txt"
+  fi
 else
   # shellcheck source=/dev/null
   source "$VENV/bin/activate"
+  if [[ "$INSTALL_OPENVLA_HF" == "1" ]]; then
+    echo ">>> pip install -r requirements-openvla.txt (solo HF, --skip-install)"
+    pip install -r "${ROOT}/requirements-openvla.txt"
+  fi
 fi
 
 echo

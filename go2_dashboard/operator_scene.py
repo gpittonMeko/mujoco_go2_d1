@@ -17,8 +17,10 @@ from typing import Any
 import numpy as np
 
 from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
+from go2_dashboard.operator_plan_cache import get_last_grasp_plan
 from go2_dashboard.operator_stack import go2_local
 from go2_dashboard.paths import PROJECT_ROOT
+from go2_dashboard.scene_meshes import d1_mesh_visual_offsets_m, scene_mesh_manifest
 
 _VIS_DEFAULTS: dict[str, float] = {
     "arm_vs_tag5_x": -0.19,
@@ -51,6 +53,15 @@ _VIS_DEFAULTS: dict[str, float] = {
     "frustum_wrist_rz_deg": 0.0,
     "frustum_depth_far_m": 0.62,
     "frustum_wrist_far_m": 0.58,
+    # Volume nominale go2 in base_link (davanti alla base, pavimento z≈0).
+    "dog_occ_enabled": 1.0,
+    "dog_occ_length_m": 0.35,
+    "dog_occ_width_m": 0.20,
+    "dog_occ_height_m": 0.15,
+    "dog_occ_center_x_m": 0.175,
+    "dog_occ_center_y_m": 0.0,
+    "dog_occ_center_z_m": 0.075,
+    "dog_occ_apply_viz_go2": 1.0,
 }
 
 _TUNING_PATH = PROJECT_ROOT / "data" / "vis_geometry_tuning.json"
@@ -75,17 +86,40 @@ def _load_vis_geometry_effective() -> dict[str, float]:
     return out
 
 
+def _openvla_heuristic_base_link_xyz(act_obj: Any) -> list[float] | None:
+    """Stessa euristica di ``openvla_runtime._heuristic_grasp_from_action`` (UI / base_link)."""
+    if not isinstance(act_obj, (list, tuple)) or len(act_obj) < 3:
+        return None
+    raw = (os.environ.get("OPENVLA_HEURISTIC_ORIGIN_M") or "0.42,0.0,0.18").strip()
+    try:
+        origin = np.array([float(x) for x in raw.split(",")], dtype=float)
+    except Exception:
+        origin = np.array([0.42, 0.0, 0.18], dtype=float)
+    try:
+        scale = float((os.environ.get("OPENVLA_HEURISTIC_ACTION_SCALE") or "0.04").strip())
+    except ValueError:
+        scale = 0.04
+    try:
+        delta = np.array([float(act_obj[i]) for i in range(3)], dtype=float) * scale
+    except (TypeError, ValueError):
+        return None
+    out = origin[:3] + delta
+    return [round(float(out[i]), 5) for i in range(3)]
+
+
 def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
     sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
     from arm_kinematics_d1_template import (
         ARM_FOLD_POSE,
         DEPTH_CAMERA_ARM_BASE_M,
+        clamp,
         depth_camera_optical_axis_unit_arm_base,
         fk_chain_positions,
         fk_d1_joint_locals_m,
         fk_tool_tip,
         fk_wrist_camera_center_m,
         fk_wrist_camera_view_axis_unit_m,
+        J_LIMITS,
         nominal_object_along_depth_optical_arm_m,
     )
 
@@ -158,6 +192,7 @@ def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
             round(float(vg["viz_go2_ty_m"]), 5),
             round(float(vg["viz_go2_tz_m"]), 5),
         ],
+        "d1_mesh_visual_offsets_m": d1_mesh_visual_offsets_m(),
     }
 
     _nom_dep = float(os.environ.get("GO2_OBJECT_NOMINAL_DEPTH_ALONG_OPTICAL_M", "0.20"))
@@ -177,6 +212,127 @@ def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
         "tool_tip_base_link_m": _ab_to_bl([round(float(tip_v[i]), 5) for i in range(3)]),
     }
 
+    cached_plan = get_last_grasp_plan()
+    vla_xyz: list[float] | None = None
+    vla_src: str | None = None
+    vla_tool_path_bl: list[list[float]] | None = None
+    if isinstance(cached_plan, dict) and cached_plan.get("ok"):
+        fk_bl = cached_plan.get("openvla_fk_tool_tip_base_link_m")
+        if isinstance(fk_bl, (list, tuple)) and len(fk_bl) >= 3:
+            try:
+                vla_xyz = [round(float(fk_bl[i]), 5) for i in range(3)]
+                vla_src = "openvla_fk_tool_tip_base_link_m"
+            except (TypeError, ValueError):
+                vla_xyz = None
+        if vla_xyz is None:
+            for key in (
+                "grasp_display_base_link_m",
+                "grasp_center_base_link_m",
+                "approach_point_base_link_m",
+                "target_base_link_m",
+            ):
+                v = cached_plan.get(key)
+                if isinstance(v, (list, tuple)) and len(v) >= 3:
+                    try:
+                        vla_xyz = [round(float(v[i]), 5) for i in range(3)]
+                        vla_src = key
+                        break
+                    except (TypeError, ValueError):
+                        continue
+        if vla_xyz is None:
+            data = cached_plan.get("data")
+            if isinstance(data, dict):
+                for key in ("grasp_display_base_link_m", "grasp_center_base_link_m"):
+                    v = data.get(key)
+                    if isinstance(v, (list, tuple)) and len(v) >= 3:
+                        try:
+                            vla_xyz = [round(float(v[i]), 5) for i in range(3)]
+                            vla_src = "data." + key
+                            break
+                        except (TypeError, ValueError):
+                            continue
+        act = cached_plan.get("openvla_action_7dof")
+        mode = (os.environ.get("GO2_SCENE3D_OPENVLA_FK_MODE") or "").strip().lower()
+        if vla_xyz is None and isinstance(act, (list, tuple)) and len(act) >= 6 and mode in {"absolute", "delta"}:
+            try:
+                adj = [float(act[i]) for i in range(6)]
+            except (TypeError, ValueError):
+                adj = None
+            if adj is not None:
+                if mode == "absolute":
+                    q_pol = [clamp(adj[i], *J_LIMITS[i]) for i in range(6)]
+                else:
+                    sc = float((os.environ.get("GO2_SCENE3D_OPENVLA_DELTA_SCALE") or "1.0").strip() or "1.0")
+                    q_pol = [clamp(float(q_vis[i]) + adj[i] * sc, *J_LIMITS[i]) for i in range(6)]
+                tip_arm = fk_tool_tip(q_pol)
+                vla_xyz = _ab_to_bl([round(float(tip_arm[i]), 5) for i in range(3)])
+                vla_src = f"nx_scene3d_fk_{mode}"
+        if vla_xyz is None and isinstance(act, (list, tuple)):
+            h = _openvla_heuristic_base_link_xyz(act)
+            if h is not None:
+                vla_xyz = h
+                vla_src = "openvla_heuristic_action"
+        if vla_xyz is not None:
+            lm["worker_plan_grasp_base_link_m"] = vla_xyz
+            if vla_src:
+                lm["worker_plan_grasp_source"] = vla_src
+        if cached_plan.get("openvla_joint_space") == "d1_rad" and isinstance(act, (list, tuple)) and len(act) >= 6:
+            try:
+                q_tgt = [clamp(float(act[i]), *J_LIMITS[i]) for i in range(6)]
+                pts: list[list[float]] = []
+                for alpha in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
+                    q = [float(q_vis[i]) + (q_tgt[i] - float(q_vis[i])) * alpha for i in range(6)]
+                    q = [clamp(q[i], *J_LIMITS[i]) for i in range(6)]
+                    tip_arm = fk_tool_tip(q)
+                    pts.append(_ab_to_bl([round(float(tip_arm[j]), 5) for j in range(3)]))
+                vla_tool_path_bl = pts
+            except (TypeError, ValueError):
+                vla_tool_path_bl = None
+
+    tip_bl = lm.get("tool_tip_base_link_m")
+    vla_dist: float | None = None
+    if vla_xyz and isinstance(tip_bl, list) and len(tip_bl) >= 3:
+        try:
+            vla_dist = round(
+                math.sqrt(
+                    sum((float(vla_xyz[i]) - float(tip_bl[i])) ** 2 for i in range(3))
+                ),
+                4,
+            )
+        except (TypeError, ValueError):
+            vla_dist = None
+
+    _dog_apply_viz = float(vg.get("dog_occ_apply_viz_go2", 1.0)) > 0.5
+    _go2_dog_off = (
+        float(vg["viz_go2_tx_m"]) if _dog_apply_viz else 0.0,
+        float(vg["viz_go2_ty_m"]) if _dog_apply_viz else 0.0,
+        float(vg["viz_go2_tz_m"]) if _dog_apply_viz else 0.0,
+    )
+    dog_occ: dict[str, Any]
+    if float(vg.get("dog_occ_enabled", 1.0)) > 0.5:
+        Ld = float(vg.get("dog_occ_length_m", 0.35))
+        Wd = float(vg.get("dog_occ_width_m", 0.20))
+        Hd = float(vg.get("dog_occ_height_m", 0.15))
+        z_nom = float(vg.get("dog_occ_center_z_m", Hd * 0.5))
+        dc_x = float(vg.get("dog_occ_center_x_m", Ld * 0.5)) + _go2_dog_off[0]
+        dc_y = float(vg.get("dog_occ_center_y_m", 0.0)) + _go2_dog_off[1]
+        dc_z = z_nom + _go2_dog_off[2]
+        dog_occ = {
+            "enabled": True,
+            "frame": "base_link",
+            "center_base_link_m": [round(dc_x, 5), round(dc_y, 5), round(dc_z, 5)],
+            "size_m": [round(Ld, 5), round(Wd, 5), round(Hd, 5)],
+            "axes_base_link_it": "lunghezza lungo +X (avanti), larghezza lungo Y (sinistra), altezza lungo Z (su)",
+            "note_it": (
+                "Ingombro nominale del corpo rispetto a base_link: default 35×20×15 cm davanti alla base, "
+                "faccia inferiore sul piano z=0 se center_z=H/2 e offset viz_go2 nullo. "
+                "Calibra tag 5 (file tag5) per allineare telecamere/markers; poi ritocca dog_occ_* in "
+                "vis_geometry_tuning.json se serve."
+            ),
+        }
+    else:
+        dog_occ = {"enabled": False, "frame": "base_link"}
+
     payload: dict[str, Any] = {
         "ok": True,
         "frame": "arm_base",
@@ -185,7 +341,10 @@ def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
         "geometry_full_requested": not geometry_fast,
         "operator_scene_note_it": (
             "Dashboard operator: niente piano AprilTag/``api_box_plan`` qui. "
-            "Solo FK + geometria file; ``full=1`` non avvia il planner del monolite."
+            "Solo FK + geometria file; ``full=1`` non avvia il planner del monolite. "
+            "Ultimo ``POST /api/grasp/plan`` (cache) → ``viewer_landmarks_base_link_m.worker_plan_grasp_*`` "
+            "stesso ``base_link`` del braccio FK; per VLA=giunti sul worker usa ``OPENVLA_ACTION_FK_JOINTS=1`` "
+            "oppure sulla NX ``GO2_SCENE3D_OPENVLA_FK_MODE=absolute|delta``."
         ),
         "axes_hint": {
             "x": "avanti (davanti al cane)",
@@ -239,15 +398,30 @@ def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
         },
         "viewer_detected_object_primitive": {
             "kind": "box",
-            "center_base_link_m": None,
+            "center_base_link_m": [round(float(x), 5) for x in _ab_to_bl(_nom_obj_ab.tolist())],
             "size_m": [0.12, 0.08, 0.08],
-            "note_it": "Nessun oggetto da planner su questa dashboard.",
+            "note_it": "Target nominale lungo asse ottico depth (FK) — niente /api/box/plan su lite.",
         },
+        "dog_occupancy_base_link": dog_occ,
         "viewer_landmarks_base_link_m": lm,
         "scene_graph": scene_graph,
         "ik_trajectory": {"targets_xyz_m": [], "fk_tool_xyz_m": [], "ghost_chains_m": [], "stages": []},
         "viewer_3d_warnings": [],
-        "scene_mesh": {"manifest": [], "api_pattern": "/api/arm/scene_meshes/<go2|d1>/<filename> (non montato qui)"},
+        "scene_mesh": {
+            "manifest": scene_mesh_manifest(),
+            "api_pattern": "/api/arm/scene_meshes/<go2|d1>/<filename>",
+        },
+        "operator_vla_display": {
+            "cached_plan_ok": bool(isinstance(cached_plan, dict) and cached_plan.get("ok")),
+            "marker_source": vla_src,
+            "distance_tip_to_marker_m": vla_dist,
+            "openvla_approach_tool_path_base_link_m": vla_tool_path_bl,
+            "hint_it": (
+                "Distanza tra punta FK reale e marker piano/VLA. "
+                "``openvla_approach_tool_path_base_link_m`` = linea arancione (solo se piano con ``openvla_joint_space=d1_rad``). "
+                "Movimento braccio: FK ``/api/arm/openvla_execute_last_plan_d1`` o IK ``/api/arm/execute_last_plan_ik`` (vedi tab Robot)."
+            ),
+        },
     }
 
     if servo_ok:
@@ -266,25 +440,35 @@ def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
 
 
 def build_grasp_pipeline_stub() -> dict[str, Any]:
-    """Messaggio chiaro: la pipeline end-to-end del monolite non è duplicata qui."""
+    """Stato pipeline: cosa la lite offre oggi (worker RTX + calib tag5) vs cosa resta fuori (grasp_box monolite)."""
     return {
         "ok": True,
         "operator_slim": True,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "fusion_ready_for_execute": False,
         "narrative_it": [
-            "① Dashboard operator autonoma: niente import del processo monolite.",
-            "② Per ``fusion_ready_for_execute`` / piano tag/IK completo usa la dashboard classica "
-            "(``serve_dashboard_modular`` / porta 5050) oppure estendi ``go2_dashboard.operator_scene``.",
-            "③ Controlla camere con GET /api/cameras/status e viewer 3D con GET /api/arm/scene_3d.",
+            "① **Worker RTX / OpenVLA:** tab Robot → ``POST /api/grasp/plan`` (proxy verso ``GO2_ANYGRASP_WORKER_URL``, es. ``http://<IP_RTX>:8765``). "
+            "JPEG ingresso: di default ``/api/robot/camera/{0|6}.jpg``; per un **altro nodo V4L** Orbbec imposta sulla NX "
+            "``GO2_VLA_SNAPSHOT_V4L_INDEX`` e sul worker ``WORKER_CAMERA_JPG_URL=http://<NX>:5050/api/robot/vla_frame.jpg``.",
+            "② **Calibrazione tag 5 (AprilTag/ArUco id 5):** ``GET/POST/DELETE /api/arm/tag5_calibration``, "
+            "``GET /api/arm/calibration_flow``, ``GET/POST /api/arm/tag_calibration_shared_dual`` — allinea i frame al ``base_link``; "
+            "nel viewer 3D l’ingombro nominale go2 è ``dog_occupancy_base_link`` (≈35×20×15 cm, tarabile in ``vis_geometry_tuning.json``).",
+            "③ **Movimento braccio:** sulla NX ``GO2_ENABLE_REAL_ARM=1`` e ``GO2_ENABLE_ARM_PLAN_EXECUTE=1`` (deploy default). "
+            "(A) Giunti D1 in rad nel piano: worker ``OPENVLA_ACTION_FK_JOINTS=1`` → ``POST /api/arm/openvla_execute_last_plan_d1``. "
+            "(B) Solo punto 3D (es. ``grasp_display_base_link_m``): ``POST /api/arm/execute_last_plan_ik`` con conferma.",
+            "④ Camere e viewer: ``GET /api/cameras/status``, ``GET /api/arm/scene_3d``.",
         ],
         "environment": {
             "GO2_LOCAL": os.environ.get("GO2_LOCAL", "0"),
             "GO2_ENABLE_REAL_ARM": os.environ.get("GO2_ENABLE_REAL_ARM", "0"),
             "GO2_GRASP_EXECUTE_ARM": os.environ.get("GO2_GRASP_EXECUTE_ARM", "0"),
+            "GO2_ENABLE_ARM_PLAN_EXECUTE": os.environ.get("GO2_ENABLE_ARM_PLAN_EXECUTE", "0"),
+            "GO2_ENABLE_OPENVLA_ARM_EXECUTE": os.environ.get("GO2_ENABLE_OPENVLA_ARM_EXECUTE", "0"),
+            "GO2_ENABLE_GRASP_IK_EXECUTE": os.environ.get("GO2_ENABLE_GRASP_IK_EXECUTE", "0"),
+            "GO2_ANYGRASP_WORKER_URL": (os.environ.get("GO2_ANYGRASP_WORKER_URL") or "").strip() or None,
         },
         "selected_camera": None,
         "selected_grasp_assessment": None,
         "sequence_start_ready": False,
-        "sequence_start_block_reason": "operator_dashboard_no_monolith_pipeline",
+        "sequence_start_block_reason": "operator_dashboard_no_grasp_box_sequence",
     }

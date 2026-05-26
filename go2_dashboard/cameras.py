@@ -28,6 +28,13 @@ _USB_IDS_REALSENSE = {("8086", "0b3a")}
 _usb_auto_v4l_cache: dict[int, int] | None = None
 _usb_auto_lock = threading.Lock()
 
+# Diagnostica ultima scelta V4L per log.0 Orbbec (``GET /api/cameras/status``).
+_ORBBEC_LOGICAL0_DEBUG: dict[str, Any] = {}
+
+# Override da UI operator (senza riavvio): ha priorità sulla mappa USB automatica, mai su ``GO2_VIDEO_INDEX_*``.
+_runtime_v4l_lock = threading.Lock()
+_runtime_v4l_by_logical: dict[int, int] = {}
+
 
 def _usb_vid_pid_for_video_index(v4l_index: int) -> tuple[str, str] | None:
     """Legge idVendor/idProduct del device USB collegato a ``/sys/class/video4linux/videoN``."""
@@ -74,6 +81,34 @@ def _enumerate_v4l_usb_bindings() -> list[tuple[int, str, str]]:
     return out
 
 
+def v4l_usb_inventory() -> list[dict[str, Any]]:
+    """Tutti i nodi ``/dev/video*`` legati a USB: sysfs name + VID:PID + slot logici dashboard (0/6) se mappati.
+
+    La dashboard HTTP espone **solo** i device logici ``0`` e ``6`` (JPEG/MJPEG). Gli altri nodi restano qui per debug
+    (Orbbec/RealSense espongono spesso depth/IR/metadata su indici diversi dal colore). Per Orbbec, la mappa automatica
+    prova prima i nodi il cui nome sysfs indica RGB, esclude depth/IR dal probe salvo
+    ``GO2_ORBBEC_PROBE_INCLUDE_DEPTH_IR=1``, e può essere forzata con ``GO2_VIDEO_INDEX_0``.
+    """
+    rows = _enumerate_v4l_usb_bindings()
+    auto_m = usb_auto_v4l_mapping()
+    rev: dict[int, list[int]] = {}
+    for log, vidx in auto_m.items():
+        rev.setdefault(int(vidx), []).append(int(log))
+    out: list[dict[str, Any]] = []
+    for idx, vid, pid in sorted({(r[0], r[1], r[2]) for r in rows}, key=lambda t: t[0]):
+        name = _v4l_sysfs_card_name(idx)
+        slots = sorted(rev.get(int(idx), []))
+        out.append(
+            {
+                "v4l_index": int(idx),
+                "sysfs_name": name,
+                "usb_vid_pid": f"{vid}:{pid}",
+                "dashboard_logical_slots": slots,
+            }
+        )
+    return out
+
+
 def _v4l_sysfs_card_name(v4l_index: int) -> str:
     """Nome interfaccia V4L (es. … Depth / IR / RGB) da sysfs — solo Linux."""
     if platform.system().lower() != "linux":
@@ -100,6 +135,33 @@ def _realsense_rgb_node_priority(name: str) -> tuple[int, str]:
         return (50, n)
     # Molti kernel ripetono una stringa generica per tutti i nodi: serve anche il chroma-check sul frame.
     return (40, n)
+
+
+def _orbbec_rgb_node_priority(name: str) -> tuple[int, str]:
+    """Priorità nodi V4L Orbbec Gemini (UVC): stesso schema di RealSense.
+
+    Il pattern IR / proiettore depth (``puntini``) esce spesso su nodi depth/IR — vanno provati dopo RGB.
+    """
+    n = (name or "").lower()
+    if "meta" in n:
+        return (85, n)
+    if "rgb" in n or "color" in n or "colour" in n:
+        return (0, n)
+    if "depth" in n:
+        return (65, n)
+    if "ir" in n or "infra" in n:
+        return (55, n)
+    return (40, n)
+
+
+def _orbbec_sysfs_name_is_non_color_stream(name: str) -> bool:
+    """Vero se il nome sysfs indica depth/IR/mono (non va usato come ``CAMERA_DEVICES[0]`` senza probe ok)."""
+    n = (name or "").lower()
+    if "rgb" in n or "color" in n or "colour" in n:
+        return False
+    if "depth" in n or "ir" in n or "infra" in n or "mono" in n:
+        return True
+    return False
 
 
 def _frame_channel_chroma_bgr(frame: Any) -> float:
@@ -158,6 +220,210 @@ def _try_set_uvc_mjpeg_fourcc(cap: Any, *, prefer_env: str = "GO2_REALSENSE_PREF
 def _try_set_realsense_mjpeg_fourcc(cap: Any) -> None:
     """Compat: stesso comportamento di ``_try_set_uvc_mjpeg_fourcc`` con env RealSense."""
     _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
+
+
+def _orbbec_probe_chroma_min() -> float:
+    raw = (os.environ.get("GO2_ORBBEC_MIN_FRAME_CHROMA") or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    try:
+        return float(os.environ.get("GO2_REALSENSE_MIN_FRAME_CHROMA", "2.5"))
+    except ValueError:
+        return 2.5
+
+
+def _frame_looks_like_rgb_color_with_min_chroma(frame: Any, chroma_min: float) -> bool:
+    """Come ``_frame_looks_like_rgb_color`` ma soglia chroma esplicita (Orbbec vs RealSense)."""
+    try:
+        if frame is None or not getattr(frame, "size", 0):
+            return False
+        if len(frame.shape) != 3 or int(frame.shape[2]) < 3:
+            return False
+        if float(frame.max()) < 10.0:
+            return False
+        return _frame_channel_chroma_bgr(frame) >= float(chroma_min)
+    except Exception:
+        return False
+
+
+def _orbbec_max_edge_from_env(*, relaxed: bool) -> float:
+    if relaxed:
+        raw = (os.environ.get("GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED") or "0.42").strip()
+    else:
+        raw = (os.environ.get("GO2_ORBBEC_MAX_EDGE_DENSITY") or "0.26").strip()
+    try:
+        return float(raw or ("0.42" if relaxed else "0.26"))
+    except ValueError:
+        return 0.42 if relaxed else 0.26
+
+
+def _frame_orbbec_color_plausible(
+    frame: Any,
+    chroma_min: float,
+    *,
+    max_edge_den: float | None = None,
+) -> bool:
+    """Esclude stream IR/proiettore depth: reticolo ad alta densità di bordi rispetto a RGB UVC."""
+    if not _frame_looks_like_rgb_color_with_min_chroma(frame, chroma_min):
+        return False
+    if cv2 is None:
+        return True
+    if max_edge_den is None:
+        max_edge_den = _orbbec_max_edge_from_env(relaxed=False)
+    try:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 45, 120)
+        den = float(edges.mean()) / 255.0
+        if den > float(max_edge_den):
+            return False
+    except Exception:
+        return True
+    return True
+
+
+def orbbec_logical0_probe_debug() -> dict[str, Any]:
+    """Ultima risoluzione probe Orbbec per log.0 (diagnostica ``GET /api/cameras/status``)."""
+    return dict(_ORBBEC_LOGICAL0_DEBUG)
+
+
+def _probe_orbbec_rgb_v4l(indices: list[int], *, default_env: str, fallback_default: int) -> int | None:
+    """Sceglie il nodo colore Orbbec: più passaggi (MJPEG/YUYV, soglia bordi, anche sysfs ambigui)."""
+    global _ORBBEC_LOGICAL0_DEBUG
+    _ORBBEC_LOGICAL0_DEBUG = {"stage": "init"}
+    if cv2 is None or platform.system().lower() != "linux" or not indices:
+        _ORBBEC_LOGICAL0_DEBUG = {"stage": "no_cv2_or_empty_indices"}
+        return None
+    flag = os.environ.get("GO2_ORBBEC_VIDEO_PROBE", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        _ORBBEC_LOGICAL0_DEBUG = {"stage": "GO2_ORBBEC_VIDEO_PROBE_off"}
+        return None
+    try:
+        pref = int(os.environ.get(default_env, str(fallback_default)).strip())
+    except ValueError:
+        pref = int(fallback_default)
+    chroma_min = _orbbec_probe_chroma_min()
+    allow_depth_ir = os.environ.get("GO2_ORBBEC_PROBE_INCLUDE_DEPTH_IR", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    uniq = sorted({int(idx) for idx in indices})
+
+    def sort_key(idx: int, *, penalize_noncolor: bool) -> tuple[int, int, int, int]:
+        name = _v4l_sysfs_card_name(idx)
+        noncolor = _orbbec_sysfs_name_is_non_color_stream(name)
+        rank, _ = _orbbec_rgb_node_priority(name)
+        penalize = 1 if (penalize_noncolor and noncolor and not allow_depth_ir) else 0
+        return (penalize, rank, abs(int(idx) - int(pref)), int(idx))
+
+    def try_pass(
+        *,
+        pass_name: str,
+        penalize_noncolor: bool,
+        relaxed_edge: bool,
+        use_mjpeg: bool,
+        reads: int,
+    ) -> int | None:
+        order = sorted(uniq, key=lambda i: sort_key(i, penalize_noncolor=penalize_noncolor))
+        max_edge = _orbbec_max_edge_from_env(relaxed=relaxed_edge)
+        for idx in order:
+            name = _v4l_sysfs_card_name(idx)
+            if penalize_noncolor and _orbbec_sysfs_name_is_non_color_stream(name) and not allow_depth_ir:
+                continue
+            cap = None
+            try:
+                path = _v4l_path(idx)
+                cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    if cap is not None:
+                        cap.release()
+                    cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                if cap is None or not cap.isOpened():
+                    continue
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                if use_mjpeg:
+                    _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
+                else:
+                    try:
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+                    except Exception:
+                        pass
+                try:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                except Exception:
+                    pass
+                ok_streak = 0
+                for _ in range(reads):
+                    ok, fr = cap.read()
+                    if ok and _frame_orbbec_color_plausible(fr, chroma_min, max_edge_den=max_edge):
+                        ok_streak += 1
+                        if ok_streak >= 2:
+                            return int(idx)
+                    else:
+                        ok_streak = 0
+            except Exception:
+                pass
+            finally:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+        return None
+
+    for spec in (
+        ("strict_sysfs_mjpeg", True, False, True, 18),
+        ("relaxed_edge_mjpeg", True, True, True, 18),
+        ("relaxed_edge_yuyv", True, True, False, 22),
+        ("exhaustive_noncolor_mjpeg", False, True, True, 16),
+        ("exhaustive_noncolor_yuyv", False, True, False, 20),
+    ):
+        pname, pnc, re, umj, nread = spec
+        found = try_pass(
+            pass_name=pname,
+            penalize_noncolor=pnc,
+            relaxed_edge=re,
+            use_mjpeg=umj,
+            reads=nread,
+        )
+        if found is not None:
+            _ORBBEC_LOGICAL0_DEBUG = {
+                "ok": True,
+                "v4l_index": found,
+                "probe_pass": pname,
+                "pref": pref,
+                "indices_pool": uniq,
+            }
+            return found
+    _ORBBEC_LOGICAL0_DEBUG = {
+        "ok": False,
+        "stage": "all_probe_passes_failed",
+        "pref": pref,
+        "indices_pool": uniq,
+    }
+    return None
+
+
+def _orbbec_rgb_fallback_v4l_index(indices: list[int], pref: int) -> int:
+    """Se il probe fallisce: preferisci sysfs ``rgb``/``color``, evita depth/IR se il nome lo dice."""
+    if not indices:
+        return int(pref)
+
+    def sort_key(idx: int) -> tuple[int, int, int, int]:
+        name = _v4l_sysfs_card_name(int(idx))
+        noncolor = _orbbec_sysfs_name_is_non_color_stream(name)
+        rank, _ = _orbbec_rgb_node_priority(name)
+        return (1 if noncolor else 0, rank, abs(int(idx) - int(pref)), int(idx))
+
+    return int(min(indices, key=sort_key))
 
 
 def _probe_generic_rgb_v4l(indices: list[int], *, default_env: str, fallback_default: int) -> int | None:
@@ -298,16 +564,40 @@ def usb_auto_v4l_mapping() -> dict[int, int]:
             logical0_sonix = [
                 idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
             ]
-            logical0_candidates = sorted({int(idx) for idx in (logical0_orbbec or logical0_sonix)})
-            probed0 = _probe_generic_rgb_v4l(
-                logical0_candidates,
-                default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
-                fallback_default=pref0,
-            )
-            if probed0 is not None:
-                m[0] = int(probed0)
+            if logical0_orbbec:
+                logical0_candidates = sorted({int(idx) for idx in logical0_orbbec})
+                probed0 = _probe_orbbec_rgb_v4l(
+                    logical0_candidates,
+                    default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
+                    fallback_default=pref0,
+                )
+                if probed0 is not None:
+                    m[0] = int(probed0)
+                else:
+                    fb = int(_orbbec_rgb_fallback_v4l_index(logical0_candidates, pref0))
+                    m[0] = fb
+                    _ORBBEC_LOGICAL0_DEBUG = {
+                        "ok": False,
+                        "method": "sysfs_fallback_after_failed_probe",
+                        "v4l_index": fb,
+                        "pref": pref0,
+                        "hint_it": (
+                            "Nessun frame ha superato il probe RGB Orbbec: "
+                            "prova export GO2_VIDEO_INDEX_0=N sul nodo RGB da v4l2-ctl, "
+                            "oppure aumenta GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED."
+                        ),
+                    }
             else:
-                m[0] = int(min(logical0_candidates, key=lambda x: abs(int(x) - pref0)))
+                logical0_candidates = sorted({int(idx) for idx in logical0_sonix})
+                probed0 = _probe_generic_rgb_v4l(
+                    logical0_candidates,
+                    default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
+                    fallback_default=pref0,
+                )
+                if probed0 is not None:
+                    m[0] = int(probed0)
+                else:
+                    m[0] = int(min(logical0_candidates, key=lambda x: abs(int(x) - pref0)))
         rs_idx = sorted({idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_REALSENSE})
         if rs_idx:
             probed = _probe_realsense_rgb_v4l(rs_idx)
@@ -335,10 +625,10 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
 
     1. ``GO2_VIDEO_INDEX_<logical>`` se impostato.
     2. Su Linux, mappa automatica USB (``GO2_CAMERA_AUTO_USB_MAP`` non ``0``/``false``):
-       Sonix 0735:0269 / Orbbec 2bc5:080b → logico ``0``; Intel RealSense 8086:0b3a → logico ``6``
-       (indice RGB scelto con probe frame BGR se ``GO2_REALSENSE_VIDEO_PROBE`` non disattivo,
-       altrimenti ``GO2_REALSENSE_V4L_DEFAULT``, default ``6``). Per la camera logica ``0``
-       il probe usa ``GO2_ARM_CAMERA_V4L_DEFAULT`` (default ``0``).
+       Sonix 0735:0269 / Orbbec 2bc5:080b → logico ``0``; Intel RealSense 8086:0b3a → logico ``6``.
+       RealSense: probe BGR se ``GO2_REALSENSE_VIDEO_PROBE`` è attivo, altrimenti
+       ``GO2_REALSENSE_V4L_DEFAULT`` (default ``6``). Orbbec: probe sysfs (RGB prima) + chroma se
+       ``GO2_ORBBEC_VIDEO_PROBE`` è attivo; preferenza indice ``GO2_ARM_CAMERA_V4L_DEFAULT`` (default ``0``).
     3. Altrimenti ``logical == N`` → ``/dev/videoN``.
     """
     key = f"GO2_VIDEO_INDEX_{logical}"
@@ -347,6 +637,10 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
             return int(str(os.environ[key]).strip())
         except ValueError:
             pass
+    with _runtime_v4l_lock:
+        rt = _runtime_v4l_by_logical.get(int(logical))
+        if rt is not None:
+            return int(rt)
     if platform.system().lower() == "linux":
         flag = os.environ.get("GO2_CAMERA_AUTO_USB_MAP", "1").strip().lower()
         if flag not in ("0", "false", "no", "off"):
@@ -400,6 +694,132 @@ def _cv_videocapture(v4l_index: int) -> Any:
     return cv2.VideoCapture(v4l_index)
 
 
+def debug_v4l_snapshot_jpeg(v4l_index: int, *, jpeg_quality: int = 72) -> bytes | None:
+    """Un singolo frame JPEG da ``/dev/videoN`` (debug: confrontare nodi RGB vs depth IR senza SDK)."""
+    if cv2 is None or platform.system().lower() != "linux":
+        return None
+    cap = None
+    try:
+        cap = _cv_videocapture(int(v4l_index))
+        if not cap.isOpened():
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        usb = _usb_vid_pid_for_video_index(int(v4l_index))
+        if usb == ("2bc5", "080b"):
+            _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
+        elif usb == ("8086", "0b3a"):
+            _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
+        try:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        except Exception:
+            pass
+        for _ in range(10):
+            ok, frame = cap.read()
+            if ok and frame is not None and frame.size and float(frame.max()) >= 4.0:
+                enc_ok, jpg = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+                )
+                if enc_ok:
+                    return jpg.tobytes()
+        return None
+    except Exception:
+        return None
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+
+def v4l_index_in_usb_inventory(v4l_index: int) -> bool:
+    """Vero se ``v4l_index`` compare nell'inventario USB (evita path traversal su indici casuali)."""
+    want = int(v4l_index)
+    return any(int(r[0]) == want for r in _enumerate_v4l_usb_bindings())
+
+
+def _expected_usb_ids_for_logical(logical: int) -> set[tuple[str, str]]:
+    if int(logical) == 0:
+        return set(_USB_IDS_LOGICAL_0)
+    if int(logical) == 6:
+        return set(_USB_IDS_REALSENSE)
+    return set()
+
+
+def v4l_candidates_for_logical_slot(logical: int) -> list[int]:
+    """Tutti i ``/dev/videoN`` USB compatibili con lo slot dashboard (0 = Orbbec/Sonix, 6 = RealSense)."""
+    want = _expected_usb_ids_for_logical(int(logical))
+    if not want:
+        return []
+    rows = _enumerate_v4l_usb_bindings()
+    return sorted({int(idx) for idx, vid, pid in rows if (vid, pid) in want})
+
+
+def validate_runtime_v4l_for_logical(logical: int, v4l_index: int) -> str | None:
+    """Ritorna messaggio errore (IT) o ``None`` se l'indice è ammesso per lo slot."""
+    if int(logical) not in (0, 6):
+        return "logical deve essere 0 o 6"
+    if not v4l_index_in_usb_inventory(v4l_index):
+        return "indice V4L non nell'inventario USB"
+    usb = _usb_vid_pid_for_video_index(int(v4l_index))
+    if not usb:
+        return "impossibile leggere VID:PID USB"
+    exp = _expected_usb_ids_for_logical(int(logical))
+    if usb not in exp:
+        return f"VID:PID {usb[0]}:{usb[1]} non ammesso per log.{logical}"
+    return None
+
+
+def get_runtime_v4l_overrides() -> dict[int, int]:
+    with _runtime_v4l_lock:
+        return dict(_runtime_v4l_by_logical)
+
+
+def set_runtime_v4l_overrides(updates: dict[int, int | None]) -> dict[str, Any]:
+    """Applica o rimuove override runtime. Se ``GO2_VIDEO_INDEX_<n>`` è nell'ambiente, il relativo slot viene rifiutato."""
+    applied: dict[str, Any] = {}
+    errors: list[str] = []
+    for raw_k, raw_v in updates.items():
+        try:
+            log = int(raw_k)
+        except (TypeError, ValueError):
+            errors.append(f"chiave logical non valida: {raw_k!r}")
+            continue
+        if log not in (0, 6):
+            errors.append(f"log.{log} non supportato (solo 0 e 6)")
+            continue
+        env_key = f"GO2_VIDEO_INDEX_{log}"
+        if raw_v is None:
+            with _runtime_v4l_lock:
+                _runtime_v4l_by_logical.pop(log, None)
+            applied[str(log)] = None
+            continue
+        if env_key in os.environ:
+            errors.append(
+                f"log.{log}: {env_key} è impostato — rimuovi la variabile (o commentala in nx_dashboard_env.sh) per usare la selezione dalla dashboard."
+            )
+            continue
+        try:
+            idx = int(raw_v)
+        except (TypeError, ValueError):
+            errors.append(f"log.{log}: v4l_index non valido: {raw_v!r}")
+            continue
+        err = validate_runtime_v4l_for_logical(log, idx)
+        if err:
+            errors.append(f"log.{log}: {err}")
+            continue
+        with _runtime_v4l_lock:
+            _runtime_v4l_by_logical[log] = idx
+        applied[str(log)] = int(idx)
+    return {"ok": len(errors) == 0, "applied": applied, "errors": errors}
+
+
 class CameraCache:
     def __init__(self, devices: dict[int, str], fps: float = 20.0, jpeg_quality: int = 68):
         self.devices = devices
@@ -423,14 +843,32 @@ class CameraCache:
 
     def _loop(self, device: int) -> None:
         cap = None
+        last_opened_v4l: int | None = None
         while not self._stop.is_set():
             start = time.perf_counter()
+            target_v4l = _v4l_index_for_logical_camera(device)
+            if (
+                cap is not None
+                and cap.isOpened()
+                and last_opened_v4l is not None
+                and int(target_v4l) != int(last_opened_v4l)
+            ):
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = None
             if cap is None or not cap.isOpened():
                 if cap is not None:
-                    cap.release()
-                v4l_idx = _v4l_index_for_logical_camera(device)
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = None
+                v4l_idx = int(target_v4l)
                 cap = _cv_videocapture(v4l_idx)
                 if cap.isOpened():
+                    last_opened_v4l = int(v4l_idx)
                     try:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     except Exception:
@@ -438,12 +876,13 @@ class CameraCache:
                     usb = _usb_vid_pid_for_video_index(v4l_idx)
                     if int(device) == 6 and usb == ("8086", "0b3a"):
                         _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
-                    elif int(device) == 0 and usb == ("2bc5", "080b"):
+                    elif int(device) == 0 and usb in _USB_IDS_LOGICAL_0:
                         _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     cap.set(cv2.CAP_PROP_FPS, 15)
                 else:
+                    last_opened_v4l = None
                     hint = _v4l_permission_hint(v4l_idx)
                     msg = f"open failed (V4L /dev/video{v4l_idx}, logical {device})"
                     if hint:
@@ -461,6 +900,7 @@ class CameraCache:
                     self.errors[device] = f"read failed: {exc!r}"
                 cap.release()
                 cap = None
+                last_opened_v4l = None
                 time.sleep(0.5)
                 continue
 
@@ -479,7 +919,18 @@ class CameraCache:
                     [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
                 )
                 if enc_ok:
+                    v4l_now = _v4l_index_for_logical_camera(device)
+                    usb_now = _usb_vid_pid_for_video_index(v4l_now)
                     diag = _frame_rgb_diagnostics(frame)
+                    if int(device) == 0 and usb_now == ("2bc5", "080b"):
+                        cm = _orbbec_probe_chroma_min()
+                        me = _orbbec_max_edge_from_env(relaxed=False)
+                        plausible = _frame_orbbec_color_plausible(frame, cm, max_edge_den=me)
+                        diag = {
+                            "color_chroma": round(float(_frame_channel_chroma_bgr(frame)), 3),
+                            "rgb_like": plausible,
+                            "stream_kind": "rgb" if plausible else "mono_or_ir",
+                        }
                     with self._lock:
                         self.frames[device] = {
                             "jpg": jpg.tobytes(),
@@ -496,6 +947,7 @@ class CameraCache:
                     self.errors[device] = "read returned no frame"
                 cap.release()
                 cap = None
+                last_opened_v4l = None
                 time.sleep(0.5)
                 continue
             delay = self.period - (time.perf_counter() - start)

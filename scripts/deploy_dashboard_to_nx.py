@@ -11,7 +11,10 @@ dal deploy per evitare doppio avvio con cron).
 ``GO2_DEPLOY_OVERWRITE_PRESETS=1`` sul PC che lancia lo script.
 
 Env: GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD. Probe rapido da PC: ``python scripts/probe_nx_general.py``.
-URL worker grasp sulla NX (generato in ``nx_dashboard_env.sh``): ``GO2_DEPLOY_ANYGRASP_WORKER_URL`` sul PC al deploy (default ``http://192.168.123.4:8765``).
+URL worker grasp sulla NX (generato in ``nx_dashboard_env.sh``): ``GO2_DEPLOY_ANYGRASP_WORKER_URL``
+sul PC al deploy (default ``http://192.168.123.3:8765`` — verificare con ``python scripts/nx_scan_grasp_worker_port.py``;
+sovrascrivere con ``GO2_DEPLOY_ANYGRASP_WORKER_URL`` se il PC worker ha un altro IP).
+Per AWS: ``GO2_DEPLOY_ANYGRASP_WORKER_URL=https://...`` e opz. ``GO2_DEPLOY_GRASP_CLOUD_MODE=1``.
 """
 import os
 import paramiko
@@ -43,21 +46,38 @@ REMOTE_PUSH_FILES = [
     "scripts/d1_arm_dds_helper.cpp",
     "scripts/d1_arm_feedback_helper.cpp",
     "scripts/d1_arm_servo_read_python.py",
+    "scripts/d1_arm_servo_stream_ndjson.py",
     "go2_dashboard/__init__.py",
     "go2_dashboard/app.py",
     "go2_dashboard/lite_app.py",
+    "go2_dashboard/scene_meshes.py",
+    "go2_dashboard/tag5_calibration_lite.py",
     "go2_dashboard/legacy_mount.py",
     "go2_dashboard/cameras.py",
     "go2_dashboard/paths.py",
     "go2_dashboard/d1_servo_feedback.py",
+    "go2_dashboard/d1_arm_publish_lite.py",
     "go2_dashboard/sport_lane.py",
+    "go2_dashboard/go2_voice_playback.py",
+    "go2_dashboard/go2_voice_webrtc.py",
     "go2_dashboard/operator_stack.py",
+    "go2_dashboard/operator_plan_cache.py",
+    "go2_dashboard/operator_session_memory.py",
+    "go2_dashboard/hermes_agent.py",
+    "go2_dashboard/grasp_coach_memory.py",
+    "go2_dashboard/grasp_coach_agent.py",
     "go2_dashboard/operator_scene.py",
     "go2_dashboard/grasp_assessment.py",
     "go2_dashboard/blueprints/__init__.py",
     "go2_dashboard/blueprints/meta.py",
     "go2_dashboard/blueprints/grasp.py",
-    "go2_dashboard/blueprints/operator_api.py",
+    "go2_dashboard/blueprints/operator_api/__init__.py",
+    "go2_dashboard/blueprints/operator_api/routes.py",
+    "go2_dashboard/blueprints/operator_api/helpers_hermes.py",
+    "go2_dashboard/blueprints/operator_api/helpers_camera.py",
+    "go2_dashboard/blueprints/operator_api/helpers_arm_http.py",
+    "go2_dashboard/blueprints/operator_api/helpers_mission.py",
+    "go2_dashboard/blueprints/operator_api/helpers_timing.py",
     "scripts/box_grasp_planner.py",
     "scripts/box_object_detector.py",
     "scripts/arm_kinematics_d1_template.py",
@@ -67,6 +87,8 @@ REMOTE_PUSH_FILES = [
     "scripts/nx_print_cyclone_diag.sh",
     "scripts/nx_go2_sta_and_dds_troubleshoot.txt",
     "scripts/pc_go2_webrtc_crouch.py",
+    "scripts/pc_go2_webrtc_play_mp3.py",
+    "scripts/nx_install_go2_audio_deps.sh",
     "scripts/d1_drag_follow_experimental.py",
     "scripts/sync_d1_meshes_from_package.py",
     "scripts/fetch_d1_550_from_jeewantha_github.py",
@@ -78,8 +100,20 @@ REMOTE_PUSH_FILES = [
     "scripts/nx_peripheral_probe.sh",
     "scripts/probe_nx_dds_servo.py",
     "scripts/verify_dashboard_http.py",
+    "scripts/verify_d1_arm_small_move_http.py",
+    "scripts/verify_grasp_coach_http.py",
     "scripts/verify_anygrasp_worker_http.py",
+    "scripts/verify_aws_vla_worker.py",
+    "scripts/pair_nx_aws_vla.py",
+    "scripts/verify_go2_voice_playback.py",
     "scripts/probe_grasp_worker_network_on_nx.py",
+    "scripts/nx_scan_grasp_worker_port.py",
+    "scripts/nx_set_grasp_worker_url.py",
+    "scripts/lab/README.md",
+    "scripts/lab/lab_mission_status.py",
+    "scripts/lab/lab_box_pick_cycle.py",
+    "scripts/verify_hermes_smoke.py",
+    "scripts/verify_hermes_integration.py",
     "scripts/setup_rtx_grasp_worker.ps1",
     "scripts/udev/99-go2-realsense-dashboard.rules",
     "scripts/go2-visual-dashboard.service",
@@ -89,16 +123,35 @@ REMOTE_PUSH_FILES = [
     "templates/_calibration_panel.html",
     "static/css/operators.css",
     "static/js/operators.js",
+    "static/js/operators_agent.js",
+    "static/js/operators_grasp_coach.js",
+    "static/js/operators_movement.js",
+    "static/js/operators_arm_joints.js",
     "static/js/operators_scene3d.js",
+    "static/js/operators_calibration.js",
     "docs/OPERATORS_DASHBOARD_NX.md",
+    "docs/HERMES_NOUS_INTEGRATION.md",
     "external/openvla_worker/README.md",
     "external/openvla_worker/requirements.txt",
+    "external/openvla_worker/requirements-openvla.txt",
     "external/openvla_worker/app.py",
     "external/openvla_worker/planner_runtime.py",
+    "external/openvla_worker/openvla_runtime.py",
     "external/openvla_worker/Dockerfile",
+    "external/openvla_worker/aws/Dockerfile",
+    "external/openvla_worker/aws/docker-compose.yml",
+    "external/openvla_worker/aws/.env.example",
+    "external/openvla_worker/aws/entrypoint.sh",
+    "external/openvla_worker/aws/ec2-setup.sh",
+    "external/openvla_worker/aws/README.md",
+    "external/openvla_worker/aws/bootstrap-ec2.sh",
+    "external/openvla_worker/aws/QUICKSTART.md",
     "external/openvla_worker/bootstrap_worker_host.sh",
     "external/openvla_worker/bootstrap_worker_host.ps1",
     "external/openvla_worker/setup_windows_worker.py",
+    "data/hermes_skills/README.md",
+    "data/hermes_skills/00_go2_base_lexicon_it.md",
+    "data/hermes_skills/example_lab/SKILL.md",
 ]
 # ``data/vis_geometry_presets.json`` è gestito a parte: non sovrascrivere i preset salvati in laboratorio
 # sulla NX (vedi blocco ``main()``). Primo deploy: copia dal repo se il file remoto non esiste.
@@ -107,6 +160,10 @@ REMOTE_PUSH_FILES = [
 NX_EXPORTS = r"""
 export GO2_LOCAL=1
 export GO2_ENABLE_REAL_ARM=1
+# Movimento braccio da piano lite (FK giunti + IK verso punto 3D in cache).
+export GO2_ENABLE_ARM_PLAN_EXECUTE=1
+# POST /api/arm/emergency_hold (dashboard operator): pkill d1_arm_command + hold posa letta. 0=disattiva.
+export GO2_ENABLE_ARM_ESTOP_HTTP=1
 export GO2_ENABLE_BASE_MOTION=1
 # Sport/Crouch/Stand: DDS Cyclone verso il cane — NON è l'IP HTTP della dashboard.
 # Interfaccia Ethernet Jetson→subnet Unitree (di solito 192.168.123.x). Se usi WiFi verso l'AP del cane: wlan0.
@@ -145,16 +202,90 @@ export GO2_SPORT_SUBPROCESS_STAND_MODES=1
 export GO2_GRASP_EXECUTE_ARM=1
 export GO2_DASHBOARD_HOST=0.0.0.0
 export GO2_DASHBOARD_PORT=5052
+# Log tempi richiesta→risposta API operator (logger ``go2_dashboard.operator_api.timing``); JSON: ``_http_timing_ms``, header ``X-Dashboard-Server-Ms``.
+export GO2_HTTP_TIMING_LOG=1
 # Dashboard operator: non avviare thread LiDAR se non serve (default 1).
 export GO2_LITE_SKIP_LIDAR=1
+# Hermes — riavvio dashboard non cancella questo file:
+#   echo 'export OPENAI_API_KEY='"'"'(chiave)'"'" >> ~/go2_visual_dashboard/scripts/nx_secrets_dashboard.sh && chmod 600 ...
+# poi in coda a nx_dashboard_env.sh (una volta): [[ -f .../nx_secrets_dashboard.sh ]] && source ...
+# Oppure reinstalla dopo ogni deploy: il deploy può rigenerare nx_dashboard_env.sh.
+export GO2_ENABLE_HERMES_AGENT=1
+export GO2_HERMES_LOG_TURNS_TO_MEMORY=1
+# Clamp Hermes arm_joint_delta (deg) per richiesta; default 45 se env unset (riduci in campo se serve).
+# export GO2_HERMES_ARM_NUDGE_MAX_DELTA_DEG=20
+# Hermes disk skills (Jetson): markdown / SKILL.md bundles → system prompt (vedi data/hermes_skills/README.md).
+# Non è upload hosted OpenAI; equivale al «local path» degli Agent Skills.
+# export GO2_HERMES_SKILLS_DIR=/home/unitree/go2_visual_dashboard/data/hermes_skills
+# export GO2_HERMES_SKILLS_MAX_CHARS=14000
+# export GO2_HERMES_SKILL_FILE_MAX_CHARS=4500
+# export GO2_HERMES_SKILLS_DISABLE=1
+# Snapshot Sport/stack nel messaggio Hermes (default on); disabilita con 0 se troppo verboso.
+# export GO2_HERMES_APPEND_RUNTIME_CONTEXT=1
+# export GO2_HERMES_RUNTIME_CONTEXT_MAX_CHARS=1800
+# Chiave OpenAI (Hermes + TTS cloud): ``~/go2_visual_dashboard/scripts/nx_secrets_dashboard.sh`` (una tantum, fuori da git).
+export GO2_HERMES_PLAY_ON_GO2=1
+# Audio sul Go2 via WebRTC se RPC DDS voice fallisce (pip install unitree-webrtc-connect sulla NX).
+export GO2_HERMES_PLAY_ON_GO2_WEBRTC=1
+# Su Go2 EDU il RPC DDS ``voice`` spesso non risponde (3102); WebRTC è il percorso affidabile.
+export GO2_HERMES_PREFER_WEBRTC=1
+export GO2_WEBRTC_IP=192.168.123.161
+# Jetson ARM: handshake WebRTC spesso >15s — timeout data channel (default libreria troppo corto).
+export GO2_WEBRTC_DATACHANNEL_TIMEOUT_S=60
+# Firmware Go2 ≥ 1.1.15: opzionale in nx_secrets_dashboard.sh → export UNITREE_AES_128_KEY=...
+# Solo altoparlante Go2: niente NX né browser (silenzio finché DDS/WebRTC non funzionano).
+# export GO2_HERMES_TTS_ROBOT_ONLY=1
+# Firmware Go2 ≥ 1.1.15: export UNITREE_AES_128_KEY=$(unitree-fetch-aes-key --email ... --sn ... --quiet)
+# HTTP POST /api/robot/voice_test (solo LAN lab — disabilita in campo): sintetizza MP3 e stampa ACK RPC PlayStream.
+export GO2_VOICE_SELF_TEST_HTTP=1
+# TTS sul cane: RPC SDK ``voice`` + ffmpeg (PCM); serve ffmpeg sulla NX. Regola sample rate: GO2_GO2_VOICE_SAMPLE_RATE.
+# Go2: versione API RPC firmware‑dipendente (fallback: GO2_GO2_VOICE_API_VERSION_FALLBACKS=1.0.0.1,...)
+# export GO2_GO2_VOICE_API_VERSION=1.0.0.0
+# export GO2_GO2_VOICE_TRANSPORT=rpc
+# Se serve solo DDS PCM (topic da verificare sul robot): export GO2_GO2_VOICE_TRANSPORT=dds
+# export GO2_GO2_AUDIO_DDS_TOPIC=rt/audio
+# export GO2_GO2_VOICE_TRANSPORT=auto
+# Debug stderr: export GO2_GO2_VOICE_DEBUG=1
+export GO2_HERMES_PLAY_ON_NX=1
+# Fallback TTS sulla Jetson (mpg123/ffplay) se il servizio voice sul cane non risponde.
+export GO2_HERMES_PERSONALITY=bender_meeting
+# Tono VIP sarcastico trattenuto (override dalla UI Agent). Voce OpenAI default per questo preset: onyx (codice).
+# Grasp Coach trial: OpenAI Chat Completions + vision, IK parziale D1; depth V4L se GO2_DEPTH_VIDEO_INDEX_* .
+export GO2_ENABLE_GRASP_COACH=1
+export GO2_GRASP_COACH_MODEL=gpt-5-nano
+export GO2_GRASP_COACH_DEPTH_POLICY=alternate
+export GO2_GRASP_COACH_MAX_TOKENS=420
+export GO2_GRASP_COACH_TIMEOUT_S=22
+export GO2_GRASP_COACH_DELAY_MS=650
+export GO2_GRASP_COACH_MAX_APPROACH_BLEND=0.26
+# Opzionale: prima di IK braccio, Sport ``balance_hold`` sul Go2 (richiede GO2_ENABLE_BASE_MOTION=1).
+# export GO2_GRASP_COACH_BALANCE_HOLD_FIRST=1
+# export GO2_HERMES_MODEL=gpt-4o-mini
+# export GO2_HERMES_DEFAULT_CAMERA=6
 # AnyGrasp / OpenVLA worker HTTP: URL effettivo aggiunto da _nx_dashboard_env_sh() (default PC lab).
 # export GO2_ANYGRASP_CHECKPOINT=/path/to/checkpoint.tar  # solo SDK AnyGrasp ufficiale
 # export GO2_DASHBOARD_RESTART_DELAY_S=15
 export GO2_VIS_GEOMETRY_DEFAULT_PRESET=2
 export GO2_CAMERA_AUTO_USB_MAP=1
+# Orbbec Gemini 335Lg (lab): RGB su /dev/video6; depth IR sinistra /dev/video4; depth IR destra /dev/video2 (solo doc).
+export GO2_VIDEO_INDEX_0=6
+export GO2_DEPTH_VIDEO_INDEX_0=4
 export GO2_REALSENSE_V4L_DEFAULT=6
 export GO2_REALSENSE_VIDEO_PROBE=1
 export GO2_ORBBEC_PREFER_MJPEG=1
+export GO2_ORBBEC_VIDEO_PROBE=1
+# Probe RGB Orbbec: più passaggi (MJPEG/YUYV, soglia bordi default 0.26). IR puntini → alza GO2_ORBBEC_MAX_EDGE_DENSITY o GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED
+# export GO2_ORBBEC_MAX_EDGE_DENSITY=0.32
+# export GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED=0.48
+# Traiettorie braccio lite: <1 = passi più fini (meno movimento a «scalini» su DDS). 1.0 = passi massimi come da env dedicati.
+export D1_LITE_TRAJ_STEP_SCALE=0.5
+# Override manuale se la board espone ordine V4L diverso: GET /api/cameras/status → v4l_usb_inventory
+# export GO2_VIDEO_INDEX_0=6
+# export GO2_DEPTH_VIDEO_INDEX_0=4
+# Lab: JPEG da ogni /dev/videoN in inventario — disattiva in produzione
+# export GO2_ALLOW_RAW_V4L_DEBUG=1
+# OpenVLA: snapshot da un altro nodo V4L (es. secondo RGB Orbbec). Worker: WORKER_CAMERA_JPG_URL=http://<NX_IP>:5050/api/robot/vla_frame.jpg
+# export GO2_VLA_SNAPSHOT_V4L_INDEX=10
 export D1_SEARCH_MAX_CYCLES=10
 export GO2_GRASP_USE_FUSED_PLAN_IK=1
 export GO2_GRASP_FUSED_WITH_CENTER=1
@@ -232,8 +363,17 @@ export GO2_WRIST_CENTER_MAX_YAW_STEP_DEG=0.8
 export GO2_WRIST_CENTER_MAX_SHOULDER_STEP_DEG=0.45
 export GO2_WRIST_CENTER_MAX_WRIST_STEP_DEG=0.9
 export GO2_WRIST_ONLY_CYCLE_SLEEP_S=0.18
-export D1_LIVE_REPEAT=5
+export D1_LIVE_REPEAT=10
 export D1_LIVE_DELAY_MS=26
+# funcode 2 data.mode: 0 stream 10Hz-style (SDK), 1 trajectory smoothing (default live/traj = 1).
+export D1_LIVE_ANGLE_MODE=1
+export D1_TRAJ_ANGLE_MODE=1
+# lettura servo: settle dopo primo campione (helper C++ default 80 ms; vedi D1_FEEDBACK_HELPER_SETTLE_MS)
+export D1_LIVE_PREHOLD=1
+export D1_LIVE_PREHOLD_REPEATS=10
+export D1_LIVE_PREHOLD_DELAY_MS=48
+export D1_LIVE_POSTHOLD_REPEATS=22
+export D1_TRAJ_POSTHOLD_REPEATS=14
 export D1_GOTO_PREHOLD=1
 export D1_GOTO_PREHOLD_REPEATS=12
 export D1_GOTO_PREHOLD_DELAY_MS=55
@@ -245,18 +385,52 @@ export D1_POST_MOTION_HOLD_DELAY_MS=60
 """.strip()
 
 
+def _worker_url_is_cloud(grasp_url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = (urlparse(grasp_url).hostname or "").strip()
+    if not host or host in {"127.0.0.1", "localhost"}:
+        return False
+    if host.startswith("192.168.") or host.startswith("10."):
+        return False
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2:
+            try:
+                if 16 <= int(parts[1]) <= 31:
+                    return False
+            except ValueError:
+                pass
+    return True
+
+
 def _nx_dashboard_env_sh() -> str:
-    grasp_url = (os.environ.get("GO2_DEPLOY_ANYGRASP_WORKER_URL") or "http://192.168.123.4:8765").strip()
+    grasp_url = (os.environ.get("GO2_DEPLOY_ANYGRASP_WORKER_URL") or "http://192.168.123.3:8765").strip()
+    cloud_mode = (os.environ.get("GO2_DEPLOY_GRASP_CLOUD_MODE") or "0").strip()
+    cloud_line = ""
+    if cloud_mode.lower() in {"1", "true", "yes", "on"} or _worker_url_is_cloud(grasp_url):
+        cloud_line = "export GO2_GRASP_CLOUD_MODE=1\n"
     extra = (
         "\n# --- Worker grasp HTTP (proxy Flask /api/grasp/*) ---\n"
         f"export GO2_ANYGRASP_WORKER_URL={grasp_url}\n"
         "export GO2_ANYGRASP_PROXY=1\n"
+        f"{cloud_line}"
+        "# GO2_WORKER_TOKEN → scripts/nx_secrets_dashboard.sh (non committare)\n"
+    )
+    secrets_hook = (
+        "\n# --- Segreti locali NX (persistono ai deploy della dashboard): ---\n"
+        f"#   printf 'export OPENAI_API_KEY=xxx\\\\n' > {REMOTE_BASE}/scripts/nx_secrets_dashboard.sh && chmod 600 ...\n"
+        f"if [[ -f '{REMOTE_BASE}/scripts/nx_secrets_dashboard.sh' ]]; then\n"
+        "  # shellcheck source=/dev/null\n"
+        f"  source '{REMOTE_BASE}/scripts/nx_secrets_dashboard.sh'\n"
+        "fi\n"
     )
     return (
         "#!/bin/bash\n# Sorgente unica env dashboard (deploy_dashboard_to_nx.py).\n"
         "# shellcheck disable=SC2034\n"
         + NX_EXPORTS
         + extra
+        + secrets_hook
         + "\n"
     )
 
@@ -283,6 +457,7 @@ python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','505
 )
 echo "Remote checks done (full smoke: run on PC: python scripts/test_dashboard_smoke.py)"
 echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://{host}:5052"
+echo "Grasp Coach smoke (PC): python scripts/verify_grasp_coach_http.py http://{host}:5052 --step"
 """
 
 
@@ -361,6 +536,49 @@ fi
     err = stderr.read().decode().strip()
     if err:
         print("systemd user stderr:", err)
+
+
+def _remote_install_go2_audio_deps(ssh: paramiko.SSHClient) -> None:
+    """ffmpeg + portaudio (apt aarch64) e ``unitree-webrtc-connect`` (pip user) per TTS Hermes sul Go2."""
+    pwd = nx_password()
+    script = f"{REMOTE_BASE}/scripts/nx_install_go2_audio_deps.sh"
+    apt_cmd = f"sudo -S bash {script}"
+    print("[deploy] Audio Go2/Hermes (Jetson ARM): apt ffmpeg portaudio …")
+    stdin, stdout, stderr = ssh.exec_command(apt_cmd, timeout=600)
+    stdin.write(pwd + "\n")
+    stdin.flush()
+    stdin.channel.shutdown_write()
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode(errors="replace").strip()
+    err = stderr.read().decode(errors="replace").strip()
+    if out:
+        print(out)
+    if code != 0:
+        print(f"[deploy] AVVISO: nx_install_go2_audio_deps apt exit={code}")
+        if err and "password" not in err.lower():
+            print("audio apt stderr:", err[-1200:])
+    else:
+        print("[deploy] apt audio OK")
+
+    pip_script = f"""set -e
+pip3 install --user --upgrade 'pip>=21' wheel 2>&1 | tail -3
+pip3 install --user unitree-webrtc-connect 2>&1 | tail -15
+python3 -c "import importlib.util, shutil; w=bool(importlib.util.find_spec('unitree_webrtc_connect')); f=bool(shutil.which('ffmpeg')); print('verify_webrtc_pkg', w, 'verify_ffmpeg', f); assert w and f"
+echo nx_pip_audio_deps_ok
+"""
+    print("[deploy] pip unitree-webrtc-connect (user, aarch64) …")
+    pip_stdin, pip_stdout, pip_stderr = ssh.exec_command(pip_script, timeout=900)
+    pip_code = pip_stdout.channel.recv_exit_status()
+    pip_out = pip_stdout.read().decode(errors="replace").strip()
+    pip_err = pip_stderr.read().decode(errors="replace").strip()
+    if pip_out:
+        print(pip_out)
+    if pip_code != 0:
+        print(f"[deploy] ERRORE: pip unitree-webrtc-connect exit={pip_code}")
+        if pip_err:
+            print("pip stderr:", pip_err[-1500:])
+    else:
+        print("[deploy] unitree-webrtc-connect import OK")
 
 
 def _remote_install_realsense_udev(ssh: paramiko.SSHClient) -> None:
@@ -484,14 +702,17 @@ def main() -> None:
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/assets "
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes "
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/urdf "
-        f"{REMOTE_BASE}/go2_dashboard/blueprints "
+        f"{REMOTE_BASE}/go2_dashboard/blueprints/operator_api "
         f"{REMOTE_BASE}/msg "
         f"{REMOTE_BASE}/templates "
         f"{REMOTE_BASE}/static/css "
         f"{REMOTE_BASE}/static/js "
         f"{REMOTE_BASE}/docs "
         f"{REMOTE_BASE}/external/openvla_worker "
+        f"{REMOTE_BASE}/external/openvla_worker/aws "
         f"{REMOTE_BASE}/data "
+        f"{REMOTE_BASE}/data/hermes_skills "
+        f"{REMOTE_BASE}/data/hermes_skills/example_lab "
         f"{REMOTE_BASE}/bin "
         f"{REMOTE_BASE}/scripts/udev"
     )
@@ -565,6 +786,7 @@ def main() -> None:
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_machine_diag.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_peripheral_probe.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_print_cyclone_diag.sh", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/nx_install_go2_audio_deps.sh", 0o755)
     # Checkout Windows può lasciare CRLF negli .sh — bash sulla NX si rompe (set: +\r).
     strip_stdin, strip_stdout, strip_stderr = ssh.exec_command(
         f"bash -lc \"sed -i 's/\\\\r$//' {REMOTE_BASE}/scripts/*.sh {REMOTE_BASE}/external/openvla_worker/*.sh 2>/dev/null || true\""
@@ -573,6 +795,9 @@ def main() -> None:
     sftp.close()
 
     _remote_build_d1_arm_helpers(ssh)
+
+    print("[deploy] Dipendenze audio Hermes / WebRTC Go2 (ARM) …")
+    _remote_install_go2_audio_deps(ssh)
 
     print("[deploy] Install cron @reboot (non blocca boot; log in dashboard_boot.log) …")
     _remote_install_crontab(ssh)

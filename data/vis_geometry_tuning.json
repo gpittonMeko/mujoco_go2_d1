@@ -28,5 +28,13 @@
   "viz_joint_markers_dz_m": 0.0,
   "wrist_local_dx": 0.0,
   "wrist_local_dy": 0.0,
-  "wrist_local_dz": 0.0
+  "wrist_local_dz": 0.0,
+  "dog_occ_enabled": 1.0,
+  "dog_occ_length_m": 0.35,
+  "dog_occ_width_m": 0.2,
+  "dog_occ_height_m": 0.15,
+  "dog_occ_center_x_m": 0.175,
+  "dog_occ_center_y_m": 0.0,
+  "dog_occ_center_z_m": 0.075,
+  "dog_occ_apply_viz_go2": 1.0
 }

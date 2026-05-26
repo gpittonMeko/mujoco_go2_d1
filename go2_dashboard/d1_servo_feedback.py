@@ -38,20 +38,45 @@ def _subprocess_run_with_nx_env(
 
 
 def _parse_servo_stdout(stdout: str) -> list[float] | None:
-    latest: list[float] | None = None
+    full = _parse_servo_stdout_full(stdout)
+    return full[0]
+
+
+def _parse_servo_stdout_full(stdout: str) -> tuple[list[float] | None, dict[str, Any]]:
+    """Ultimo campione + statistiche su tutte le righe ``servo_angles`` (rileva cambio durante una lettura)."""
+    samples: list[list[float]] = []
     for line in (stdout or "").splitlines():
-        if line.startswith("servo_angles "):
-            parts = line.split()[1:]
-            if len(parts) >= 7:
-                try:
-                    latest = [float(v) for v in parts[:7]]
-                except ValueError:
-                    latest = None
-    return latest
+        if not line.startswith("servo_angles "):
+            continue
+        parts = line.split()[1:]
+        if len(parts) < 7:
+            continue
+        try:
+            samples.append([float(v) for v in parts[:7]])
+        except ValueError:
+            continue
+    if not samples:
+        return None, {"servo_angle_lines": 0}
+    latest = samples[-1]
+    spread_per_j = [max(s[j] for s in samples) - min(s[j] for s in samples) for j in range(7)]
+    stats: dict[str, Any] = {
+        "servo_angle_lines": len(samples),
+        "servo_max_spread_any_joint_deg": round(max(spread_per_j), 4),
+        "servo_spread_per_joint_deg": [round(x, 4) for x in spread_per_j],
+    }
+    if len(samples) >= 2:
+        diffs = [abs(samples[-1][j] - samples[0][j]) for j in range(7)]
+        stats["servo_first_to_last_abs_delta_max_deg"] = round(max(diffs), 4)
+        stats["servo_first_to_last_abs_delta_per_joint_deg"] = [round(x, 4) for x in diffs]
+    return latest, stats
 
 
 def read_servo_deg_with_diag(project_root: Path) -> tuple[list[float] | None, dict[str, Any]]:
-    """Prima ``bin/d1_arm_feedback_helper``, poi ``scripts/d1_arm_servo_read_python.py``."""
+    """Prima ``bin/d1_arm_feedback_helper``, poi ``scripts/d1_arm_servo_read_python.py``.
+
+    L'argomento ``listen_s`` è un **timeout massimo**: gli helper escono appena arriva il primo
+    campione servo (+ breve settle), così la dashboard non resta secondi senza pubblicare comandi DDS.
+    """
     helper = project_root / "bin" / "d1_arm_feedback_helper"
     py_reader = project_root / "scripts" / "d1_arm_servo_read_python.py"
     listen_s = max(1, int(os.environ.get("D1_FEEDBACK_HELPER_LISTEN_S", "3")))
@@ -87,7 +112,8 @@ def read_servo_deg_with_diag(project_root: Path) -> tuple[list[float] | None, di
             result = _subprocess_run_with_nx_env(cmd, cwd=cwd, timeout_s=timeout_s)
             d["returncode"] = int(result.returncode)
             _merge_stderr(d, (result.stderr or "").strip())
-            latest = _parse_servo_stdout(result.stdout or "")
+            latest, st = _parse_servo_stdout_full(result.stdout or "")
+            d.update(st)
             if latest is not None:
                 d["reason"] = "OK"
                 return latest, d
@@ -117,7 +143,8 @@ def read_servo_deg_with_diag(project_root: Path) -> tuple[list[float] | None, di
             result = _subprocess_run_with_nx_env(cmd, cwd=cwd, timeout_s=timeout_s)
             d["returncode"] = int(result.returncode)
             _merge_stderr(d, (result.stderr or "").strip())
-            latest = _parse_servo_stdout(result.stdout or "")
+            latest, st = _parse_servo_stdout_full(result.stdout or "")
+            d.update(st)
             if latest is not None:
                 d["reason"] = "OK"
                 return latest, d

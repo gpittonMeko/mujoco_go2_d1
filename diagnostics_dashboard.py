@@ -1884,6 +1884,15 @@ def api_base_accompany_mode() -> Any:
                 body["speed_level"] = int(sl)
             except ValueError:
                 pass
+        for qaxis in ("vx", "vy", "vyaw"):
+            qv = request.args.get(qaxis)
+            if qv is not None and str(qv).strip() != "":
+                try:
+                    body[qaxis] = float(qv)
+                except ValueError:
+                    pass
+        if request.args.get("pre_balance", "").lower() in {"0", "false", "no"}:
+            body["pre_balance"] = False
         if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
             body["sync"] = True
     else:
@@ -1893,6 +1902,12 @@ def api_base_accompany_mode() -> Any:
     stand_first = bool(body.get("stand_up_first", False))
     speed_raw = body.get("speed_level")
     speed_level = int(speed_raw) if speed_raw is not None else None
+
+    _pb_raw = body.get("pre_balance", True)
+    if isinstance(_pb_raw, str):
+        pre_balance_b = _pb_raw.lower() not in {"0", "false", "no"}
+    else:
+        pre_balance_b = bool(_pb_raw)
 
     iface = GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None
     mode = str(body.get("mode") or "joystick").strip().lower()
@@ -1917,6 +1932,10 @@ def api_base_accompany_mode() -> Any:
             mode=mode,
             stand_up_first=stand_first,
             speed_level=speed_level,
+            vx=body.get("vx"),
+            vy=body.get("vy"),
+            vyaw=body.get("vyaw"),
+            pre_balance=pre_balance_b,
         )
 
     sync = os.environ.get("GO2_SPORT_RPC_SYNC", "0").lower() in {"1", "true", "yes"}
@@ -1927,6 +1946,9 @@ def api_base_accompany_mode() -> Any:
     # Crouch/Stand: default sincrono così la risposta HTTP riporta i codici RPC reali (202 «OK» nasconde fallimenti DDS).
     async_stand = os.environ.get("GO2_SPORT_ASYNC_STAND_MODES", "0").lower() in {"1", "true", "yes"}
     if mode in {"crouch", "stand_up"} and not async_stand:
+        sync = True
+    # Comandi brevi: risposta con esito RPC (evita 202 senza payload per la UI).
+    if mode in {"velocity", "stop", "recovery_stand"}:
         sync = True
 
     if not sync:
