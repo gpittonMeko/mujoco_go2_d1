@@ -21,7 +21,8 @@ Questo documento riguarda **solo** il processo **lite** su `GO2_DASHBOARD_PORT` 
 **Verifica da PC** (home riconosciuta anche con titolo **Go2 operator**):
 
 ```bash
-python scripts/verify_dashboard_http.py http://192.168.123.18:5052
+python scripts/verify_go2_lab.py dashboard http://192.168.123.18:5052
+# equivalente legacy: python scripts/verify_dashboard_http.py http://192.168.123.18:5052
 ```
 
 ---
@@ -127,6 +128,7 @@ Tab Calib: link esterni / note; per API calibrazione complete usare la dashboard
 - **Legacy monolite (`diagnostics_dashboard` / porta 5050):** usato raramente — **congelato**: solo fix critici, niente nuove feature.
 - **Script lab one-off:** prefisso `_` o cartella `scripts/lab/`; non inserire in `REMOTE_PUSH_FILES` di `deploy_dashboard_to_nx.py` senza review esplicita.
 - **Soglia soft:** evitare nuovi file Python monolitici oltre ~400 righe senza split per dominio (arm, hermes, camere, ecc.).
+- **Frontend operator:** moduli JS sotto `static/js/operators_*.js` (core, cameras, grasp, mission, agent, …); evitare di ingrossare un solo file.
 
 ## Preset geometria
 

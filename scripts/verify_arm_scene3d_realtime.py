@@ -23,7 +23,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Verify scene_3d fast returns live servo joints.")
     ap.add_argument(
         "--base",
-        default="http://192.168.123.18:5050",
+        default="http://192.168.123.18:5052",
         help="Dashboard base URL",
     )
     ap.add_argument("--polls", type=int, default=5, help="Number of fast polls")
