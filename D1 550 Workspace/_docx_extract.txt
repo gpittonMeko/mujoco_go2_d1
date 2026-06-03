@@ -1,0 +1,16 @@
+﻿py : Traceback (most recent call last):
+At C:\Users\LucaFurlan\AppData\Local\Temp\ps-script-c2f18fef-47e9-4146-bfe6-8082ee61439f.ps1:88 char:1
++ py -3 -c "
++ ~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "<string>", line 17, in <module>
+  File "C:\Users\LucaFurlan\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\uff1a' in position 15: character maps to <undefined>
+LINES 431
+Software Interface Services
+D1 Mechanical Arm Services Interface
+D1 Mechanical Arm Services Interface

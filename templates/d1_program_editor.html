@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D1 — Programma</title>
+  <link rel="stylesheet" href="/static/d1_common.css" />
+  <style>
+    :root {
+      --bg: #0c0e12; --surface: #161a22; --surface2: #1e2430; --border: #2d3548;
+      --text: #f1f5f9; --muted: #8b9cb3; --joint: #34d399; --cart: #38bdf8;
+      --prog: #a78bfa; --ok: #4ade80; --danger: #f87171; --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: "IBM Plex Sans", system-ui, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; background: var(--surface); border-bottom: 2px solid var(--border); }
+    .topbar h1 { margin: 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .topbar .sub { color: var(--muted); font-size: 0.85rem; }
+    .badge { padding: 4px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: #334155; }
+    .badge.ok { background: #14532d; color: var(--ok); }
+    .badge.run { background: #4c1d95; color: #e9d5ff; }
+    .workspace { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+    @media (max-width: 900px) { .workspace { grid-template-columns: 1fr; } }
+    .sidebar { padding: 20px; border-right: 1px solid var(--border); overflow-y: auto; }
+    .editor { padding: 20px 24px; overflow-y: auto; display: flex; flex-direction: column; }
+    .sidebar h2, .editor h2 { margin: 0 0 12px; font-size: 1rem; color: var(--prog); }
+    label.lbl { display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
+    select, input[type="text"] {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); padding: 10px; font-size: 0.95rem; margin-bottom: 12px;
+    }
+    button {
+      font-family: inherit; font-weight: 600; border: none; border-radius: 8px;
+      padding: 10px 16px; cursor: pointer; font-size: 0.85rem;
+    }
+    button.prog { background: #6d28d9; color: #f5f3ff; }
+    button.primary { background: #2563eb; color: #fff; }
+    button.joint { background: #047857; color: #ecfdf5; }
+    button.ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: #b91c1c; color: #fff; }
+    button.warn { background: #b45309; color: #fff; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-col { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pose-box {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; font-size: 0.82rem; font-variant-numeric: tabular-nums; margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .wp-list { flex: 1; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface2); }
+    .wp-head {
+      display: grid; grid-template-columns: 36px 1fr 100px 120px;
+      gap: 8px; padding: 10px 14px; background: #252b38;
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    }
+    .wp-rows { max-height: 420px; overflow-y: auto; }
+    .wp-row {
+      display: grid; grid-template-columns: 36px 1fr 100px 120px;
+      gap: 8px; align-items: center; padding: 12px 14px;
+      border-top: 1px solid var(--border); cursor: pointer;
+    }
+    .wp-row:hover { background: rgba(167, 139, 250, 0.08); }
+    .wp-row.selected { background: rgba(167, 139, 250, 0.18); outline: 1px solid var(--prog); }
+    .wp-row .idx { color: var(--prog); font-weight: 700; }
+    .wp-row .tcp { font-size: 0.78rem; color: var(--muted); }
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      padding: 16px 0; margin-top: auto; border-top: 1px solid var(--border);
+    }
+    .toolbar .grow { flex: 1; }
+    #progStatus { font-size: 0.9rem; color: var(--muted); min-height: 1.2em; }
+    .empty { padding: 40px; text-align: center; color: var(--muted); }
+    .joint-mini { font-size: 0.75rem; color: var(--joint); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Programma</h1>
+      <span class="sub">{{ d1_arm_host }} · UR-style</span>
+    </div>
+    <div class="topbar-actions">
+      <nav class="topbar-nav">
+        <a href="/">Teach</a>
+        <a href="/program" class="active">Programma</a>
+      </nav>
+      {% include '_d1_dash_switch.html' %}
+      <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
+      <span id="healthBadge" class="badge">…</span>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar">
+      <h2>Programma</h2>
+      <label class="lbl">Seleziona</label>
+      <select id="programSelect"></select>
+      <div class="btn-col">
+        <button type="button" class="ghost" id="btnNewProg">+ Nuovo programma</button>
+        <button type="button" class="danger" id="btnDelProg">Elimina programma</button>
+      </div>
+      <h2>Posa attuale</h2>
+      <button type="button" class="primary" id="btnRead">Leggi da robot</button>
+      <button type="button" class="joint" id="btnCouple" style="margin-top:8px;width:100%">Coppia ON</button>
+      <div class="pose-box" id="currentPose">—</div>
+      <p class="joint-mini" id="currentJoints">Giunti: —</p>
+    </aside>
+
+    <section class="editor">
+      <h2>Waypoints</h2>
+      <div class="wp-list">
+        <div class="wp-head">
+          <span>#</span><span>Nome</span><span>TCP mm</span><span>Azioni</span>
+        </div>
+        <div class="wp-rows" id="wpRows">
+          <div class="empty">Nessun punto — muovi il braccio e premi «Salva punto»</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button type="button" class="prog" id="btnSaveWp">Salva punto</button>
+        <button type="button" class="ghost" id="btnGotoWp">Vai al punto</button>
+        <button type="button" class="danger" id="btnDelWp">Elimina punto</button>
+        <span class="grow"></span>
+        <button type="button" class="warn" id="btnRun">▶ Esegui programma</button>
+        <button type="button" class="danger" id="btnStop">Stop</button>
+      </div>
+      <p id="progStatus"></p>
+    </section>
+  </div>
+
+  {% include 'd1_tcp_jog_modal.html' %}
+
+  <script src="/static/d1_common.js"></script>
+  <script>
+    let _programs = [];
+    let _current = null;
+    let _selectedWpId = null;
+    let _robotSynced = false;
+    let _currentServo = null;
+    let _pollRun = 0;
+
+    function setStatus(msg, ok) {
+      const el = document.getElementById('progStatus');
+      el.textContent = msg;
+      el.style.color = ok === true ? 'var(--ok)' : (ok === false ? 'var(--danger)' : '');
+    }
+
+    function tcpShort(tcp) {
+      if (!tcp || !tcp.xyz_m) return '—';
+      const p = tcp.xyz_m;
+      return (p[0]*1000).toFixed(0)+','+(p[1]*1000).toFixed(0)+','+(p[2]*1000).toFixed(0);
+    }
+
+    function updateCurrentDisplay(sd, tcp) {
+      _currentServo = sd ? sd.slice() : null;
+      _robotSynced = !!sd;
+      document.getElementById('currentJoints').textContent = sd
+        ? 'J: ' + sd.slice(0,6).map((x) => x.toFixed(1)).join('° ') + '°'
+        : 'Giunti: —';
+      document.getElementById('currentPose').innerHTML = tcp ? D1.formatTcp(tcp) : '—';
+    }
+
+    async function loadPrograms() {
+      const { data } = await D1.apiJson('/api/programs');
+      _programs = data.programs || [];
+      const sel = document.getElementById('programSelect');
+      sel.innerHTML = '';
+      _programs.forEach((p) => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.textContent = p.name + ' (' + p.waypoint_count + ')';
+        sel.appendChild(o);
+      });
+      if (_programs.length) {
+        sel.value = _programs[0].id;
+        await loadProgram(_programs[0].id);
+      } else {
+        _current = null;
+        renderWaypoints();
+      }
+    }
+
+    async function loadProgram(id) {
+      const { data } = await D1.apiJson('/api/programs/' + encodeURIComponent(id));
+      if (!data.ok) { setStatus(data.reason || '?', false); return; }
+      _current = data.program;
+      _selectedWpId = null;
+      renderWaypoints();
+      setStatus('Programma: ' + _current.name, true);
+    }
+
+    function renderWaypoints() {
+      const root = document.getElementById('wpRows');
+      const wps = (_current && _current.waypoints) || [];
+      if (!wps.length) {
+        root.innerHTML = '<div class="empty">Nessun punto — muovi il braccio e premi «Salva punto»</div>';
+        return;
+      }
+      root.innerHTML = '';
+      wps.forEach((wp, i) => {
+        const row = document.createElement('div');
+        row.className = 'wp-row' + (wp.id === _selectedWpId ? ' selected' : '');
+        row.innerHTML =
+          '<span class="idx">' + (i+1) + '</span>' +
+          '<span class="name">' + (wp.name || 'Punto') + '</span>' +
+          '<span class="tcp">' + tcpShort(wp.tcp) + '</span>' +
+          '<span class="act">···</span>';
+        row.onclick = () => { _selectedWpId = wp.id; renderWaypoints(); };
+        root.appendChild(row);
+      });
+    }
+
+    async function readRobot() {
+      setStatus('Lettura…', null);
+      try {
+        const { data } = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
+        if (data.ok && data.servo_deg) {
+          const pose = await D1.apiJson('/api/cartesian/pose');
+          updateCurrentDisplay(data.servo_deg, pose.data.ok ? pose.data : null);
+          setStatus('Posa corrente aggiornata', true);
+        } else setStatus(data.reason || '?', false);
+      } catch (e) { setStatus(String(e), false); }
+    }
+
+    async function saveWaypoint() {
+      if (!_current) { setStatus('Crea o seleziona un programma', false); return; }
+      if (!_robotSynced) { setStatus('Leggi da robot prima', false); return; }
+      const name = prompt('Nome punto (opzionale):', 'Punto ' + ((_current.waypoints||[]).length + 1));
+      if (name === null) return;
+      const { data } = await D1.apiJson('/api/programs/' + _current.id + '/waypoints', {
+        method: 'POST',
+        body: { name: name, servo_deg: _currentServo },
+      });
+      if (data.ok) {
+        _current = data.program;
+        _selectedWpId = data.waypoint && data.waypoint.id;
+        renderWaypoints();
+        await loadPrograms();
+        document.getElementById('programSelect').value = _current.id;
+        setStatus('Punto salvato', true);
+      } else setStatus(data.reason || '?', false);
+    }
+
+    async function gotoWaypoint() {
+      if (!_selectedWpId || !_current) { setStatus('Seleziona un punto', false); return; }
+      setStatus('Spostamento…', null);
+      const { data } = await D1.apiJson(
+        '/api/programs/' + _current.id + '/waypoints/' + _selectedWpId + '/goto',
+        { method: 'POST', body: {} }
+      );
+      if (data.ok) {
+        if (data.target_servo_deg) updateCurrentDisplay(data.target_servo_deg, data.pose_after);
+        setStatus(
+          data.coupling_maintained !== false ? 'Punto raggiunto · coppia OK' : 'Punto OK · verifica coppia',
+          data.coupling_maintained !== false
+        );
+      } else setStatus(data.reason || '?', false);
+    }
+
+    async function deleteWaypoint() {
+      if (!_selectedWpId || !_current) return;
+      if (!confirm('Eliminare il punto selezionato?')) return;
+      const { data } = await D1.apiJson(
+        '/api/programs/' + _current.id + '/waypoints/' + _selectedWpId,
+        { method: 'DELETE' }
+      );
+      if (data.ok) {
+        _current = data.program;
+        _selectedWpId = null;
+        renderWaypoints();
+        setStatus('Punto eliminato', true);
+      }
+    }
+
+    async function runProgram() {
+      if (!_current || !(_current.waypoints||[]).length) {
+        setStatus('Aggiungi almeno un punto', false); return;
+      }
+      const { data } = await D1.apiJson('/api/programs/' + _current.id + '/run', { method: 'POST', body: {} });
+      if (data.ok) {
+        setStatus('Esecuzione avviata…', true);
+        document.getElementById('healthBadge').className = 'badge run';
+        document.getElementById('healthBadge').textContent = 'RUN';
+        if (_pollRun) clearInterval(_pollRun);
+        _pollRun = setInterval(pollRunStatus, 400);
+      } else setStatus(data.reason || '?', false);
+    }
+
+    async function pollRunStatus() {
+      try {
+        const { data } = await D1.apiJson('/api/programs/run/status');
+        const st = data.status || {};
+        if (st.running) {
+          setStatus('Esecuzione ' + (st.index + 1) + '/' + st.total + ' — ' + (st.waypoint_name || ''), true);
+        } else {
+          clearInterval(_pollRun);
+          _pollRun = 0;
+          D1.pollHealth();
+          if (st.error) setStatus('Errore: ' + st.error, false);
+          else if (st.finished) { setStatus('Programma completato', true); readRobot(); }
+          else setStatus('Esecuzione fermata', null);
+        }
+      } catch (_) {}
+    }
+
+    D1.initTcpJogModal({ requireSynced: () => _robotSynced, isBlocked: () => false });
+
+    document.getElementById('programSelect').onchange = (e) => loadProgram(e.target.value);
+    document.getElementById('btnNewProg').onclick = async () => {
+      const name = prompt('Nome nuovo programma:', 'Programma_' + (_programs.length + 1));
+      if (!name) return;
+      const { data } = await D1.apiJson('/api/programs', { method: 'POST', body: { name: name } });
+      if (data.ok) { await loadPrograms(); document.getElementById('programSelect').value = data.program.id; await loadProgram(data.program.id); }
+    };
+    document.getElementById('btnDelProg').onclick = async () => {
+      if (!_current || !confirm('Eliminare «' + _current.name + '»?')) return;
+      await D1.apiJson('/api/programs/' + _current.id, { method: 'DELETE' });
+      await loadPrograms();
+    };
+    document.getElementById('btnRead').onclick = readRobot;
+    document.getElementById('btnCouple').onclick = () => D1.apiJson('/api/arm/couple', { method: 'POST', body: { with_power: true } });
+    document.getElementById('btnSaveWp').onclick = saveWaypoint;
+    document.getElementById('btnGotoWp').onclick = gotoWaypoint;
+    document.getElementById('btnDelWp').onclick = deleteWaypoint;
+    document.getElementById('btnRun').onclick = runProgram;
+    document.getElementById('btnStop').onclick = async () => {
+      await D1.apiJson('/api/programs/run/stop', { method: 'POST', body: {} });
+      setStatus('Stop richiesto', null);
+    };
+
+    D1.pollHealth();
+    setInterval(() => D1.pollHealth(), 10000);
+    (async () => {
+      await loadPrograms();
+      await readRobot();
+    })();
+  </script>
+</body>
+</html>

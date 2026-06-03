@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D1 — Teach</title>
+  <link rel="stylesheet" href="/static/d1_common.css" />
+  <style>
+    :root {
+      --bg: #0c0e12; --surface: #161a22; --surface2: #1e2430; --border: #2d3548;
+      --text: #f1f5f9; --muted: #8b9cb3; --joint: #34d399; --cart: #38bdf8;
+      --warn: #fbbf24; --danger: #f87171; --ok: #4ade80; --prog: #a78bfa;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; flex-direction: column; min-height: 100vh;
+    }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: var(--surface);
+      border-bottom: 2px solid var(--border); flex-shrink: 0;
+    }
+    .topbar .brand { display: flex; align-items: baseline; gap: 14px; }
+    .topbar h1 { margin: 0; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .topbar .sub { color: var(--muted); font-size: 0.85rem; }
+    .badge { padding: 4px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; background: #334155; }
+    .badge.ok { background: #14532d; color: var(--ok); }
+    .badge.err { background: #7f1d1d; color: #fecaca; }
+    .main { flex: 1; max-width: 720px; width: 100%; margin: 0 auto; padding: 24px; }
+    .pane-title { margin: 0 0 4px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .pane h2 { margin: 0 0 16px; font-size: 1.25rem; color: var(--joint); }
+    .status-bar { padding: 10px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; margin-bottom: 16px; min-height: 2.4em; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    button { font-family: inherit; font-size: 0.88rem; font-weight: 600; border: none; border-radius: 8px; padding: 11px 18px; cursor: pointer; }
+    button.primary { background: #2563eb; color: #fff; }
+    button.joint { background: #047857; color: #ecfdf5; }
+    button.warn { background: #b45309; color: #fffbeb; }
+    button.danger { background: #b91c1c; color: #fef2f2; }
+    .joint-sliders { display: flex; flex-direction: column; gap: 12px; }
+    .joint-row {
+      display: grid; grid-template-columns: 44px 1fr 72px; align-items: center; gap: 14px;
+      padding: 10px 12px; background: var(--surface2); border-radius: 10px; border: 1px solid var(--border);
+    }
+    .joint-row span.lab { font-weight: 700; color: var(--joint); }
+    .joint-row input[type="range"] { width: 100%; accent-color: var(--joint); }
+    .joint-row span.val { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .hint { margin-top: 20px; font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+    .tcp-box, .speed-panel { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; }
+    .tcp-box { font-size: 1.05rem; font-weight: 600; padding: 14px; margin-bottom: 16px; }
+    .tcp-box span { color: var(--cart); }
+    .speed-panel { padding: 16px; margin-bottom: 16px; }
+    .speed-row { display: flex; align-items: center; gap: 16px; }
+    .speed-row input[type="range"] { flex: 1; accent-color: var(--cart); }
+    .speed-val { font-size: 1.6rem; font-weight: 700; color: var(--cart); min-width: 64px; text-align: right; }
+    .motion-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .motion-grid label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; }
+    .motion-grid input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px; }
+    .pad-wrap { display: flex; justify-content: center; }
+    .cart-grid { display: grid; grid-template-columns: 72px 72px 72px; grid-template-rows: 56px 56px 56px 56px; gap: 8px; }
+    .cart-grid .spacer { visibility: hidden; }
+    .cart-grid button.arrow { font-size: 1.3rem; font-weight: 800; border-radius: 10px; background: #0c4a6e; border: 2px solid var(--cart); color: #fff; touch-action: none; }
+    .cart-grid button.arrow.holding { background: #0284c7; }
+    #cartStatus { text-align: center; margin-top: 12px; color: var(--muted); min-height: 1.4em; }
+  </style>
+</head>
+<body data-page="teach">
+  <header class="topbar">
+    <div class="brand">
+      <h1>D1 Teach</h1>
+      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}</span>
+    </div>
+    <div class="topbar-actions">
+      <nav class="topbar-nav">
+        <a href="/" class="active">Teach</a>
+        <a href="/program">Programma</a>
+      </nav>
+      {% include '_d1_dash_switch.html' %}
+      <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
+      <span id="healthBadge" class="badge">…</span>
+    </div>
+  </header>
+
+  <main class="main">
+    <p class="pane-title">Insegnamento manuale</p>
+    <h2>Giunti</h2>
+    <div class="btn-row">
+      <button type="button" class="primary" id="btnRead">Leggi da robot</button>
+      <button type="button" class="joint" id="btnCouple">Coppia ON</button>
+      <button type="button" class="danger" id="btnRelease" title="Solo se devi muovere il braccio a mano">Release…</button>
+      <button type="button" class="warn" id="btnZero">Posizione zero</button>
+    </div>
+    <div class="status-bar" id="statusLine">Avvio…</div>
+    <div class="joint-sliders" id="sliders"></div>
+    <p class="hint">Muovi il braccio con gli slider o apri <strong>Jog TCP</strong> in alto a destra. Per salvare un programma vai su <a href="/program" style="color:var(--prog)">Programma</a>.</p>
+  </main>
+
+  {% include 'd1_tcp_jog_modal.html' %}
+
+  <script src="/static/d1_common.js"></script>
+  <script>
+    const BOUNDS = [[-135,135],[-90,90],[-90,90],[-135,135],[-90,90],[-135,135],[0,90]];
+    const LABELS = ['J0','J1','J2','J3','J4','J5','Gr'];
+    let _liveRaf = 0, _cachedServoDeg = null, _commandBusy = false, _suppressSlider = 0, _activeJoint = -1;
+    let _jointSession = false, _cartesianActive = false, _controlPlane = null, _robotSynced = false, _jogThrottle = 0;
+    let _jogInflight = false, _pendingJog = null;
+    const JOG_MIN_MS = 32;
+
+    function setStatus(msg, ok) {
+      const el = document.getElementById('statusLine');
+      el.textContent = msg;
+      el.style.color = ok === true ? 'var(--ok)' : (ok === false ? 'var(--danger)' : '');
+    }
+
+    function buildSliders() {
+      const root = document.getElementById('sliders');
+      root.innerHTML = '';
+      for (let i = 0; i < 7; i++) {
+        const row = document.createElement('div');
+        row.className = 'joint-row';
+        const b = BOUNDS[i];
+        row.innerHTML = '<span class="lab">' + LABELS[i] + '</span><input type="range" id="j' + i + '" min="' + b[0] + '" max="' + b[1] + '" step="0.25" value="0" /><span class="val" id="jv' + i + '">0.0°</span>';
+        root.appendChild(row);
+        const inp = row.querySelector('input');
+        inp.addEventListener('pointerdown', () => { _activeJoint = i; onSliderPointerDown(); });
+        inp.addEventListener('input', () => { displayJoint(i); onSliderInput(); });
+        inp.addEventListener('pointerup', onSliderFlush);
+        inp.addEventListener('pointercancel', onSliderFlush);
+      }
+    }
+    function displayJoint(i) {
+      const s = document.getElementById('j' + i), v = document.getElementById('jv' + i);
+      if (s && v) v.textContent = parseFloat(s.value).toFixed(1) + '°';
+    }
+    function collectDeg() {
+      const out = [];
+      for (let i = 0; i < 7; i++) out.push(parseFloat(document.getElementById('j' + i).value));
+      return out;
+    }
+    function collectDegForJog() {
+      const base = (_cachedServoDeg && _cachedServoDeg.length >= 7)
+        ? _cachedServoDeg.slice()
+        : collectDeg();
+      if (_activeJoint >= 0 && _activeJoint < 7) {
+        base[_activeJoint] = parseFloat(document.getElementById('j' + _activeJoint).value);
+      }
+      return base;
+    }
+    function setSlidersDisabled(dis) {
+      document.querySelectorAll('#sliders input').forEach((el) => { el.disabled = dis; });
+    }
+    function applyServoDegDisplay(sd) {
+      if (!sd) return;
+      _suppressSlider++; _cachedServoDeg = sd.slice(); _robotSynced = true;
+      for (let i = 0; i < 7; i++) {
+        const inp = document.getElementById('j' + i);
+        const b = BOUNDS[i];
+        let v = parseFloat(sd[i]); if (Number.isNaN(v)) v = 0;
+        inp.value = String(Math.min(b[1], Math.max(b[0], v)));
+        displayJoint(i);
+      }
+      _suppressSlider--;
+    }
+    async function beginJointSession() {
+      if (_jointSession || _cartesianActive) return false;
+      const body = {};
+      if (_cachedServoDeg) body.servo_deg = _cachedServoDeg;
+      const { data } = await D1.apiJson('/api/joints/session_begin', { method: 'POST', body: body });
+      if (!data.ok) { setStatus(data.reason || '?', false); return false; }
+      _jointSession = true; _controlPlane = 'joint'; setSlidersDisabled(_cartesianActive); return true;
+    }
+    async function endJointSession() {
+      if (!_jointSession) return;
+      _jointSession = false; _controlPlane = null; _activeJoint = -1;
+      try { await D1.apiJson('/api/joints/session_end', { method: 'POST', body: {} }); } catch (_) {}
+      setSlidersDisabled(_cartesianActive);
+    }
+    async function onSliderPointerDown() {
+      if (_suppressSlider || _cartesianActive) return;
+      if (!_jointSession) {
+        const ok = await beginJointSession();
+        if (!ok) setStatus('Premi Coppia ON', false);
+      }
+    }
+    function onSliderInput() {
+      if (_suppressSlider || !_jointSession || _cartesianActive) return;
+      const now = performance.now();
+      if (now - _jogThrottle < JOG_MIN_MS) return;
+      _jogThrottle = now;
+      if (_liveRaf) return;
+      _liveRaf = requestAnimationFrame(() => { _liveRaf = 0; sendJog(false); });
+    }
+    async function onSliderFlush() {
+      if (_suppressSlider) return;
+      if (_jointSession) await sendJog(true);
+    }
+    function queueJog(flush) {
+      if (_cartesianActive || !_robotSynced || !_jointSession) return;
+      _pendingJog = { sd: collectDegForJog(), flush: !!flush, joint: _activeJoint };
+      pumpJog();
+    }
+    async function pumpJog() {
+      if (_jogInflight || !_pendingJog) return;
+      const job = _pendingJog;
+      _pendingJog = null;
+      _jogInflight = true;
+      const body = { servo_deg: job.sd, session: true };
+      if (job.joint >= 0) body.joint_index = job.joint;
+      try {
+        const { data } = await D1.apiJson('/api/joints/jog', { method: 'POST', body: body });
+        if (data.ok || data.skipped) {
+          _cachedServoDeg = job.sd.slice();
+          if (job.flush) setStatus('Posa aggiornata', true);
+        } else if (job.flush) setStatus(data.reason || '?', false);
+      } catch (e) {
+        if (job.flush) setStatus(String(e), false);
+      } finally {
+        _jogInflight = false;
+        if (_pendingJog) pumpJog();
+      }
+    }
+    async function sendJog(flush) {
+      if (_cartesianActive || !_robotSynced) return;
+      if (!_jointSession && !(await beginJointSession())) return;
+      queueJog(flush);
+    }
+    async function loadFeedback() {
+      setStatus('Lettura…', null);
+      try {
+        const { data } = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
+        if (data.ok && data.servo_deg) { applyServoDegDisplay(data.servo_deg); setStatus('Sincronizzato', true); }
+        else setStatus(data.reason || 'Nessun feedback', false);
+      } catch (e) { setStatus(String(e), false); }
+    }
+    async function ensureCoupled(withPower) {
+      _commandBusy = true;
+      try {
+        const { data } = await D1.apiJson('/api/arm/couple', {
+          method: 'POST',
+          body: { with_power: !!withPower, force: !!withPower },
+        });
+        setStatus(data.ok || data.skipped ? 'Coppia attiva' : (data.reason || '?'), data.ok || data.skipped);
+      } catch (e) { setStatus(String(e), false); }
+      _commandBusy = false;
+    }
+
+    D1.initTcpJogModal({
+      requireSynced: () => _robotSynced,
+      getServoDeg: () => _cachedServoDeg,
+      isBlocked: () => _jointSession,
+      onCartesianStart: () => { _cartesianActive = true; setSlidersDisabled(true); },
+      onCartesianEnd: () => { _cartesianActive = false; setSlidersDisabled(false); },
+    });
+
+    buildSliders();
+    document.getElementById('btnRead').onclick = loadFeedback;
+    document.getElementById('btnCouple').onclick = () => ensureCoupled(true);
+    document.getElementById('btnRelease').onclick = async () => {
+      const ok = prompt('ATTENZIONE: i motori cedono. Digita RELEASE per confermare:');
+      if (ok !== 'RELEASE') return;
+      await endJointSession();
+      await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
+      setStatus('Coppia rilasciata (cedevole)', null);
+    };
+    document.getElementById('btnZero').onclick = async () => {
+      if (!confirm('Posizione zero?')) return;
+      await endJointSession();
+      setStatus('Zero…', null);
+      const { data } = await D1.apiJson('/api/joints/zero', { method: 'POST', body: {} });
+      setStatus(data.ok ? 'Zero OK' : (data.reason || '?'), data.ok);
+      setTimeout(loadFeedback, 800);
+    };
+    D1.pollHealth();
+    setInterval(() => D1.pollHealth(), 10000);
+    (async () => {
+      await loadFeedback();
+      setStatus(_robotSynced ? 'Pronto — premi Coppia ON' : 'Leggi da robot', _robotSynced);
+    })();
+  </script>
+</body>
+</html>

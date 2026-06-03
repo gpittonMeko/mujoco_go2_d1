@@ -570,6 +570,9 @@ def main() -> int:
     _lm = pl_direct.get("viewer_landmarks_base_link_m") or {}
     assert [round(float(x), 5) for x in (_lm.get("object_nominal_20cm_base_link_m") or [])] == [0.575, 0.0, 0.01]
 
+    from go2_dashboard.paths import ensure_d1_scripts_on_sys_path
+
+    ensure_d1_scripts_on_sys_path()
     from arm_kinematics_d1_template import depth_camera_optical_axis_unit_arm_base, nominal_object_along_depth_optical_arm_m
     _ax = depth_camera_optical_axis_unit_arm_base()
     assert [round(float(x), 5) for x in _ax.tolist()] == [1.0, 0.0, 0.0]

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D1 — Vision</title>
+  <link rel="stylesheet" href="/static/d1_common.css" />
+  <style>
+    :root {
+      --bg: #0c0e12; --surface: #161a22; --surface2: #1e2430; --border: #2d3548;
+      --text: #f1f5f9; --muted: #8b9cb3; --vision: #60a5fa; --ok: #4ade80; --err: #f87171; --pick: #fbbf24;
+    }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; flex-direction: column;
+    }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      gap: 12px; padding: 14px 24px; background: var(--surface); border-bottom: 2px solid var(--border);
+    }
+    .topbar h1 { margin: 0; font-size: 1.25rem; color: var(--vision); text-transform: uppercase; }
+    .topbar .sub { color: var(--muted); font-size: 0.85rem; }
+
+    .workspace {
+      flex: 1; display: grid;
+      grid-template-columns: 220px 1fr 260px;
+      gap: 0; min-height: 0;
+      max-width: 1600px; margin: 0 auto; width: 100%;
+    }
+    @media (max-width: 1050px) {
+      .workspace { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+    }
+
+    /* Menu camere (sinistra) */
+    .cam-menu {
+      background: var(--surface); border-right: 1px solid var(--border);
+      padding: 12px 10px; display: flex; flex-direction: column; gap: 6px;
+      overflow-y: auto;
+    }
+    .cam-menu h2 {
+      margin: 0 0 8px 4px; font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--muted); font-weight: 600;
+    }
+    .cam-btn {
+      display: flex; align-items: flex-start; gap: 10px;
+      width: 100%; text-align: left; padding: 10px 12px;
+      border: 1px solid transparent; border-radius: 10px;
+      background: transparent; color: var(--text); cursor: pointer;
+      font-family: inherit; transition: background 0.12s, border-color 0.12s;
+    }
+    .cam-btn:hover { background: var(--surface2); border-color: var(--border); }
+    .cam-btn.active {
+      background: #0f2744; border-color: #3b82f6;
+      box-shadow: inset 3px 0 0 #3b82f6;
+    }
+    .cam-btn .ico {
+      flex-shrink: 0; width: 28px; height: 28px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 800; background: var(--surface2);
+      color: var(--vision);
+    }
+    .cam-btn.active .ico { background: #1e3a5f; color: #93c5fd; }
+    .cam-btn .txt { flex: 1; min-width: 0; }
+    .cam-btn .txt strong { display: block; font-size: 0.88rem; margin-bottom: 2px; }
+    .cam-btn .txt span { display: block; font-size: 0.72rem; color: var(--muted); line-height: 1.3; }
+
+    /* Vista principale (centro) */
+    .main-view {
+      display: flex; flex-direction: column; min-height: 0;
+      padding: 14px 16px; background: #080a0d;
+    }
+    .main-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
+    }
+    .main-head h2 { margin: 0; font-size: 1.05rem; color: var(--vision); }
+    .main-head .desc { font-size: 0.82rem; color: var(--muted); }
+    .viewer-wrap {
+      flex: 1; min-height: 280px;
+      background: #000; border: 2px solid var(--border); border-radius: 12px;
+      overflow: hidden; display: flex; align-items: center; justify-content: center;
+    }
+    .viewer-wrap img {
+      width: 100%; height: 100%; max-height: calc(100vh - 220px);
+      object-fit: contain; display: block;
+    }
+    .status-bar {
+      margin-top: 10px; padding: 10px 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; font-size: 0.82rem; color: var(--muted);
+    }
+
+    /* Pannello rilevamento (destra) */
+    .detect-side {
+      background: var(--surface); border-left: 1px solid var(--border);
+      padding: 12px 14px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .panel {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px; font-size: 0.88rem;
+    }
+    .panel h3 {
+      margin: 0 0 8px; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted);
+    }
+    .coord { font-family: ui-monospace, monospace; font-size: 1.02rem; color: var(--pick); }
+    .badge {
+      display: inline-block; padding: 3px 8px; border-radius: 999px;
+      font-size: 0.72rem; font-weight: 600;
+    }
+    .badge.ok { background: #14532d; color: var(--ok); }
+    .badge.err { background: #7f1d1d; color: #fecaca; }
+    .badge.warn { background: #422006; color: #fde68a; }
+    .hint { color: var(--muted); font-size: 0.8rem; line-height: 1.4; margin: 0; }
+    button.action {
+      width: 100%; margin-top: 8px; padding: 10px; font-weight: 700;
+      border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer;
+    }
+    .ai-line { font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+
+    @media (max-width: 1050px) {
+      .cam-menu {
+        flex-direction: row; flex-wrap: wrap; border-right: none;
+        border-bottom: 1px solid var(--border); padding: 10px;
+      }
+      .cam-menu h2 { width: 100%; }
+      .cam-btn { flex: 1 1 140px; }
+      .detect-side { border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body data-page="vision">
+  <header class="topbar">
+    <div>
+      <h1>Vision</h1>
+      <span class="sub">Intel RealSense · seleziona uscita a sinistra · :{{ dashboard_port }}</span>
+    </div>
+    <div>{% include '_d1_dash_switch.html' %}</div>
+  </header>
+
+  <div class="workspace">
+    <nav class="cam-menu" aria-label="Uscite camera">
+      <h2>Uscite camera</h2>
+      <button type="button" class="cam-btn active" data-stream="detect" aria-pressed="true">
+        <span class="ico">P</span>
+        <span class="txt"><strong>Prelievo</strong><span>YOLO + centro · vista operativa</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="yolo">
+        <span class="ico">AI</span>
+        <span class="txt"><strong>YOLO</strong><span>Tutte le detection in tempo reale</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="color">
+        <span class="ico">RGB</span>
+        <span class="txt"><strong>Colore</strong><span>Immagine RGB a colori</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="depth">
+        <span class="ico">D</span>
+        <span class="txt"><strong>Profondità</strong><span>Mappa distanza (turbo)</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="ir1">
+        <span class="ico">IR</span>
+        <span class="txt"><strong>IR sinistro</strong><span>Infrared camera 1</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="ir2">
+        <span class="ico">IR</span>
+        <span class="txt"><strong>IR destro</strong><span>Infrared camera 2</span></span>
+      </button>
+      <button type="button" class="cam-btn" data-stream="grid">
+        <span class="ico">⊞</span>
+        <span class="txt"><strong>Panoramica</strong><span>Griglia tutti gli stream</span></span>
+      </button>
+    </nav>
+
+    <section class="main-view">
+      <div class="main-head">
+        <div>
+          <h2 id="viewTitle">Prelievo</h2>
+          <span class="desc" id="viewDesc">Rilevamento oggetto e punto di presa</span>
+        </div>
+      </div>
+      <div class="viewer-wrap">
+        <img id="mainStream" src="/stream/vision/detect.mjpg" alt="Stream selezionato" />
+      </div>
+      <p class="status-bar" id="statusLine">Connessione…</p>
+    </section>
+
+    <aside class="detect-side">
+      <div class="panel">
+        <h3>Rilevamento YOLO</h3>
+        <p class="hint" id="modeLine">Modalità: <strong>yolo</strong></p>
+        <p class="ai-line" id="aiLine">—</p>
+        <button type="button" class="action" id="btnRefresh">Aggiorna rilevamento</button>
+      </div>
+      <div class="panel">
+        <h3>Centro prelievo</h3>
+        <p id="pickStatus"><span class="badge err">—</span></p>
+        <p class="coord" id="centerPx">—</p>
+        <p id="areaLine" class="hint"></p>
+      </div>
+      <div class="panel">
+        <h3>Stima XYZ</h3>
+        <p class="coord" id="xyzLine">—</p>
+        <button type="button" class="action" id="btnCopy" disabled>Copia XYZ</button>
+        <p class="hint" style="margin-top:8px">BBox arancione = detections · giallo = centro prelievo scelto.</p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    var last = null;
+    var bust = Date.now();
+    var streams = {
+      detect: {
+        title: 'Prelievo',
+        desc: 'Contorno verde, centro giallo — vista principale',
+        url: '/stream/vision/detect.mjpg'
+      },
+      yolo: {
+        title: 'YOLO — tutte le detection',
+        desc: 'Ogni oggetto riconosciuto dal modello',
+        url: '/stream/vision/yolo.mjpg'
+      },
+      color: {
+        title: 'Colore RGB',
+        desc: 'Flusso colore RealSense (BGR)',
+        url: '/stream/vision/camera.mjpg'
+      },
+      depth: {
+        title: 'Profondità',
+        desc: 'Distanza in millimetri (visualizzazione colormap)',
+        url: '/stream/vision/depth.mjpg'
+      },
+      ir1: {
+        title: 'Infrared sinistro (IR1)',
+        desc: 'Camera IR 1 — utile con poca luce',
+        url: '/stream/vision/ir1.mjpg'
+      },
+      ir2: {
+        title: 'Infrared destro (IR2)',
+        desc: 'Camera IR 2 — stereo infrared',
+        url: '/stream/vision/ir2.mjpg'
+      },
+      grid: {
+        title: 'Panoramica',
+        desc: 'Anteprima affiancata di RGB, depth e IR',
+        url: '/stream/vision/grid.mjpg'
+      }
+    };
+
+    var mainImg = document.getElementById('mainStream');
+    var currentKey = 'detect';
+
+    function selectStream(key) {
+      if (!streams[key]) return;
+      currentKey = key;
+      var s = streams[key];
+      document.getElementById('viewTitle').textContent = s.title;
+      document.getElementById('viewDesc').textContent = s.desc;
+      mainImg.src = s.url + '?b=' + bust + '&k=' + key;
+      document.querySelectorAll('.cam-btn').forEach(function (btn) {
+        var on = btn.getAttribute('data-stream') === key;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      try { localStorage.setItem('d1_vision_stream', key); } catch (_) {}
+    }
+
+    document.querySelectorAll('.cam-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        selectStream(btn.getAttribute('data-stream'));
+      });
+    });
+
+    try {
+      var saved = localStorage.getItem('d1_vision_stream');
+      if (saved && streams[saved]) selectStream(saved);
+    } catch (_) {}
+
+    function render(d) {
+      last = d;
+      if (d.detect_mode) {
+        document.getElementById('modeLine').innerHTML =
+          'Modalità: <strong>' + d.detect_mode + '</strong>';
+      }
+      var st = document.getElementById('pickStatus');
+      var px = document.getElementById('centerPx');
+      var area = document.getElementById('areaLine');
+      var xyz = document.getElementById('xyzLine');
+      var btn = document.getElementById('btnCopy');
+      if (d.ok && d.center_px) {
+        st.innerHTML = '<span class="badge ok">YOLO OK</span>';
+        px.textContent = 'X ' + d.center_px[0] + ' px · Y ' + d.center_px[1] + ' px';
+        var ai = d.ai || {};
+        area.textContent = (ai.label || 'oggetto') + ' conf=' + (ai.confidence != null ? ai.confidence : '—') +
+          (ai.all_count != null ? ' · det=' + ai.all_count : '');
+        if (d.base_xyz_m) {
+          xyz.textContent = d.base_xyz_m.map(function (v, i) {
+            return ['X', 'Y', 'Z'][i] + ' ' + v + ' m';
+          }).join(' · ');
+          btn.disabled = false;
+        } else {
+          xyz.textContent = '—';
+          btn.disabled = true;
+        }
+      } else {
+        st.innerHTML = '<span class="badge err">NESSUN OGGETTO</span>';
+        px.textContent = '—';
+        area.textContent = d.hint_it || d.reason || d.error || '';
+        xyz.textContent = '—';
+        btn.disabled = true;
+      }
+    }
+
+    async function fetchDetect() {
+      var r = await fetch('/api/vision/detect/plan?_=' + Date.now());
+      render(await r.json());
+    }
+
+    async function pollCam() {
+      try {
+        var r = await fetch('/api/vision/camera/status?_=' + Date.now());
+        var d = await r.json();
+        var s = d.stats || {};
+        var line = (s.available ? '● LIVE' : '○ OFF');
+        if (s.stream_kind) line += ' · ' + s.stream_kind;
+        if (s.capture_backend) line += ' · ' + s.capture_backend;
+        var rs = await fetch('/api/vision/streams/status?_=' + Date.now())
+          .then(function (x) { return x.json(); }).catch(function () { return {}; });
+        var sl = rs.streams || (rs.pyrs && rs.pyrs.streams);
+        if (sl && sl.length) line += ' · ' + sl.join(' + ');
+        line += ' · vista: ' + (streams[currentKey] ? streams[currentKey].title : currentKey);
+        if (!s.available) line += ' — camera OFF: riavvia nx_start_d1_jog.sh sulla NX';
+        document.getElementById('statusLine').textContent = line;
+      } catch (e) {
+        document.getElementById('statusLine').textContent = String(e);
+      }
+    }
+
+    async function pollDetector() {
+      try {
+        var r = await fetch('/api/vision/detector/status?_=' + Date.now());
+        var d = await r.json();
+        var el = document.getElementById('aiLine');
+        if (d.yolo_usable) {
+          el.innerHTML = '<span class="badge ok">YOLO attivo</span> ' + (d.yolo_model_resolved || '').split(/[/\\\\]/).pop();
+        } else {
+          el.innerHTML = '<span class="badge err">YOLO non pronto</span> — bash scripts/nx_install_yolo_vision.sh sulla NX';
+        }
+      } catch (_) {}
+    }
+
+    document.getElementById('btnRefresh').onclick = function () {
+      fetchDetect().catch(function (e) { alert(e); });
+    };
+    document.getElementById('btnCopy').onclick = function () {
+      if (!last || !last.base_xyz_m) return;
+      var txt = last.base_xyz_m.join(', ');
+      navigator.clipboard.writeText(txt).catch(function () { alert(txt); });
+    };
+
+    setInterval(async function () {
+      try {
+        var r = await fetch('/api/vision/detect/last?_=' + Date.now());
+        var d = await r.json();
+        if (d.ok || d.reason || d.hint_it) render(d);
+      } catch (_) {}
+    }, 1200);
+
+    pollCam();
+    pollDetector();
+    setInterval(pollCam, 4000);
+    setInterval(pollDetector, 8000);
+    fetchDetect();
+  </script>
+</body>
+</html>

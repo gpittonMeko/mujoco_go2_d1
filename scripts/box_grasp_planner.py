@@ -16,10 +16,13 @@ from typing import Any, Sequence
 import cv2
 import numpy as np
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
+from go2_dashboard.paths import ensure_d1_scripts_on_sys_path
+
+ensure_d1_scripts_on_sys_path()
 from arm_kinematics_d1_template import fk_tool_tip, ik_reach
 
 

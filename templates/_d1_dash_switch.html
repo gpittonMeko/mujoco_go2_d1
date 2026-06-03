@@ -1,0 +1,6 @@
+{# dash_mode: "arm" | "vision" #}
+{% if dash_mode == 'vision' %}
+<a href="/" class="dash-switch dash-switch-arm" title="Dashboard insegnamento braccio">Braccio</a>
+{% else %}
+<a href="/vision" class="dash-switch dash-switch-vision" title="Streaming camera Intel">Vision</a>
+{% endif %}

@@ -1,0 +1,105 @@
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.topbar-nav {
+  display: flex;
+  gap: 6px;
+}
+.topbar-nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.topbar-nav a:hover { color: var(--text); background: var(--surface2); }
+.topbar-nav a.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface2);
+}
+button.top-jog {
+  background: #0369a1;
+  color: #e0f2fe;
+  font-size: 0.8rem;
+  padding: 8px 14px;
+}
+
+/* Pulsante principale: alterna dashboard Braccio ↔ Vision */
+a.dash-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 120px;
+  padding: 10px 22px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 2px solid;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+a.dash-switch:hover { filter: brightness(1.12); }
+a.dash-switch-vision {
+  background: linear-gradient(180deg, #0c4a6e 0%, #075985 100%);
+  color: #e0f2fe;
+  border-color: #38bdf8;
+}
+a.dash-switch-arm {
+  background: linear-gradient(180deg, #14532d 0%, #166534 100%);
+  color: #ecfdf5;
+  border-color: #34d399;
+}
+
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.72);
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal-overlay.open { display: flex; }
+.modal-panel {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: 16px;
+  max-width: 520px;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--cart);
+}
+.modal-body { padding: 20px; }
+.modal-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  cursor: pointer;
+}

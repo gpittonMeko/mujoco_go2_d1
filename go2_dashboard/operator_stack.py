@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from go2_dashboard.cameras import CAMERA_CACHE
-from go2_dashboard.paths import PROJECT_ROOT
+from go2_dashboard.paths import D1_ARM_COMMAND_BIN, D1_ARM_FEEDBACK_BIN, PROJECT_ROOT
 
 
 def go2_local() -> bool:
@@ -27,8 +27,8 @@ def command_stack_status() -> dict[str, Any]:
             except Exception as exc:
                 modules[name] = {"ok": False, "error": repr(exc)}
         sdk_python_ok = modules.get("cyclonedds", {}).get("ok") and modules.get("unitree_sdk2py", {}).get("ok")
-        helper_pub = PROJECT_ROOT / "bin" / "d1_arm_command"
-        helper_fb = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+        helper_pub = D1_ARM_COMMAND_BIN
+        helper_fb = D1_ARM_FEEDBACK_BIN
         d1_binaries_ok = helper_pub.exists() and helper_fb.exists()
         stack_any_ok = bool(sdk_python_ok or d1_binaries_ok)
         return {

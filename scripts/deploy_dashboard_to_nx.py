@@ -33,16 +33,21 @@ def nx_password() -> str:
 REMOTE_BASE = "/home/unitree/go2_visual_dashboard"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+_D1W = "D1 550 Workspace/OLD"
+_REL_D1_MSG = f"{_D1W}/msg"
+_REL_D1_SCR = f"{_D1W}/scripts"
+_REL_GO2_D1 = f"{_D1W}/unitree_mujoco/unitree_robots/go2_d1"
+
 REMOTE_PUSH_FILES = [
     "diagnostics_dashboard.py",
-    "msg/ArmString_.hpp",
-    "msg/PubServoInfo_.hpp",
-    "msg/ArmString_.cpp",
-    "msg/PubServoInfo_.cpp",
-    "scripts/build_d1_arm_helpers.sh",
-    "scripts/d1_arm_dds_helper.cpp",
-    "scripts/d1_arm_feedback_helper.cpp",
-    "scripts/d1_arm_servo_read_python.py",
+    f"{_REL_D1_MSG}/ArmString_.hpp",
+    f"{_REL_D1_MSG}/PubServoInfo_.hpp",
+    f"{_REL_D1_MSG}/ArmString_.cpp",
+    f"{_REL_D1_MSG}/PubServoInfo_.cpp",
+    f"{_REL_D1_SCR}/build_d1_arm_helpers.sh",
+    f"{_REL_D1_SCR}/d1_arm_dds_helper.cpp",
+    f"{_REL_D1_SCR}/d1_arm_feedback_helper.cpp",
+    f"{_REL_D1_SCR}/d1_arm_servo_read_python.py",
     "go2_dashboard/__init__.py",
     "go2_dashboard/app.py",
     "go2_dashboard/lite_app.py",
@@ -60,16 +65,16 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/blueprints/operator_api.py",
     "scripts/box_grasp_planner.py",
     "scripts/box_object_detector.py",
-    "scripts/arm_kinematics_d1_template.py",
+    f"{_REL_D1_SCR}/arm_kinematics_d1_template.py",
     "scripts/go2_accompany.py",
     "scripts/dds_motion_ping_once.py",
     "scripts/sport_accompany_once.py",
     "scripts/nx_print_cyclone_diag.sh",
     "scripts/nx_go2_sta_and_dds_troubleshoot.txt",
     "scripts/pc_go2_webrtc_crouch.py",
-    "scripts/d1_drag_follow_experimental.py",
-    "scripts/sync_d1_meshes_from_package.py",
-    "scripts/fetch_d1_550_from_jeewantha_github.py",
+    f"{_REL_D1_SCR}/d1_drag_follow_experimental.py",
+    f"{_REL_D1_SCR}/sync_d1_meshes_from_package.py",
+    f"{_REL_D1_SCR}/fetch_d1_550_from_jeewantha_github.py",
     "scripts/serve_dashboard_modular.py",
     "scripts/serve_dashboard_lite.py",
     "scripts/nx_serve_foreground.sh",
@@ -145,7 +150,9 @@ export GO2_SPORT_SUBPROCESS_STAND_MODES=1
 export GO2_GRASP_EXECUTE_ARM=1
 export GO2_DASHBOARD_HOST=0.0.0.0
 export GO2_DASHBOARD_PORT=5052
-# Dashboard operator: non avviare thread LiDAR se non serve (default 1).
+# modular = dashboard.html (slider jog, presa, box plan); lite|operator = dashboard_operators.html (UI ridotta)
+export GO2_DASHBOARD_SERVE=modular
+# Dashboard operator (lite): non avviare thread LiDAR se non serve (default 1).
 export GO2_LITE_SKIP_LIDAR=1
 # AnyGrasp / OpenVLA worker HTTP: URL effettivo aggiunto da _nx_dashboard_env_sh() (default PC lab).
 # export GO2_ANYGRASP_CHECKPOINT=/path/to/checkpoint.tar  # solo SDK AnyGrasp ufficiale
@@ -441,36 +448,40 @@ exit $EC
 def _mesh_rel_paths() -> list[str]:
     """Path relativi alla root repo per mesh Go2 (.obj) e D1 (.STL) servite dal viewer."""
     out: list[str] = []
-    d1 = REPO_ROOT / "unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes"
+    um = REPO_ROOT / _D1W / "unitree_mujoco"
+    d1 = REPO_ROOT / _REL_GO2_D1 / "d1_550_description/meshes"
     if d1.is_dir():
         for p in sorted(d1.glob("*.STL")):
-            out.append(str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
-    ad = REPO_ROOT / "unitree_mujoco/unitree_robots/go2_d1/assets"
+            out.append(p.relative_to(um).as_posix())
+    ad = REPO_ROOT / _REL_GO2_D1 / "assets"
     if ad.is_dir():
         for p in sorted(ad.glob("*.obj")):
-            out.append(str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
+            out.append(p.relative_to(um).as_posix())
     return out
 
 
 def _d1_urdf_rel_paths() -> list[str]:
     """URDF e sidecar da repo Jeewantha (stessi file usati dal parser in diagnostics_dashboard)."""
-    d = REPO_ROOT / "unitree_mujoco/unitree_robots/go2_d1/d1_550_description/urdf"
+    d = REPO_ROOT / _REL_GO2_D1 / "d1_550_description/urdf"
     if not d.is_dir():
         return []
     out: list[str] = []
+    um = REPO_ROOT / _D1W / "unitree_mujoco"
     for p in sorted(d.iterdir()):
         if p.suffix.lower() in (".urdf", ".xacro", ".csv") and p.is_file():
-            out.append(str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
+            out.append(p.relative_to(um).as_posix())
     return out
 
 
 def _scene_xml_rel_paths() -> list[str]:
     """XML MuJoCo per ``/api/mujoco/preview.png`` (NX deve avere gli include)."""
-    rels = [
-        "unitree_mujoco/unitree_robots/go2_d1/scene_d1_mesh.xml",
-        "unitree_mujoco/unitree_robots/go2_d1/go2_d1_d1mesh.xml",
+    names = ("scene_d1_mesh.xml", "go2_d1_d1mesh.xml")
+    base = REPO_ROOT / _REL_GO2_D1
+    return [
+        f"unitree_robots/go2_d1/{n}"
+        for n in names
+        if (base / n).is_file()
     ]
-    return [r for r in rels if (REPO_ROOT / r).is_file()]
 
 
 def main() -> None:
@@ -505,14 +516,30 @@ def main() -> None:
         remote_presets_exist = True
     except Exception:
         remote_presets_exist = False
+    _REMOTE_FLAT = {
+        f"{_REL_D1_MSG}/ArmString_.hpp": "msg/ArmString_.hpp",
+        f"{_REL_D1_MSG}/PubServoInfo_.hpp": "msg/PubServoInfo_.hpp",
+        f"{_REL_D1_MSG}/ArmString_.cpp": "msg/ArmString_.cpp",
+        f"{_REL_D1_MSG}/PubServoInfo_.cpp": "msg/PubServoInfo_.cpp",
+        f"{_REL_D1_SCR}/build_d1_arm_helpers.sh": "scripts/build_d1_arm_helpers.sh",
+        f"{_REL_D1_SCR}/d1_arm_dds_helper.cpp": "scripts/d1_arm_dds_helper.cpp",
+        f"{_REL_D1_SCR}/d1_arm_feedback_helper.cpp": "scripts/d1_arm_feedback_helper.cpp",
+        f"{_REL_D1_SCR}/d1_arm_servo_read_python.py": "scripts/d1_arm_servo_read_python.py",
+        f"{_REL_D1_SCR}/arm_kinematics_d1_template.py": "scripts/arm_kinematics_d1_template.py",
+        f"{_REL_D1_SCR}/d1_drag_follow_experimental.py": "scripts/d1_drag_follow_experimental.py",
+        f"{_REL_D1_SCR}/sync_d1_meshes_from_package.py": "scripts/sync_d1_meshes_from_package.py",
+        f"{_REL_D1_SCR}/fetch_d1_550_from_jeewantha_github.py": "scripts/fetch_d1_550_from_jeewantha_github.py",
+    }
+
     for rel in REMOTE_PUSH_FILES:
         loc = REPO_ROOT / rel
         if not loc.is_file():
             print("skip missing", loc)
             continue
-        remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+        remote_rel = _REMOTE_FLAT.get(rel, rel).replace("\\", "/")
+        remote_path = f"{REMOTE_BASE}/{remote_rel}"
         sftp.put(str(loc), remote_path)
-        print("pushed", rel)
+        print("pushed", rel, "->", remote_rel)
     loc_pr = REPO_ROOT / rel_presets
     if loc_pr.is_file():
         if force_presets or not remote_presets_exist:
@@ -528,25 +555,26 @@ def main() -> None:
                 rel_presets,
                 "— preset salvati sulla NX non sovrascritti (imposta GO2_DEPLOY_OVERWRITE_PRESETS=1 per forzare)",
             )
+    _um_local = REPO_ROOT / _D1W / "unitree_mujoco"
     for rel in _mesh_rel_paths():
-        loc = REPO_ROOT / rel
+        loc = _um_local / rel
         if not loc.is_file():
             continue
-        remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+        remote_path = f"{REMOTE_BASE}/unitree_mujoco/{rel.replace(chr(92), '/')}"
         sftp.put(str(loc), remote_path)
         print("pushed mesh", rel)
     for rel in _d1_urdf_rel_paths():
-        loc = REPO_ROOT / rel
+        loc = _um_local / rel
         if not loc.is_file():
             continue
-        remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+        remote_path = f"{REMOTE_BASE}/unitree_mujoco/{rel.replace(chr(92), '/')}"
         sftp.put(str(loc), remote_path)
         print("pushed urdf", rel)
     for rel in _scene_xml_rel_paths():
-        loc = REPO_ROOT / rel
+        loc = _um_local / rel
         if not loc.is_file():
             continue
-        remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+        remote_path = f"{REMOTE_BASE}/unitree_mujoco/{rel.replace(chr(92), '/')}"
         sftp.put(str(loc), remote_path)
         print("pushed scene_xml", rel)
 

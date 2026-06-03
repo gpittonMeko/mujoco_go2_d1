@@ -86,25 +86,55 @@
       background: rgba(34, 197, 94, 0.07);
       margin-bottom: 4px;
     }
-    /* Operazioni — tab */
+    /* Operazioni — menu sinistro + pannelli */
+    .op-shell {
+      display: grid;
+      grid-template-columns: minmax(172px, 210px) minmax(0, 1fr);
+      gap: 0 18px;
+      align-items: start;
+      margin-top: 12px;
+    }
+    .op-panels { min-width: 0; }
     .op-tabs {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 14px 0 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid #334155;
+      flex-direction: column;
+      flex-wrap: nowrap;
+      gap: 6px;
+      margin: 0;
+      padding: 8px 12px 8px 0;
+      border-bottom: none;
+      border-right: 1px solid #334155;
+      position: sticky;
+      top: 72px;
+      max-height: calc(100vh - 88px);
+      overflow-y: auto;
     }
     .op-tab {
       background: #1e293b;
       color: #e2e8f0;
       border: 1px solid #475569;
       border-radius: 10px;
-      padding: 10px 16px;
+      padding: 10px 12px;
       cursor: pointer;
       font-weight: 700;
-      font-size: 14px;
+      font-size: 13px;
+      width: 100%;
+      text-align: left;
       transition: background .15s, border-color .15s, color .15s;
+    }
+    @media (max-width: 960px) {
+      .op-shell { grid-template-columns: 1fr; }
+      .op-tabs {
+        flex-direction: row;
+        flex-wrap: wrap;
+        border-right: none;
+        border-bottom: 1px solid #334155;
+        position: static;
+        max-height: none;
+        padding: 0 0 12px;
+        margin-bottom: 14px;
+      }
+      .op-tab { width: auto; }
     }
     .op-tab:hover { background: #334155; border-color: #64748b; }
     .op-tab.is-active {
@@ -163,6 +193,9 @@
     .flow-card h4 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: #cbd5e1; letter-spacing: .02em; }
     .flow-card .small { margin-top: 0; }
     .joint-editor-card { grid-column: 1 / -1; max-width: 100%; }
+    .arm3d-joint-stack { margin: 0 0 12px; }
+    .arm3d-joint-stack .joint-sliders { margin-top: 6px; }
+    .arm3d-joint-stack h4 { font-size: 14px; }
     .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
     .section-kicker { margin: 0 0 4px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #93c5fd; }
     .section-head h2 { margin: 0; }
@@ -644,24 +677,54 @@
       background: rgba(34, 197, 94, 0.07);
       margin-bottom: 4px;
     }
+    .op-shell {
+      display: grid;
+      grid-template-columns: minmax(172px, 210px) minmax(0, 1fr);
+      gap: 0 18px;
+      align-items: start;
+      margin-top: 12px;
+    }
+    .op-panels { min-width: 0; }
     .op-tabs {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 14px 0 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid rgba(51, 65, 85, 0.95);
+      flex-direction: column;
+      flex-wrap: nowrap;
+      gap: 6px;
+      margin: 0;
+      padding: 8px 12px 8px 0;
+      border-bottom: none;
+      border-right: 1px solid rgba(51, 65, 85, 0.95);
+      position: sticky;
+      top: 72px;
+      max-height: calc(100vh - 88px);
+      overflow-y: auto;
     }
     .op-tab {
       background: rgba(30, 41, 59, 0.92);
       color: #e2e8f0;
       border: 1px solid rgba(71, 85, 105, 0.95);
-      border-radius: 999px;
-      padding: 10px 16px;
+      border-radius: 10px;
+      padding: 10px 12px;
       cursor: pointer;
       font-weight: 700;
-      font-size: 14px;
+      font-size: 13px;
+      width: 100%;
+      text-align: left;
       transition: background .15s, border-color .15s, color .15s, transform .15s ease;
+    }
+    @media (max-width: 960px) {
+      .op-shell { grid-template-columns: 1fr; }
+      .op-tabs {
+        flex-direction: row;
+        flex-wrap: wrap;
+        border-right: none;
+        border-bottom: 1px solid rgba(51, 65, 85, 0.95);
+        position: static;
+        max-height: none;
+        padding: 0 0 12px;
+        margin-bottom: 14px;
+      }
+      .op-tab { width: auto; border-radius: 999px; padding: 10px 16px; }
     }
     .op-tab:hover { background: rgba(51, 65, 85, 0.98); border-color: rgba(100, 116, 139, 0.92); }
     .op-tab.is-active {
@@ -1025,18 +1088,20 @@
         poi Corpo Go2 e Drag.
       </p>
 
-      <div class="op-tabs" role="tablist" aria-label="Sezioni operative">
+      <div class="op-shell">
+      <nav class="op-tabs" role="tablist" aria-label="Sezioni operative">
         <button type="button" class="op-tab is-active" role="tab" data-op-tab="camtag" aria-selected="true">Camere &amp; AprilTag</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="lidar" aria-selected="false">LiDAR XT-16</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Grasp 3D</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="graspseq" aria-selected="false">Presa / debug</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="graspdbg" aria-selected="false">Grasp debug</button>
-        <button type="button" class="op-tab" role="tab" data-op-tab="arm3d" aria-selected="false">Grasp 3D</button>
+        <button type="button" class="op-tab" role="tab" data-op-tab="lidar" aria-selected="false">LiDAR XT-16</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="calibration" aria-selected="false">Calibrazione</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="trace" aria-selected="false">Vista dall’alto</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="go2" aria-selected="false">Corpo Go2</button>
         <button type="button" class="op-tab" role="tab" data-op-tab="drag" aria-selected="false">Drag mano</button>
-      </div>
+      </nav>
 
+      <div class="op-panels">
       <div id="op-camtag" class="op-panel is-active" role="tabpanel" data-op-panel="camtag">
         <p class="small muted" style="margin-bottom:10px;">
           Vista operativa pulita: <strong>camera 0 RGB raw</strong> in primo piano per il tag 5, con overlay AprilTag separato; <strong>camera 6</strong> resta solo come confronto opzionale.
@@ -1246,7 +1311,7 @@
               <button type="button" onclick="loadStartPose()">Leggi START salvato</button>
             </div>
             <p class="small muted" style="margin-top:12px;line-height:1.45;">
-              Posa <strong>ZERO</strong> operativa: usa l'<strong>editor giunti</strong> qui sotto per leggere/muovere/salvare — così il file coincide col braccio reale.
+              Posa <strong>ZERO</strong> operativa: usa l'<strong>editor giunti</strong> nel tab <strong>Grasp 3D</strong> (slider sopra la scena) per leggere/muovere/salvare.
             </p>
             <div class="btn-row" style="margin-top:8px;">
               <button type="button" class="green" onclick="saveTrueZeroPose()">Salva ZERO (corrente)</button>
@@ -1278,38 +1343,12 @@
           </div>
         </div>
 
-        <div class="flow-grid">
-          <div class="flow-card joint-editor-card">
-            <h4>Controllo giunti (slider) — tempo reale + ZERO / START</h4>
-            <p class="small muted" style="margin:0 0 8px;line-height:1.45;">
-              Con <strong>Controllo live</strong> attivo, ogni spostamento cursore invia subito la posa al braccio (DDS rapido, senza spline lenta).
-              <strong>Sposta tutti (smooth)</strong> = movimento interpolato (lento) con pre-hold antigravità — solo per salti grandi.
-              Poi <strong>Salva ZERO</strong> / <strong>Salva START</strong> per memorizzare i gradi mostrati dagli slider.
-            </p>
-            <div class="btn-row" style="margin:0 0 10px;align-items:center;flex-wrap:wrap;gap:10px;">
-              <label class="small" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="checkbox" id="jointLiveEnabled" checked />
-                <strong>Controllo live</strong> (cursore → robot)
-              </label>
-              <span id="jointLiveStatus" class="small muted" style="font-size:11px;">in attesa…</span>
-            </div>
-            <div class="joint-sliders" id="jointSlidersBlock">
-              <div class="joint-slider-row"><span class="joint-lab">J0</span><input type="range" id="jointSlide0" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(0)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV0">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J1</span><input type="range" id="jointSlide1" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(1)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV1">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J2</span><input type="range" id="jointSlide2" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(2)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV2">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J3</span><input type="range" id="jointSlide3" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(3)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV3">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J4</span><input type="range" id="jointSlide4" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(4)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV4">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">J5</span><input type="range" id="jointSlide5" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(5)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV5">0°</span></div>
-              <div class="joint-slider-row"><span class="joint-lab">Gr</span><input type="range" id="jointSlide6" min="0" max="90" step="0.25" value="50" oninput="jointSliderLiveInput(6)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV6">50°</span></div>
-            </div>
-            <div class="btn-row" style="margin-top:14px;flex-wrap:wrap;">
-              <button type="button" onclick="jointEditorLoad()">Leggi da robot → slider</button>
-              <button type="button" class="primary-go" onclick="jointEditorGoto()">Sposta tutti (smooth)</button>
-              <button type="button" class="green" onclick="jointEditorSaveZero()">Salva ZERO (slider)</button>
-              <button type="button" class="green" onclick="jointEditorSaveStart()">Salva START (slider + scena)</button>
-            </div>
-            <pre id="jointEditorLog" class="small compact-pre" style="margin-top:10px;max-height:220px;">«Leggi da robot» per allineare gli slider al feedback; con Controllo live i cursori comandano subito il braccio.</pre>
-          </div>
+        <div class="flow-card" style="margin-top:14px;border:1px dashed #475569;">
+          <h4 style="margin-top:0;">Controllo giunti (slider)</h4>
+          <p class="small muted" style="margin:0 0 10px;line-height:1.45;">
+            Jog del braccio e salvataggio ZERO/START: tab <strong>Grasp 3D</strong>, slider sopra la vista del robot.
+          </p>
+          <button type="button" class="secondary-go" onclick="openOpTab('arm3d', { user: true })">Apri Grasp 3D</button>
         </div>
 
         <p class="small muted" style="margin-top:16px;">
@@ -1430,6 +1469,36 @@
       </div>
 
       <div id="op-arm3d" class="op-panel" role="tabpanel" data-op-panel="arm3d">
+        <div class="flow-card joint-editor-card arm3d-joint-stack">
+          <h4>Controllo giunti (slider) — sopra la scena 3D</h4>
+          <p class="small muted" style="margin:0 0 8px;line-height:1.45;">
+            Con <strong>Controllo live</strong> attivo, ogni cursore comanda subito il braccio. <strong>Sposta tutti (smooth)</strong> solo per salti grandi.
+            Poi <strong>Salva ZERO</strong> / <strong>Salva START</strong> per memorizzare i gradi degli slider.
+          </p>
+          <div class="btn-row" style="margin:0 0 10px;align-items:center;flex-wrap:wrap;gap:10px;">
+            <label class="small" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="jointLiveEnabled" checked />
+              <strong>Controllo live</strong> (cursore → robot)
+            </label>
+            <span id="jointLiveStatus" class="small muted" style="font-size:11px;">in attesa…</span>
+          </div>
+          <div class="joint-sliders" id="jointSlidersBlock">
+            <div class="joint-slider-row"><span class="joint-lab">J0</span><input type="range" id="jointSlide0" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(0)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV0">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">J1</span><input type="range" id="jointSlide1" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(1)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV1">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">J2</span><input type="range" id="jointSlide2" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(2)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV2">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">J3</span><input type="range" id="jointSlide3" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(3)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV3">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">J4</span><input type="range" id="jointSlide4" min="-90" max="90" step="0.25" value="0" oninput="jointSliderLiveInput(4)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV4">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">J5</span><input type="range" id="jointSlide5" min="-135" max="135" step="0.25" value="0" oninput="jointSliderLiveInput(5)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV5">0°</span></div>
+            <div class="joint-slider-row"><span class="joint-lab">Gr</span><input type="range" id="jointSlide6" min="0" max="90" step="0.25" value="50" oninput="jointSliderLiveInput(6)" onchange="jointSliderLiveFlush()" /><span class="joint-val" id="jointSlideV6">50°</span></div>
+          </div>
+          <div class="btn-row" style="margin-top:14px;flex-wrap:wrap;">
+            <button type="button" onclick="jointEditorLoad()">Leggi da robot → slider</button>
+            <button type="button" class="primary-go" onclick="jointEditorGoto()">Sposta tutti (smooth)</button>
+            <button type="button" class="green" onclick="jointEditorSaveZero()">Salva ZERO (slider)</button>
+            <button type="button" class="green" onclick="jointEditorSaveStart()">Salva START (slider + scena)</button>
+          </div>
+          <pre id="jointEditorLog" class="small compact-pre" style="margin-top:10px;max-height:160px;">«Leggi da robot» per allineare gli slider al feedback; con Controllo live i cursori comandano subito il braccio.</pre>
+        </div>
         <div class="arm3d-legend">
           <span><i class="arm3d-dot" style="background:#1e3a8a;"></i> Giunti</span>
           <span><i class="arm3d-dot" style="background:#a855f7;"></i> Camera front</span>
@@ -1519,8 +1588,8 @@
           <p class="small muted" style="margin:0 0 8px;line-height:1.35;">
             Sposta tutte le sfere blu dei giunti rispetto alla FK pura (non MuJoCo).
             Per spostare le <strong>mesh</strong> link-per-link servono gli origin degli STL nell’URDF
-            (<code class="small">unitree_mujoco/.../d1_550_description/urdf/d1_550_description.urdf</code> o <code>GO2_D1_URDF_PATH</code>).
-            La catena cinematica dei punti è <code class="small">D1_CHAIN</code> in <code class="small">scripts/arm_kinematics_d1_template.py</code>.
+            (<code class="small">D1 550 Workspace/OLD/.../d1_550_description.urdf</code> o <code>GO2_D1_URDF_PATH</code>).
+            La catena cinematica dei punti è <code class="small">D1_CHAIN</code> in <code class="small">D1 550 Workspace/OLD/scripts/arm_kinematics_d1_template.py</code>.
           </p>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;font-size:12px;">
             <label class="small" style="display:flex;flex-direction:column;gap:4px;">Bias ΔX sfere <code id="vg_l_viz_joint_markers_dx_m" class="muted">—</code>
@@ -1771,6 +1840,8 @@
             <pre id="arm3dPathDetail" class="compact-pre small muted" style="margin-top:8px;max-height:140px;white-space:pre-wrap;font-size:11px;line-height:1.35;">—</pre>
           </div>
         </div>
+      </div>
+      </div>
       </div>
     </section>
 

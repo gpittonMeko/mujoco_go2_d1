@@ -235,6 +235,120 @@ def _bbox_area(xyxy: list[float]) -> float:
     return max(0.0, float(xyxy[2]) - float(xyxy[0])) * max(0.0, float(xyxy[3]) - float(xyxy[1]))
 
 
+def detect_all_objects(frame: np.ndarray) -> dict[str, Any]:
+    """Tutte le detection YOLO (o una sola proposta classic) — per vision dinamica."""
+    model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
+    t0 = time.perf_counter()
+    if model_path:
+        p = Path(model_path).expanduser()
+        if p.is_file():
+            try:
+                model = _load_ultralytics_model(str(p))
+                imgsz = int(os.environ.get("GO2_YOLO_IMGSZ", "640"))
+                conf_min = float(os.environ.get("GO2_YOLO_CONF", "0.25"))
+                results = model.predict(frame, imgsz=imgsz, conf=conf_min, verbose=False)
+                boxes: list[dict[str, Any]] = []
+                for result in results:
+                    names = getattr(result, "names", {}) or {}
+                    rb = getattr(result, "boxes", None)
+                    if rb is None:
+                        continue
+                    for b in rb:
+                        xyxy = [float(x) for x in b.xyxy[0].tolist()]
+                        conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                        cls_i = int(b.cls[0]) if getattr(b, "cls", None) is not None else -1
+                        label = str(names.get(cls_i, cls_i))
+                        boxes.append(
+                            {
+                                "bbox_xyxy": xyxy,
+                                "confidence": round(conf, 4),
+                                "class_id": cls_i,
+                                "label": label,
+                            }
+                        )
+                return {
+                    "ok": bool(boxes),
+                    "backend": "ultralytics",
+                    "model_path": str(p),
+                    "boxes": boxes,
+                    "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+            except Exception as exc:
+                err = repr(exc)
+                # yolo11.pt su ultralytics vecchio (Jetson): riprova yolov8n se presente
+                if "C3k2" in err or "yolo11" in str(p).lower():
+                    v8 = p.parent / "yolov8n.pt"
+                    if v8.is_file() and v8 != p:
+                        try:
+                            model = _load_ultralytics_model(str(v8))
+                            results = model.predict(
+                                frame,
+                                imgsz=int(os.environ.get("GO2_YOLO_IMGSZ", "640")),
+                                conf=float(os.environ.get("GO2_YOLO_CONF", "0.20")),
+                                verbose=False,
+                            )
+                            boxes = []
+                            for result in results:
+                                names = getattr(result, "names", {}) or {}
+                                rb = getattr(result, "boxes", None)
+                                if rb is None:
+                                    continue
+                                for b in rb:
+                                    xyxy = [float(x) for x in b.xyxy[0].tolist()]
+                                    conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                                    cls_i = int(b.cls[0]) if getattr(b, "cls", None) is not None else -1
+                                    label = str(names.get(cls_i, cls_i))
+                                    boxes.append(
+                                        {
+                                            "bbox_xyxy": xyxy,
+                                            "confidence": round(conf, 4),
+                                            "class_id": cls_i,
+                                            "label": label,
+                                        }
+                                    )
+                            return {
+                                "ok": bool(boxes),
+                                "backend": "ultralytics",
+                                "model_path": str(v8),
+                                "boxes": boxes,
+                                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                            }
+                        except Exception:
+                            pass
+                return {
+                    "ok": False,
+                    "backend": "ultralytics",
+                    "reason": err,
+                    "boxes": [],
+                    "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+    if os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower() in {"1", "true", "yes"}:
+        one = _classic_box_proposal(frame)
+        boxes = []
+        if one.get("ok"):
+            boxes.append(
+                {
+                    "bbox_xyxy": one["bbox_xyxy"],
+                    "confidence": one.get("confidence", 0.0),
+                    "class_id": -1,
+                    "label": one.get("label", "box_proposal"),
+                }
+            )
+        return {
+            "ok": bool(boxes),
+            "backend": one.get("backend", "classic_contour_fallback"),
+            "boxes": boxes,
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+    return {
+        "ok": False,
+        "backend": "disabled",
+        "reason": "GO2_YOLO_MODEL mancante",
+        "boxes": [],
+        "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
 def detect_box_object(frame: np.ndarray) -> dict[str, Any]:
     model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
     if model_path:

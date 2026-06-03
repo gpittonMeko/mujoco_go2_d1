@@ -18,7 +18,7 @@ import numpy as np
 
 from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
 from go2_dashboard.operator_stack import go2_local
-from go2_dashboard.paths import PROJECT_ROOT
+from go2_dashboard.paths import PROJECT_ROOT, ensure_d1_scripts_on_sys_path
 
 _VIS_DEFAULTS: dict[str, float] = {
     "arm_vs_tag5_x": -0.19,
@@ -76,7 +76,7 @@ def _load_vis_geometry_effective() -> dict[str, float]:
 
 
 def build_scene_3d_payload(*, geometry_fast: bool) -> dict[str, Any]:
-    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    ensure_d1_scripts_on_sys_path()
     from arm_kinematics_d1_template import (
         ARM_FOLD_POSE,
         DEPTH_CAMERA_ARM_BASE_M,

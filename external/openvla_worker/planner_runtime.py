@@ -17,13 +17,14 @@ from urllib.request import Request, urlopen
 
 # .../mujoco_go2_d1/external/openvla_worker/planner_runtime.py -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 
 def _ensure_scripts_path() -> None:
-    s = str(SCRIPTS_DIR)
-    if s not in sys.path:
-        sys.path.insert(0, s)
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from go2_dashboard.paths import ensure_d1_scripts_on_sys_path
+
+    ensure_d1_scripts_on_sys_path()
 
 
 def planner_import_ok() -> tuple[bool, str | None]:

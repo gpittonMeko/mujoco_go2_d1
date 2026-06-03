@@ -24,6 +24,56 @@ _USB_IDS_LOGICAL_0_SONIX = {("0735", "0269")}
 _USB_IDS_LOGICAL_0 = _USB_IDS_LOGICAL_0_ORBBEC | _USB_IDS_LOGICAL_0_SONIX
 _USB_IDS_REALSENSE = {("8086", "0b3a")}
 
+
+def _realsense_color_use_pyrs() -> bool:
+    try:
+        from go2_dashboard.realsense_pyrs import _backend_enabled
+
+        return _backend_enabled()
+    except Exception:
+        return False
+
+
+def _open_realsense_v4l_cap(v4l_index: int) -> Any:
+    """Apre /dev/videoN RealSense provando fourcc (RGB di solito su video4)."""
+    if cv2 is None:
+        raise RuntimeError("cv2 unavailable")
+    fourcc_order = os.environ.get("GO2_REALSENSE_V4L_FOURCC", "YUYV,MJPG,").split(",")
+    for fc in fourcc_order:
+        fc = fc.strip().upper()
+        for opener in (
+            lambda: cv2.VideoCapture(_v4l_path(v4l_index), cv2.CAP_V4L2),
+            lambda: cv2.VideoCapture(int(v4l_index), cv2.CAP_V4L2),
+        ):
+            cap = opener()
+            if not cap.isOpened():
+                cap.release()
+                continue
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            if fc and len(fc) >= 4:
+                try:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fc[:4]))
+                except Exception:
+                    pass
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            except Exception:
+                pass
+            ok_streak = 0
+            for _ in range(8):
+                ok, fr = cap.read()
+                if ok and fr is not None and getattr(fr, "size", 0):
+                    if _frame_looks_like_rgb_color(fr) or float(fr.max()) > 20:
+                        ok_streak += 1
+                        if ok_streak >= 2:
+                            return cap
+            cap.release()
+    return _cv_videocapture(v4l_index)
+
 # Cache: logico dashboard → indice /dev/videoN (solo Linux, sysfs USB).
 _usb_auto_v4l_cache: dict[int, int] | None = None
 _usb_auto_lock = threading.Lock()
@@ -209,6 +259,53 @@ def _probe_generic_rgb_v4l(indices: list[int], *, default_env: str, fallback_def
     return None
 
 
+def _score_realsense_v4l_nodes(rs_indices: list[int]) -> list[tuple[float, int]]:
+    """Ordina nodi RealSense: (score, idx) — score più alto = frame più utile (luminosità + chroma)."""
+    if cv2 is None or platform.system().lower() != "linux" or not rs_indices:
+        return []
+    scored: list[tuple[float, int]] = []
+    for idx in sorted({int(i) for i in rs_indices}):
+        cap = None
+        try:
+            path = _v4l_path(idx)
+            cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                if cap is not None:
+                    cap.release()
+                cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if cap is None or not cap.isOpened():
+                continue
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
+            rank, _ = _realsense_rgb_node_priority(_v4l_sysfs_card_name(idx))
+            best = 0.0
+            for _ in range(12):
+                ok, fr = cap.read()
+                if not ok or fr is None or not getattr(fr, "size", 0):
+                    continue
+                chroma = _frame_channel_chroma_bgr(fr)
+                bright = float(fr.max())
+                score = chroma * 4.0 + bright * 0.25 - float(rank)
+                if _frame_looks_like_rgb_color(fr):
+                    score += 50.0
+                best = max(best, score)
+            if best > 1.0:
+                scored.append((best, int(idx)))
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return scored
+
+
 def _probe_realsense_rgb_v4l(rs_indices: list[int]) -> int | None:
     """Prova i nodi Intel (8086:0b3a) finché uno restituisce frame BGR non neri (spesso ≠ ``video6``)."""
     if cv2 is None or platform.system().lower() != "linux" or not rs_indices:
@@ -216,11 +313,11 @@ def _probe_realsense_rgb_v4l(rs_indices: list[int]) -> int | None:
     flag = os.environ.get("GO2_REALSENSE_VIDEO_PROBE", "1").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return None
-    pref_s = os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "6").strip()
+    pref_s = os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "4").strip()
     try:
         pref = int(pref_s)
     except ValueError:
-        pref = 6
+        pref = 4
     scored: list[tuple[int, int, int]] = []
     for idx in rs_indices:
         rank, _ = _realsense_rgb_node_priority(_v4l_sysfs_card_name(idx))
@@ -314,15 +411,20 @@ def usb_auto_v4l_mapping() -> dict[int, int]:
             if probed is not None:
                 m[6] = int(probed)
             else:
-                pref_s = os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "6").strip()
-                try:
-                    pref = int(pref_s)
-                except ValueError:
-                    pref = 6
-                if pref in rs_idx:
-                    m[6] = int(pref)
+                # Fallback: nodo apribile con frame più luminoso (evita IR nero su video5)
+                scored_fb = _score_realsense_v4l_nodes(rs_idx)
+                if scored_fb:
+                    m[6] = int(scored_fb[0][1])
                 else:
-                    m[6] = int(min(rs_idx, key=lambda x: abs(x - pref)))
+                    pref_s = os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "4").strip()
+                    try:
+                        pref = int(pref_s)
+                    except ValueError:
+                        pref = 4
+                    if pref in rs_idx:
+                        m[6] = int(pref)
+                    else:
+                        m[6] = int(min(rs_idx, key=lambda x: abs(x - pref)))
         _usb_auto_v4l_cache = dict(m)
         return dict(_usb_auto_v4l_cache)
 
@@ -421,7 +523,61 @@ class CameraCache:
             self._started_devices.add(dev)
             threading.Thread(target=self._loop, args=(dev,), daemon=True).start()
 
+    def _loop_pyrs(self, device: int) -> None:
+        """Stream colore RealSense via pyrealsense2 (RGB, non IR /dev/video2)."""
+        from go2_dashboard import realsense_pyrs as rp
+
+        warmup_left = int(os.environ.get("GO2_REALSENSE_WARMUP_FRAMES", "6"))
+        while not self._stop.is_set():
+            if not rp.start():
+                st = rp.status()
+                with self._lock:
+                    self.errors[device] = st.get("error") or (
+                        "pyrealsense2: camera occupata — ferma dashboard 5052 "
+                        "(nx_dashboard_supervise) e riavvia: bash scripts/nx_start_d1_jog.sh"
+                    )
+                time.sleep(3.0)
+                continue
+            if warmup_left > 0:
+                rp.warmup(warmup_left)
+                warmup_left = 0
+            start = time.perf_counter()
+            bundle = rp.read_bundle()
+            frame = bundle.color if bundle is not None else None
+            if frame is None:
+                with self._lock:
+                    self.errors[device] = rp.status().get("error") or "pyrs no frame"
+                rp.stop()
+                time.sleep(1.0)
+                continue
+            enc_ok, jpg = cv2.imencode(
+                ".jpg",
+                frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+            )
+            if enc_ok:
+                diag = _frame_rgb_diagnostics(frame)
+                with self._lock:
+                    self.frames[device] = {
+                        "jpg": jpg.tobytes(),
+                        "ts": time.time(),
+                        "shape": list(frame.shape),
+                        "label": self.devices[device],
+                        "color_chroma": diag.get("color_chroma"),
+                        "rgb_like": True,
+                        "stream_kind": "rgb",
+                        "capture_backend": "pyrealsense2",
+                    }
+                    self.errors.pop(device, None)
+            delay = self.period - (time.perf_counter() - start)
+            if delay > 0:
+                time.sleep(delay)
+        rp.stop()
+
     def _loop(self, device: int) -> None:
+        if int(device) == 6 and _realsense_color_use_pyrs():
+            self._loop_pyrs(device)
+            return
         cap = None
         while not self._stop.is_set():
             start = time.perf_counter()
@@ -429,7 +585,10 @@ class CameraCache:
                 if cap is not None:
                     cap.release()
                 v4l_idx = _v4l_index_for_logical_camera(device)
-                cap = _cv_videocapture(v4l_idx)
+                if int(device) == 6:
+                    cap = _open_realsense_v4l_cap(v4l_idx)
+                else:
+                    cap = _cv_videocapture(v4l_idx)
                 if cap.isOpened():
                     try:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -465,6 +624,7 @@ class CameraCache:
                 continue
 
             if ok and frame is not None:
+                diag_pre = _frame_rgb_diagnostics(frame)
                 if frame.size and float(frame.max()) < 4.0:
                     with self._lock:
                         self.errors[device] = (
@@ -472,6 +632,19 @@ class CameraCache:
                             f"(reale /dev/video{_v4l_index_for_logical_camera(device)}, logico {device})"
                         )
                     time.sleep(0.25)
+                    continue
+                if int(device) == 6 and not diag_pre.get("rgb_like"):
+                    global _usb_auto_v4l_cache
+                    with _usb_auto_lock:
+                        _usb_auto_v4l_cache = None
+                    cap.release()
+                    cap = None
+                    with self._lock:
+                        self.errors[device] = (
+                            f"stream non RGB su /dev/video{_v4l_index_for_logical_camera(device)} — "
+                            "usa GO2_REALSENSE_COLOR_BACKEND=pyrs oppure GO2_VIDEO_INDEX_6=4"
+                        )
+                    time.sleep(0.8)
                     continue
                 enc_ok, jpg = cv2.imencode(
                     ".jpg",
@@ -489,6 +662,7 @@ class CameraCache:
                             "color_chroma": diag.get("color_chroma"),
                             "rgb_like": bool(diag.get("rgb_like")),
                             "stream_kind": diag.get("stream_kind"),
+                            "capture_backend": "v4l2",
                         }
                         self.errors.pop(device, None)
             else:
@@ -538,6 +712,7 @@ class CameraCache:
                     "color_chroma": None if device not in self.frames else self.frames[device].get("color_chroma"),
                     "rgb_like": False if device not in self.frames else bool(self.frames[device].get("rgb_like")),
                     "stream_kind": None if device not in self.frames else self.frames[device].get("stream_kind"),
+                    "capture_backend": None if device not in self.frames else self.frames[device].get("capture_backend"),
                     "error": self.errors.get(device),
                 }
                 for device in self.devices
