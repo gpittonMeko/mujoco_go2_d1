@@ -65,3 +65,36 @@ export D1_PROG_MOVE_DEG_PER_S="${D1_PROG_MOVE_DEG_PER_S:-12}"
 export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
+# Orbbec wrist: SOLO stream RGB su /dev/video6 (video2=IR video4 spesso IR/depth su 335Lg)
+export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-6}"
+export D1_ORBBEC_V4L_INDICES="${D1_ORBBEC_V4L_INDICES:-6}"
+export D1_ORBBEC_RGB_V4L_PREFERRED="${D1_ORBBEC_RGB_V4L_PREFERRED:-6}"
+export D1_ORBBEC_RGB_ONLY="${D1_ORBBEC_RGB_ONLY:-1}"
+export D1_ORBBEC_V4L_DIRECT="${D1_ORBBEC_V4L_DIRECT:-1}"
+export D1_ORBBEC_PREFER_V4L_DIRECT="${D1_ORBBEC_PREFER_V4L_DIRECT:-1}"
+export D1_ORBBEC_USE_OPERATOR_HTTP="${D1_ORBBEC_USE_OPERATOR_HTTP:-0}"
+export D1_ORBBEC_MIN_FRAME_CHROMA="${D1_ORBBEC_MIN_FRAME_CHROMA:-12}"
+export D1_ORBBEC_REPROBE_EACH_CAPTURE="${D1_ORBBEC_REPROBE_EACH_CAPTURE:-1}"
+# ROI visione: esclude bordo inferiore (chele pinza nel frame polso)
+export D1_PICK_VISION_CROP_BOTTOM_FRAC="${D1_PICK_VISION_CROP_BOTTOM_FRAC:-0.30}"
+export D1_PICK_PX_TO_J0_DEG="${D1_PICK_PX_TO_J0_DEG:-0.04}"
+export D1_PICK_PX_TO_J1_DEG="${D1_PICK_PX_TO_J1_DEG:-0.035}"
+export D1_PICK_PX_TO_J2_DEG="${D1_PICK_PX_TO_J2_DEG:-0.015}"
+export D1_PICK_CALIB_COUPLE_SETTLE_S="${D1_PICK_CALIB_COUPLE_SETTLE_S:-0.8}"
+export D1_ORBBEC_CAPTURE_RETRIES="${D1_ORBBEC_CAPTURE_RETRIES:-3}"
+# Riconoscimento oggetto: stesso criterio del detector (nessun filtro area extra in Teach)
+export GO2_BOX_MAX_AREA_RATIO="${GO2_BOX_MAX_AREA_RATIO:-1.0}"
+# Modello YOLO opzionale (TensorRT/ONNX/.pt) — se presente migliora foto+riconoscimento:
+if [[ -z "${GO2_YOLO_MODEL:-}" ]]; then
+  for _yolo in \
+    "${GO2_VIS_DIR:-/home/unitree/go2_visual_dashboard}/models/yolo11n.engine" \
+    "${GO2_VIS_DIR:-/home/unitree/go2_visual_dashboard}/models/yolo11n.onnx" \
+    "/home/unitree/go2_visual_dashboard/models/yolo11n.engine"; do
+    if [[ -f "$_yolo" ]]; then
+      export GO2_YOLO_MODEL="$_yolo"
+      break
+    fi
+  done
+  unset _yolo
+fi
+export GO2_ORBBEC_PREFER_MJPEG="${GO2_ORBBEC_PREFER_MJPEG:-1}"

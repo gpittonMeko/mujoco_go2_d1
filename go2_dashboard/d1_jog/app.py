@@ -7,9 +7,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 
-from go2_dashboard.d1_jog import cartesian, jog_stream, program_runner, program_store, service
+from go2_dashboard.d1_jog import (
+    cartesian,
+    jog_stream,
+    orbbec_capture,
+    pick_preset,
+    pick_vision,
+    program_runner,
+    program_store,
+    service,
+)
 from go2_dashboard.paths import PROJECT_ROOT
 
 _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
@@ -172,6 +181,10 @@ def create_d1_jog_app() -> Flask:
         out = service.go_zero()
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
+
+    @app.route("/api/arm/status")
+    def arm_status() -> Response:
+        return jsonify({"ok": True, "arm_coupled": service.arm_coupled()})
 
     @app.route("/api/arm/couple", methods=["POST"])
     def arm_couple() -> Response:
@@ -413,6 +426,302 @@ def create_d1_jog_app() -> Flask:
         if prog is None:
             return jsonify({"ok": False, "reason": "program_not_found"}), 404
         return jsonify({"ok": True, "program": prog})
+
+    @app.route("/api/orbbec/capture", methods=["POST"])
+    def orbbec_capture_frame() -> Response:
+        out = orbbec_capture.capture_orbbec_jpeg()
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
+
+    @app.route("/api/orbbec/live.mjpg")
+    def orbbec_live_mjpeg() -> Response:
+        return Response(
+            stream_with_context(orbbec_capture.generate_rgb_mjpeg_stream()),
+            mimetype="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    @app.route("/api/orbbec/last.jpg")
+    def orbbec_last_jpeg() -> Response:
+        path = orbbec_capture.latest_snapshot_path()
+        if path is None:
+            return jsonify({"ok": False, "reason": "no_snapshot"}), 404
+        return send_file(path, mimetype="image/jpeg", max_age=0)
+
+    @app.route("/api/orbbec/probe")
+    def orbbec_probe() -> Response:
+        from go2_dashboard.cameras import _v4l_sysfs_card_name
+
+        order = orbbec_capture._v4l_indices_probe_order()
+        nodes = [
+            {
+                "index": idx,
+                "sysfs_name": _v4l_sysfs_card_name(idx),
+                "ir_sysfs": orbbec_capture._v4l_sysfs_name_is_ir(_v4l_sysfs_card_name(idx)),
+            }
+            for idx in order
+        ]
+        chosen = orbbec_capture.resolve_orbbec_rgb_v4l_index(force_probe=True)
+        return jsonify(
+            {
+                "ok": chosen is not None,
+                "probe_order": order,
+                "nodes": nodes,
+                "chosen_v4l_index": chosen,
+                "rgb_only": orbbec_capture._rgb_only(),
+            }
+        )
+
+    @app.route("/api/pick/preset", methods=["GET"])
+    def pick_preset_get() -> Response:
+        return jsonify(pick_preset.preset_info())
+
+    @app.route("/api/pick/preset", methods=["POST"])
+    def pick_preset_set() -> Response:
+        body = request.get_json(silent=True) or {}
+        if body.get("from_program"):
+            derived = pick_preset.offsets_from_program_waypoints()
+            if not derived.get("ok"):
+                return jsonify(derived), 404
+            info = pick_preset.set_offsets(
+                derived["joint_offset_deg"],
+                source="program_delta",
+            )
+            info["derived"] = derived
+            return jsonify(info)
+        raw = body.get("joint_offset_deg")
+        if not isinstance(raw, list) or len(raw) < 6:
+            return jsonify({"ok": False, "reason": "joint_offset_deg_required"}), 400
+        try:
+            off = [float(x) for x in raw[:7]]
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "reason": "joint_offset_deg_invalid"}), 400
+        last_det = body.get("last_detection")
+        info = pick_preset.set_offsets(
+            off,
+            source=str(body.get("source", "manual")),
+            last_detection=last_det if isinstance(last_det, dict) else None,
+        )
+        return jsonify(info)
+
+    @app.route("/api/pick/preset/from_pose", methods=["POST"])
+    def pick_preset_from_pose() -> Response:
+        """Salva offset = posa attuale − SCANSIONE (dopo jog in teach)."""
+        body = request.get_json(silent=True) or {}
+        servo, err = _servo_deg_from_body(body)
+        if servo is None:
+            return jsonify({"ok": False, "reason": err or "no_feedback"}), 503
+        out = pick_preset.offsets_from_current_vs_scan(servo)
+        code = 200 if out.get("ok") else 404
+        return jsonify(out), code
+
+    @app.route("/api/pick/calibrate/zero/finish", methods=["POST"])
+    def pick_calibrate_zero_finish() -> Response:
+        """Chiude calibrazione: coppia ON (fine task) + offset + riferimento visione."""
+        body = request.get_json(silent=True) or {}
+        vis = body.get("vision_at_scan")
+        if body.get("servo_deg"):
+            servo, err = _servo_deg_from_body(body)
+            if servo is None:
+                return jsonify({"ok": False, "reason": err or "no_feedback"}), 503
+            out = pick_preset.save_zero_calibration(
+                servo,
+                vision_at_scan=vis if isinstance(vis, dict) else None,
+            )
+        else:
+            out = pick_preset.finish_zero_calibration_after_release(
+                vision_at_scan=vis if isinstance(vis, dict) else None,
+            )
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
+
+    @app.route("/api/pick/preset/nudge", methods=["POST"])
+    def pick_preset_nudge() -> Response:
+        body = request.get_json(silent=True) or {}
+        try:
+            joint = int(body.get("joint", body.get("joint_index", 0)))
+            delta = float(body.get("delta_deg", 0))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "reason": "joint_and_delta_deg_required"}), 400
+        if delta == 0:
+            return jsonify({"ok": False, "reason": "delta_deg_zero"}), 400
+        out = pick_preset.nudge_offsets(joint_index=joint, delta_deg=delta)
+        code = 200 if out.get("ok") else 400
+        return jsonify(out), code
+
+    def _apply_pick_detection_to_preset(out: dict[str, Any]) -> None:
+        if not out.get("ok") or not out.get("last_detection"):
+            return
+        preset = pick_preset.load_preset()
+        if preset.get("joint_offset_deg"):
+            pick_preset.set_offsets(
+                preset["joint_offset_deg"],
+                source=preset.get("source", "unchanged"),
+                last_detection=out["last_detection"],
+            )
+        else:
+            derived = pick_preset.offsets_from_program_waypoints()
+            if derived.get("ok"):
+                pick_preset.set_offsets(
+                    derived["joint_offset_deg"],
+                    source="program_delta",
+                    last_detection=out["last_detection"],
+                )
+
+    @app.route("/api/pick/snapshot", methods=["POST"])
+    def pick_snapshot() -> Response:
+        out = pick_vision.capture_and_detect()
+        _apply_pick_detection_to_preset(out)
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
+
+    @app.route("/api/pick/detect", methods=["POST"])
+    def pick_detect() -> Response:
+        body = request.get_json(silent=True) or {}
+        if body.get("capture_if_missing", True):
+            out = pick_vision.capture_and_detect()
+        else:
+            out = pick_vision.detect_on_latest_snapshot(capture_if_missing=False)
+        _apply_pick_detection_to_preset(out)
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
+
+    def _pick_scene_jpeg() -> Response:
+        path = pick_vision.scene_overlay_path()
+        if not path.is_file():
+            return jsonify({"ok": False, "reason": "no_scene_overlay"}), 404
+        return send_file(path, mimetype="image/jpeg", max_age=0)
+
+    @app.route("/api/pick/diagnostic")
+    def pick_diagnostic() -> Response:
+        import sys
+
+        from go2_dashboard.paths import PROJECT_ROOT
+
+        cap = orbbec_capture.capture_orbbec_jpeg()
+        det_out: dict[str, Any] = {"ok": False, "reason": "capture_failed"}
+        if cap.get("ok"):
+            scripts_dir = str(PROJECT_ROOT / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from box_object_detector import detector_status
+
+            det_out = pick_vision.detect_on_latest_snapshot(capture_if_missing=False)
+            det_out["detector_status"] = detector_status()
+        return jsonify(
+            {
+                "ok": cap.get("ok", False),
+                "capture": cap,
+                "detection": det_out,
+                "preset": pick_preset.preset_info(),
+            }
+        )
+
+    @app.route("/api/pick/scene.jpg")
+    def pick_scene_jpeg() -> Response:
+        return _pick_scene_jpeg()
+
+    @app.route("/api/pick/detect.jpg")
+    def pick_detect_jpeg() -> Response:
+        return _pick_scene_jpeg()
+
+    @app.route("/api/pick/grasp/goto", methods=["POST"])
+    def pick_grasp_goto() -> Response:
+        found = program_store.find_scan_waypoint()
+        if found is None:
+            return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404
+        _program_id, wp = found
+        raw = wp.get("servo_deg")
+        if not isinstance(raw, list):
+            return jsonify({"ok": False, "reason": "invalid_scan_waypoint"}), 400
+        scan_sd = service.clamp_servo_deg([float(x) for x in raw[:7]])
+        preset = pick_preset.load_preset()
+        off = pick_preset.effective_joint_offsets(
+            last_detection=preset.get("last_detection"),
+        )
+        if off is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "grasp_preset_missing",
+                    "hint": "Calibrazione zero, offset programma o foto normale prima di Presa oggetto",
+                }
+            ), 404
+        target = pick_preset.grasp_servo_from_scan(
+            scan_sd,
+            offsets=off,
+            last_detection=preset.get("last_detection"),
+        )
+        if target is None:
+            return jsonify({"ok": False, "reason": "grasp_target_invalid"}), 400
+        service._halt_cartesian_stream(wait_idle=True)
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return jsonify(couple), 502
+        out = program_runner.move_to_servo_deg_smooth(target)
+        out["preset"] = "grasp"
+        out["coupling"] = couple
+        out["scan_servo_deg"] = scan_sd
+        out["joint_offset_deg"] = off
+        out["has_zero_calibration"] = bool(preset.get("zero_calibration"))
+        zc = preset.get("zero_calibration") or {}
+        ref_vis = zc.get("vision_at_scan") if isinstance(zc, dict) else None
+        ld = preset.get("last_detection")
+        dpx = pick_preset._vision_pixel_delta(
+            ref_vis if isinstance(ref_vis, dict) else None,
+            ld if isinstance(ld, dict) else None,
+        )
+        if dpx is not None:
+            out["vision_pixel_delta"] = [round(dpx[0], 1), round(dpx[1], 1)]
+        out["joint_offset_deg_effective"] = off
+        out["target_servo_deg"] = target
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
+
+    @app.route("/api/presets/scan", methods=["GET"])
+    def preset_scan_info() -> Response:
+        found = program_store.find_scan_waypoint()
+        if found is None:
+            return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404
+        program_id, wp = found
+        return jsonify(
+            {
+                "ok": True,
+                "program_id": program_id,
+                "waypoint": wp,
+                "servo_deg": wp.get("servo_deg"),
+            }
+        )
+
+    @app.route("/api/presets/scan/goto", methods=["POST"])
+    def preset_scan_goto() -> Response:
+        body = request.get_json(silent=True) or {}
+        try:
+            j0_delta = float(body.get("j0_delta_deg", 0))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "reason": "j0_delta_deg_invalid"}), 400
+        found = program_store.find_scan_waypoint()
+        if found is None:
+            return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404
+        _program_id, wp = found
+        raw = wp.get("servo_deg")
+        if not isinstance(raw, list) or len(raw) < 6:
+            return jsonify({"ok": False, "reason": "invalid_waypoint"}), 400
+        servo = [float(x) for x in raw[:7]]
+        while len(servo) < 7:
+            servo.append(servo[-1])
+        servo[0] = round(servo[0] + j0_delta, 3)
+        servo = service.clamp_servo_deg(servo)
+        service._halt_cartesian_stream(wait_idle=True)
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return jsonify(couple), 502
+        out = program_runner.move_to_servo_deg_smooth(servo)
+        out["preset"] = "scan"
+        out["coupling"] = couple
+        out["j0_delta_deg"] = j0_delta
+        out["waypoint_name"] = wp.get("name")
+        code = 200 if out.get("ok") else 502
+        return jsonify(out), code
 
     @app.route("/api/programs/<program_id>/waypoints/<waypoint_id>/goto", methods=["POST"])
     def programs_goto_waypoint(program_id: str, waypoint_id: str) -> Response:

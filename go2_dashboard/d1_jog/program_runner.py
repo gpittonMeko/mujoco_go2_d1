@@ -217,11 +217,12 @@ def move_to_servo_deg_smooth(
         delay_ms = motion_profile.stream_delay_ms()
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}
-        if not service._arm_coupled:
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
             return {
                 "ok": False,
-                "reason": "not_coupled",
-                "hint": "Premi Coppia ON",
+                "reason": couple.get("reason", "not_coupled"),
+                "hint": couple.get("hint") or "Leggi da robot o premi Coppia ON",
                 "action": "move_to_point",
             }
         service.set_servo_cache(cur)

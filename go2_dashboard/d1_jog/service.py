@@ -181,6 +181,7 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
         base["stderr_tail"] = (result.stderr or "")[-500:]
     else:
         set_servo_cache(angles)
+        mark_coupled_from_feedback()
     return base
 
 
@@ -379,6 +380,31 @@ _servo_cache: list[float] | None = None
 _arm_coupled: bool = False
 
 
+def arm_coupled() -> bool:
+    return bool(_arm_coupled)
+
+
+def _infer_coupled_on_feedback_enabled() -> bool:
+    return os.environ.get("D1_INFER_COUPLED_ON_FEEDBACK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def mark_coupled_from_feedback() -> bool:
+    """Feedback DDS valido ⇒ braccio raggiungibile; non invia funcode 5."""
+    global _arm_coupled, _couple_last_ts
+    if not _infer_coupled_on_feedback_enabled():
+        return False
+    if _arm_coupled:
+        return True
+    _arm_coupled = True
+    _couple_last_ts = time.time()
+    return True
+
+
 def set_servo_cache(servo_deg: list[float] | None) -> None:
     global _servo_cache
     if servo_deg is None:
@@ -433,24 +459,62 @@ def _couple_messages(*, with_power: bool, seq: int) -> list[dict[str, Any]]:
 
 
 def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str, Any]:
-    """Coppia ON esplicita — funcode 5 mode 1 una volta; mai release."""
+    """Coppia ON esplicita — funcode 5 mode 1 solo se serve; mai release automatico."""
+    global _arm_coupled, _couple_last_ts
+    if _arm_coupled and not force:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "already_coupled",
+            "action": "ensure_coupled",
+            "arm_coupled": True,
+        }
     ok, busy = motion_try_acquire("admin")
     if not ok:
         return {"ok": False, "reason": busy, "action": "ensure_coupled"}
     try:
-        if with_power:
+        if with_power and not _arm_coupled:
             seq = int(time.time()) % 100000
             out = _publish_messages(_couple_messages(with_power=True, seq=seq), delay_ms=100)
-            if out.get("ok"):
-                global _arm_coupled, _couple_last_ts
+            if out.get("ok") or out.get("skipped"):
                 _arm_coupled = True
                 _couple_last_ts = time.time()
         else:
             out = arm_couple_once(force=force)
         out["action"] = "ensure_coupled"
+        out["arm_coupled"] = bool(_arm_coupled)
         return out
     finally:
         motion_release("admin")
+
+
+def ensure_coupled_for_motion() -> dict[str, Any]:
+    """
+    Prima di movimenti programmati (scan, waypoint): non chiedere Coppia ON se il
+    feedback giunti è già valido; non reinviare funcode 5 se già in coppia.
+    """
+    global _arm_coupled
+    if _arm_coupled:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "already_coupled",
+            "action": "ensure_coupled_for_motion",
+        }
+    fb = read_servo_deg(fast=True)
+    if fb.get("ok") and fb.get("servo_deg"):
+        mark_coupled_from_feedback()
+        from go2_dashboard.d1_jog import motion_profile
+
+        ensure_command_daemon(motion_profile.daemon_delay_ms())
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "inferred_from_feedback",
+            "action": "ensure_coupled_for_motion",
+            "arm_coupled": True,
+        }
+    return ensure_coupled(with_power=False, force=False)
 
 
 def arm_power_on() -> dict[str, Any]:
@@ -668,14 +732,15 @@ def joint_control_begin(*, servo_deg: list[float] | None = None) -> dict[str, An
     from go2_dashboard.d1_jog import motion_profile
 
     ensure_command_daemon(motion_profile.daemon_delay_ms())
-    if not _arm_coupled:
+    couple = ensure_coupled_for_motion()
+    if not couple.get("ok"):
         return {
             "ok": False,
-            "reason": "not_coupled",
-            "hint": "Premi Coppia ON prima di muovere gli slider",
+            "reason": couple.get("reason", "not_coupled"),
+            "hint": couple.get("hint") or "Leggi da robot o premi Coppia ON",
             "action": "joint_begin",
         }
-    return {"ok": True, "plane": "joint", "action": "joint_begin"}
+    return {"ok": True, "plane": "joint", "action": "joint_begin", "coupling": couple}
 
 
 def joint_control_end() -> dict[str, Any]:

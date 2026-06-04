@@ -131,3 +131,33 @@ def rename_waypoint(program_id: str, waypoint_id: str, name: str) -> dict[str, A
             break
     prog["updated_at"] = _now_iso()
     return save_program(prog)
+
+
+def find_waypoint_by_name_substr(
+    name_substr: str,
+    *,
+    program_id: str | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Primo waypoint il cui nome contiene ``name_substr`` (case-insensitive)."""
+    needle = (name_substr or "").strip().lower()
+    if not needle:
+        return None
+    if program_id:
+        prog = load_program(program_id)
+        candidates: list[tuple[str, dict[str, Any] | None]] = [(program_id, prog)]
+    else:
+        candidates = [(meta["id"], load_program(meta["id"])) for meta in list_programs()]
+    for pid, prog in candidates:
+        if prog is None:
+            continue
+        for w in prog.get("waypoints") or []:
+            if needle in str(w.get("name", "")).lower():
+                return pid, w
+    return None
+
+
+def find_scan_waypoint() -> tuple[str, dict[str, Any]] | None:
+    """Posa scansione dal programma salvato (env opzionale per programma / sottostringa nome)."""
+    pid = (os.environ.get("D1_SCAN_PROGRAM_ID") or "").strip() or None
+    substr = (os.environ.get("D1_SCAN_WAYPOINT_SUBSTR") or "scansione").strip()
+    return find_waypoint_by_name_substr(substr, program_id=pid)

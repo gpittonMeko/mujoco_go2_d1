@@ -29,15 +29,16 @@
     .badge { padding: 4px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; background: #334155; }
     .badge.ok { background: #14532d; color: var(--ok); }
     .badge.err { background: #7f1d1d; color: #fecaca; }
-    .main { flex: 1; max-width: 720px; width: 100%; margin: 0 auto; padding: 24px; }
+    .main { flex: 1; max-width: 920px; width: 100%; margin: 0 auto; padding: 24px; }
     .pane-title { margin: 0 0 4px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
     .pane h2 { margin: 0 0 16px; font-size: 1.25rem; color: var(--joint); }
     .status-bar { padding: 10px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; margin-bottom: 16px; min-height: 2.4em; }
-    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
     button { font-family: inherit; font-size: 0.88rem; font-weight: 600; border: none; border-radius: 8px; padding: 11px 18px; cursor: pointer; }
     button.primary { background: #2563eb; color: #fff; }
     button.joint { background: #047857; color: #ecfdf5; }
     button.warn { background: #b45309; color: #fffbeb; }
+    button.prog { background: #6d28d9; color: #f5f3ff; }
     button.danger { background: #b91c1c; color: #fef2f2; }
     .joint-sliders { display: flex; flex-direction: column; gap: 12px; }
     .joint-row {
@@ -47,23 +48,7 @@
     .joint-row span.lab { font-weight: 700; color: var(--joint); }
     .joint-row input[type="range"] { width: 100%; accent-color: var(--joint); }
     .joint-row span.val { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .hint { margin-top: 20px; font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
-    .tcp-box, .speed-panel { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; }
-    .tcp-box { font-size: 1.05rem; font-weight: 600; padding: 14px; margin-bottom: 16px; }
-    .tcp-box span { color: var(--cart); }
-    .speed-panel { padding: 16px; margin-bottom: 16px; }
-    .speed-row { display: flex; align-items: center; gap: 16px; }
-    .speed-row input[type="range"] { flex: 1; accent-color: var(--cart); }
-    .speed-val { font-size: 1.6rem; font-weight: 700; color: var(--cart); min-width: 64px; text-align: right; }
-    .motion-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
-    .motion-grid label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; }
-    .motion-grid input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 8px; }
-    .pad-wrap { display: flex; justify-content: center; }
-    .cart-grid { display: grid; grid-template-columns: 72px 72px 72px; grid-template-rows: 56px 56px 56px 56px; gap: 8px; }
-    .cart-grid .spacer { visibility: hidden; }
-    .cart-grid button.arrow { font-size: 1.3rem; font-weight: 800; border-radius: 10px; background: #0c4a6e; border: 2px solid var(--cart); color: #fff; touch-action: none; }
-    .cart-grid button.arrow.holding { background: #0284c7; }
-    #cartStatus { text-align: center; margin-top: 12px; color: var(--muted); min-height: 1.4em; }
+    .hint { margin-top: 16px; font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
   </style>
 </head>
 <body data-page="teach">
@@ -77,35 +62,73 @@
         <a href="/" class="active">Teach</a>
         <a href="/program">Programma</a>
       </nav>
+      <button type="button" class="top-jog joint-jog" id="btnJointJog">Jog giunti</button>
       <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
       <span id="healthBadge" class="badge">…</span>
     </div>
   </header>
 
   <main class="main">
-    <p class="pane-title">Insegnamento manuale</p>
-    <h2>Giunti</h2>
+    <p class="pane-title">Insegnamento · scansione</p>
+    <h2>Braccio e camera</h2>
     <div class="btn-row">
       <button type="button" class="primary" id="btnRead">Leggi da robot</button>
       <button type="button" class="joint" id="btnCouple">Coppia ON</button>
       <button type="button" class="danger" id="btnRelease" title="Solo se devi muovere il braccio a mano">Release…</button>
-      <button type="button" class="warn" id="btnZero">Posizione zero</button>
+      <button type="button" class="warn" id="btnZero">Zero robot</button>
+    </div>
+    <div class="scan-row">
+      <button type="button" class="prog" id="btnScanPose">Pos. scansione</button>
+      <button type="button" class="prog" id="btnScanJ90">Scansione +90°</button>
+    </div>
+    <div class="pick-photo-row">
+      <button type="button" class="calib-zero" id="btnPickCalibZero">Foto · riconoscimento · calibrazione</button>
+      <button type="button" class="snap" id="btnPickNormal">Foto · riconoscimento</button>
     </div>
     <div class="status-bar" id="statusLine">Avvio…</div>
-    <div class="joint-sliders" id="sliders"></div>
-    <p class="hint">Muovi il braccio con gli slider o apri <strong>Jog TCP</strong> in alto a destra. Per salvare un programma vai su <a href="/program" style="color:var(--prog)">Programma</a>.</p>
+
+    <section class="orbbec-panel" aria-labelledby="orbbecPanelTitle">
+      <h3 id="orbbecPanelTitle">Vista Orbbec</h3>
+      <div class="orbbec-view-toggle">
+        <button type="button" id="btnViewLive" title="Tieni aperta la camera — può interferire con la foto">Anteprima live</button>
+      </div>
+      <img id="orbbecLive" class="orbbec-empty" alt="Orbbec" />
+      <p class="orbbec-meta" id="orbbecMeta">Foto normale o task calibrazione (10 s → release → 10 s → coppia → presa zero)</p>
+    </section>
+
+    <p class="pane-title" style="margin-top:20px">Presa (offset fissi da scansione)</p>
+    <p class="pick-info" id="pickInfo">Offset giunti non ancora definiti — usa «Offset da programma» o salva da Programma.</p>
+    <div class="pick-row">
+      <button type="button" class="prog" id="btnPickFromProg">Offset da programma</button>
+      <button type="button" class="pick-go" id="btnGotoGrasp">Presa oggetto</button>
+    </div>
+
+    <p class="pane-title" style="margin-top:14px">Calibra presa</p>
+    <p class="pick-calib-hint">Dopo <strong>Vai a presa</strong>, se è decentrata: torna a <strong>Pos. scansione</strong>, correggi con <strong>Jog</strong>, poi <strong>Salva da posa attuale</strong>. Oppure usa ± per piccoli aggiustamenti.</p>
+    <button type="button" class="primary pick-calib-save" id="btnPickSavePose">Salva da posa attuale</button>
+    <div class="pick-nudge-grid" id="pickNudgeGrid" aria-label="Regolazione fine offset"></div>
+
+    <p class="hint">
+      <strong>Calibrazione (una volta):</strong> Pos. scansione → «Foto · calibrazione» → attendi → muovi braccio in release → attendi → coppia → presa zero salvata.
+      <strong>Uso:</strong> Pos. scansione → «Foto · riconoscimento» → <strong>Presa oggetto</strong>.
+    </p>
   </main>
 
+  {% include 'd1_joint_jog_modal.html' %}
   {% include 'd1_tcp_jog_modal.html' %}
 
   <script src="/static/d1_common.js"></script>
   <script>
-    const BOUNDS = [[-135,135],[-90,90],[-90,90],[-135,135],[-90,90],[-135,135],[0,90]];
-    const LABELS = ['J0','J1','J2','J3','J4','J5','Gr'];
-    let _liveRaf = 0, _cachedServoDeg = null, _commandBusy = false, _suppressSlider = 0, _activeJoint = -1;
-    let _jointSession = false, _cartesianActive = false, _controlPlane = null, _robotSynced = false, _jogThrottle = 0;
-    let _jogInflight = false, _pendingJog = null;
-    const JOG_MIN_MS = 32;
+    let _cachedServoDeg = null;
+    let _pickOffsets = null;
+    const PICK_NUDGE_STEP = 0.5;
+    const PICK_CALIB_WAIT_S = 10;
+    const PICK_JOINT_LABELS = ['J0', 'J1', 'J2', 'J3', 'J4', 'J5', 'Gr'];
+    let _pickTaskBusy = false;
+    let _robotSynced = false;
+    let _jointSession = false;
+    let _cartesianActive = false;
+    let _commandBusy = false;
 
     function setStatus(msg, ok) {
       const el = document.getElementById('statusLine');
@@ -113,169 +136,440 @@
       el.style.color = ok === true ? 'var(--ok)' : (ok === false ? 'var(--danger)' : '');
     }
 
-    function buildSliders() {
-      const root = document.getElementById('sliders');
-      root.innerHTML = '';
-      for (let i = 0; i < 7; i++) {
+    function setOrbbecMeta(msg) {
+      const metaEl = document.getElementById('orbbecMeta');
+      if (metaEl) metaEl.textContent = msg || '';
+    }
+
+    let _orbbecLiveOn = false;
+
+    function stopOrbbecLive() {
+      const img = document.getElementById('orbbecLive');
+      if (!img) return;
+      _orbbecLiveOn = false;
+      img.src = '';
+      img.classList.add('orbbec-empty');
+      const bLive = document.getElementById('btnViewLive');
+      if (bLive) bLive.classList.remove('active');
+    }
+
+    function showPickScene(previewUrl, meta, fallbackUrl) {
+      const img = document.getElementById('orbbecLive');
+      if (!img) return;
+      stopOrbbecLive();
+      img.classList.remove('orbbec-empty');
+      const bust = '_=' + Date.now();
+      const primary = previewUrl.indexOf('http') === 0 ? previewUrl : D1.api(previewUrl);
+      const url = primary + (primary.indexOf('?') >= 0 ? '&' : '?') + bust;
+      img.onerror = function () {
+        if (fallbackUrl) {
+          const fb = fallbackUrl.indexOf('http') === 0 ? fallbackUrl : D1.api(fallbackUrl);
+          img.onerror = null;
+          img.src = fb + (fb.indexOf('?') >= 0 ? '&' : '?') + bust;
+        }
+      };
+      img.src = url;
+      if (meta) setOrbbecMeta(meta);
+    }
+
+    function startOrbbecLive() {
+      const img = document.getElementById('orbbecLive');
+      const bLive = document.getElementById('btnViewLive');
+      if (!img) return;
+      _orbbecLiveOn = true;
+      img.classList.remove('orbbec-empty');
+      img.src = D1.api('/api/orbbec/live.mjpg');
+      if (bLive) bLive.classList.add('active');
+      setOrbbecMeta('Anteprima live — chiude automaticamente alla prossima foto');
+    }
+
+    function formatOffsets(off) {
+      if (!off || !off.length) return '—';
+      const labs = ['J0','J1','J2','J3','J4','J5','Gr'];
+      return off.map((v, i) => labs[i] + (v >= 0 ? '+' : '') + v.toFixed(1) + '°').join('  ');
+    }
+
+    function renderPickNudgeGrid(off) {
+      const grid = document.getElementById('pickNudgeGrid');
+      if (!grid) return;
+      const vals = (off && off.length) ? off.slice(0, 7) : null;
+      grid.innerHTML = '';
+      const has = vals && vals.length >= 6;
+      PICK_JOINT_LABELS.forEach((lab, i) => {
         const row = document.createElement('div');
-        row.className = 'joint-row';
-        const b = BOUNDS[i];
-        row.innerHTML = '<span class="lab">' + LABELS[i] + '</span><input type="range" id="j' + i + '" min="' + b[0] + '" max="' + b[1] + '" step="0.25" value="0" /><span class="val" id="jv' + i + '">0.0°</span>';
-        root.appendChild(row);
-        const inp = row.querySelector('input');
-        inp.addEventListener('pointerdown', () => { _activeJoint = i; onSliderPointerDown(); });
-        inp.addEventListener('input', () => { displayJoint(i); onSliderInput(); });
-        inp.addEventListener('pointerup', onSliderFlush);
-        inp.addEventListener('pointercancel', onSliderFlush);
+        row.className = 'pick-nudge-row';
+        const v = has ? Number(vals[i] || 0) : 0;
+        const minus = document.createElement('button');
+        minus.type = 'button';
+        minus.textContent = '−';
+        minus.disabled = !has;
+        minus.onclick = () => nudgePickOffset(i, -PICK_NUDGE_STEP);
+        const plus = document.createElement('button');
+        plus.type = 'button';
+        plus.textContent = '+';
+        plus.disabled = !has;
+        plus.onclick = () => nudgePickOffset(i, PICK_NUDGE_STEP);
+        const val = document.createElement('span');
+        val.className = 'val';
+        val.textContent = has ? ((v >= 0 ? '+' : '') + v.toFixed(1) + '°') : '—';
+        row.innerHTML = '<span class="lab">' + lab + '</span>';
+        row.appendChild(minus);
+        row.appendChild(val);
+        row.appendChild(plus);
+        grid.appendChild(row);
+      });
+    }
+
+    function renderPickInfo(data) {
+      const el = document.getElementById('pickInfo');
+      if (!el || !data) return;
+      if (data.joint_offset_deg) _pickOffsets = data.joint_offset_deg.slice();
+      renderPickNudgeGrid(_pickOffsets);
+      if (!data.has_preset && !data.joint_offset_deg) {
+        el.textContent = 'Offset presa non definito — «Offset da programma» o salva Punto PRESA in Programma.';
+        return;
       }
-    }
-    function displayJoint(i) {
-      const s = document.getElementById('j' + i), v = document.getElementById('jv' + i);
-      if (s && v) v.textContent = parseFloat(s.value).toFixed(1) + '°';
-    }
-    function collectDeg() {
-      const out = [];
-      for (let i = 0; i < 7; i++) out.push(parseFloat(document.getElementById('j' + i).value));
-      return out;
-    }
-    function collectDegForJog() {
-      const base = (_cachedServoDeg && _cachedServoDeg.length >= 7)
-        ? _cachedServoDeg.slice()
-        : collectDeg();
-      if (_activeJoint >= 0 && _activeJoint < 7) {
-        base[_activeJoint] = parseFloat(document.getElementById('j' + _activeJoint).value);
+      const off = data.joint_offset_deg || [];
+      let txt = (data.has_zero_calibration ? 'Presa zero OK · ' : '') +
+        'Offset (Δ da scansione): ' + formatOffsets(off);
+      if (data.has_zero_calibration && data.zero_calibration_at) {
+        txt += ' · calibrata ' + data.zero_calibration_at;
       }
-      return base;
-    }
-    function setSlidersDisabled(dis) {
-      document.querySelectorAll('#sliders input').forEach((el) => { el.disabled = dis; });
-    }
-    function applyServoDegDisplay(sd) {
-      if (!sd) return;
-      _suppressSlider++; _cachedServoDeg = sd.slice(); _robotSynced = true;
-      for (let i = 0; i < 7; i++) {
-        const inp = document.getElementById('j' + i);
-        const b = BOUNDS[i];
-        let v = parseFloat(sd[i]); if (Number.isNaN(v)) v = 0;
-        inp.value = String(Math.min(b[1], Math.max(b[0], v)));
-        displayJoint(i);
+      const ld = data.last_detection;
+      if (ld && ld.detected && ld.grip_center_px) {
+        txt += ' · Centro foto: ' + ld.grip_center_px[0] + ',' + ld.grip_center_px[1] + ' px';
       }
-      _suppressSlider--;
-    }
-    async function beginJointSession() {
-      if (_jointSession || _cartesianActive) return false;
-      const body = {};
-      if (_cachedServoDeg) body.servo_deg = _cachedServoDeg;
-      const { data } = await D1.apiJson('/api/joints/session_begin', { method: 'POST', body: body });
-      if (!data.ok) { setStatus(data.reason || '?', false); return false; }
-      _jointSession = true; _controlPlane = 'joint'; setSlidersDisabled(_cartesianActive); return true;
-    }
-    async function endJointSession() {
-      if (!_jointSession) return;
-      _jointSession = false; _controlPlane = null; _activeJoint = -1;
-      try { await D1.apiJson('/api/joints/session_end', { method: 'POST', body: {} }); } catch (_) {}
-      setSlidersDisabled(_cartesianActive);
-    }
-    async function onSliderPointerDown() {
-      if (_suppressSlider || _cartesianActive) return;
-      if (!_jointSession) {
-        const ok = await beginJointSession();
-        if (!ok) setStatus('Premi Coppia ON', false);
+      if (data.vision_pixel_delta) {
+        txt += ' · Δ pezzo ' + data.vision_pixel_delta[0] + ',' + data.vision_pixel_delta[1] + ' px → presa aggiornata';
       }
+      if (data.grasp_servo_deg_computed) {
+        const g = data.grasp_servo_deg_computed;
+        txt += ' · Posa presa: ' + g.map((v) => Number(v).toFixed(1) + '°').join(' ');
+      }
+      el.textContent = txt;
     }
-    function onSliderInput() {
-      if (_suppressSlider || !_jointSession || _cartesianActive) return;
-      const now = performance.now();
-      if (now - _jogThrottle < JOG_MIN_MS) return;
-      _jogThrottle = now;
-      if (_liveRaf) return;
-      _liveRaf = requestAnimationFrame(() => { _liveRaf = 0; sendJog(false); });
-    }
-    async function onSliderFlush() {
-      if (_suppressSlider) return;
-      if (_jointSession) await sendJog(true);
-    }
-    function queueJog(flush) {
-      if (_cartesianActive || !_robotSynced || !_jointSession) return;
-      _pendingJog = { sd: collectDegForJog(), flush: !!flush, joint: _activeJoint };
-      pumpJog();
-    }
-    async function pumpJog() {
-      if (_jogInflight || !_pendingJog) return;
-      const job = _pendingJog;
-      _pendingJog = null;
-      _jogInflight = true;
-      const body = { servo_deg: job.sd, session: true };
-      if (job.joint >= 0) body.joint_index = job.joint;
+
+    async function refreshPickPreset() {
       try {
-        const { data } = await D1.apiJson('/api/joints/jog', { method: 'POST', body: body });
-        if (data.ok || data.skipped) {
-          _cachedServoDeg = job.sd.slice();
-          if (job.flush) setStatus('Posa aggiornata', true);
-        } else if (job.flush) setStatus(data.reason || '?', false);
-      } catch (e) {
-        if (job.flush) setStatus(String(e), false);
-      } finally {
-        _jogInflight = false;
-        if (_pendingJog) pumpJog();
+        const { data } = await D1.apiJson('/api/pick/preset');
+        renderPickInfo(data);
+      } catch (_) {}
+    }
+
+    function setPickButtonsDisabled(disabled) {
+      ['btnPickCalibZero', 'btnPickNormal', 'btnGotoGrasp', 'btnScanPose', 'btnScanJ90'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = disabled;
+      });
+    }
+
+    function sleepMs(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function countdownSeconds(sec, labelPrefix) {
+      for (let t = sec; t >= 1; t--) {
+        setStatus(labelPrefix + ' — ' + t + ' s…', null);
+        setOrbbecMeta(labelPrefix + ' · ' + t + ' secondi');
+        await sleepMs(1000);
       }
     }
-    async function sendJog(flush) {
-      if (_cartesianActive || !_robotSynced) return;
-      if (!_jointSession && !(await beginJointSession())) return;
-      queueJog(flush);
+
+    async function runPickSnapshot({ quiet }) {
+      if (!quiet) {
+        setStatus('Foto e riconoscimento…', null);
+        stopOrbbecLive();
+      }
+      const { res, data } = await D1.apiJson('/api/pick/snapshot', {
+        method: 'POST',
+        body: {},
+        timeoutMs: 90000,
+      });
+      const cap = data.capture || {};
+      if (data.ok && (cap.ok !== false)) {
+        const meta = (cap.saved_at ? 'Salvata ' + cap.saved_at + ' · ' : '') +
+          (data.detection_ok ? 'Rilevamento OK' : 'Foto OK · nessun oggetto') +
+          (cap.v4l_index != null ? ' · video' + cap.v4l_index : '');
+        const det = data.detection || {};
+        const st = det.detector_status || {};
+        const cx = (det.grip_center_px || [])[0];
+        const cy = (det.grip_center_px || [])[1];
+        let detMsg = data.detection_ok
+          ? ((det.label || '?') + ' conf ' + (det.confidence || 0) +
+             (cx != null ? ' · centro ' + cx + ',' + cy + ' px' : ''))
+          : 'Nessun box';
+        showPickScene(
+          data.preview_url || '/api/pick/scene.jpg',
+          detMsg + ' — ' + (data.hint_it || meta),
+          data.image_url || cap.image_url || '/api/orbbec/last.jpg',
+        );
+        if (!quiet) {
+          const fotoOk = true;
+          setStatus(
+            data.detection_ok ? 'Foto OK · oggetto trovato' : 'Foto OK · nessun oggetto',
+            data.detection_ok ? true : null,
+          );
+          await refreshPickPreset();
+        }
+      } else if (!quiet) {
+        const msg = data.hint || cap.hint || data.reason || cap.reason ||
+          (res && !res.ok ? ('HTTP ' + res.status) : 'Foto non disponibile');
+        setOrbbecMeta('Errore — ' + msg);
+        setStatus(msg, false);
+      }
+      return data;
     }
+
+    async function pickSnapshotNormal() {
+      if (_pickTaskBusy) return;
+      setPickButtonsDisabled(true);
+      try {
+        await runPickSnapshot({ quiet: false });
+      } catch (e) { setStatus(String(e), false); }
+      finally { setPickButtonsDisabled(false); }
+    }
+
+    async function pickCalibZeroTask() {
+      if (_pickTaskBusy) return;
+      if (!confirm(
+        'Calibrazione presa zero\n\n' +
+        '1) Devi essere già in POSIZIONE SCANSIONE\n' +
+        '2) Foto + riconoscimento\n' +
+        '3) Attesa ' + PICK_CALIB_WAIT_S + ' s\n' +
+        '4) Release (muovi il braccio sul pezzo)\n' +
+        '5) Attesa ' + PICK_CALIB_WAIT_S + ' s (braccio in release)\n' +
+        '6) Coppia ON + salvataggio offset (automatico a fine task)\n\n' +
+        'Avviare?'
+      )) return;
+      _pickTaskBusy = true;
+      setPickButtonsDisabled(true);
+      if (_jointJog) await _jointJog.endSession();
+      let visionAtScan = null;
+      try {
+        const snap = await runPickSnapshot({ quiet: true });
+        if (!snap.ok) {
+          setStatus(snap.hint || snap.reason || 'Foto calibrazione fallita', false);
+          return;
+        }
+        visionAtScan = snap.last_detection || null;
+        setStatus('Foto OK — preparati a muovere il braccio', true);
+
+        await countdownSeconds(PICK_CALIB_WAIT_S, 'Attesa prima del release');
+
+        setStatus('Release motori…', null);
+        await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
+        setStatus('RELEASE — porta il braccio sulla presa reale del pezzo', null);
+
+        await countdownSeconds(PICK_CALIB_WAIT_S, 'Muovi il braccio (release)');
+
+        setStatus('Salvo presa zero e coppia ON…', null);
+        const { data } = await D1.apiJson('/api/pick/calibrate/zero/finish', {
+          method: 'POST',
+          body: { vision_at_scan: visionAtScan },
+          timeoutMs: 60000,
+        });
+        if (data.servo_deg || data.taught_servo_deg) {
+          _cachedServoDeg = (data.taught_servo_deg || data.servo_deg).slice();
+          _robotSynced = true;
+          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
+        }
+        if (data.ok || data.has_preset) {
+          renderPickInfo(data);
+          setStatus('Presa zero calibrata — usa Foto normale + Presa oggetto', true);
+          setOrbbecMeta((data.hint_it || 'Offset salvato') + ' · ' + formatOffsets(data.joint_offset_deg));
+        } else {
+          setStatus(data.reason || data.hint || 'Salvataggio presa zero fallito', false);
+        }
+      } catch (e) {
+        setStatus(String(e), false);
+      } finally {
+        _pickTaskBusy = false;
+        setPickButtonsDisabled(false);
+      }
+    }
+
+    async function nudgePickOffset(joint, deltaDeg) {
+      setStatus('Regolo ' + PICK_JOINT_LABELS[joint] + '…', null);
+      try {
+        const { data } = await D1.apiJson('/api/pick/preset/nudge', {
+          method: 'POST',
+          body: { joint: joint, delta_deg: deltaDeg },
+        });
+        if (data.ok || data.has_preset) {
+          renderPickInfo(data);
+          setStatus(PICK_JOINT_LABELS[joint] + (deltaDeg >= 0 ? ' +' : ' ') + deltaDeg + '° · prova Vai a presa', true);
+        } else {
+          setStatus(data.reason || '?', false);
+        }
+      } catch (e) { setStatus(String(e), false); }
+    }
+
+    async function savePickFromCurrentPose() {
+      if (!confirm('Salvare l\'offset presa dalla posa attuale?\n(Δ rispetto al Punto SCANSIONE del programma — di solito dopo jog sulla presa decentrata.)')) return;
+      setStatus('Salvo calibrazione da posa…', null);
+      try {
+        const fb = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
+        if (!fb.data.ok || !fb.data.servo_deg) {
+          setStatus('Leggi da robot / feedback non disponibile', false);
+          return;
+        }
+        _cachedServoDeg = fb.data.servo_deg.slice();
+        const { data } = await D1.apiJson('/api/pick/preset/from_pose', {
+          method: 'POST',
+          body: { servo_deg: _cachedServoDeg },
+        });
+        if (data.ok || data.has_preset) {
+          renderPickInfo(data);
+          setStatus('Calibrazione salvata — riprova Vai a presa', true);
+        } else {
+          setStatus(data.reason || data.hint || '?', false);
+        }
+      } catch (e) { setStatus(String(e), false); }
+    }
+
+    async function savePickFromProgram() {
+      setStatus('Carico offset PRESA − SCANSIONE…', null);
+      const { data } = await D1.apiJson('/api/pick/preset', {
+        method: 'POST',
+        body: { from_program: true },
+      });
+      if (data.ok || data.has_preset) {
+        renderPickInfo(data);
+        setStatus('Offset presa salvato da programma', true);
+      } else {
+        setStatus(data.reason || data.hint || '?', false);
+      }
+    }
+
+    async function gotoGrasp() {
+      if (!confirm('Andare a posa PRESA (scansione + offset giunti fissi)?')) return;
+      if (_jointJog) await _jointJog.endSession();
+      setStatus('Spostamento verso presa…', null);
+      const { data } = await D1.apiJson('/api/pick/grasp/goto', { method: 'POST', body: {} });
+      if (data.ok) {
+        const hint = data.coupling_maintained !== false ? ' · coppia OK' : '';
+        setStatus('Posa presa OK' + hint, true);
+        if (data.target_servo_deg) {
+          _cachedServoDeg = data.target_servo_deg.slice();
+          _robotSynced = true;
+          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
+        }
+      } else {
+        setStatus(data.hint || data.reason || '?', false);
+      }
+    }
+
     async function loadFeedback() {
       setStatus('Lettura…', null);
       try {
         const { data } = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
-        if (data.ok && data.servo_deg) { applyServoDegDisplay(data.servo_deg); setStatus('Sincronizzato', true); }
-        else setStatus(data.reason || 'Nessun feedback', false);
+        if (data.ok && data.servo_deg) {
+          _cachedServoDeg = data.servo_deg.slice();
+          _robotSynced = true;
+          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
+          setStatus('Sincronizzato', true);
+        } else setStatus(data.reason || 'Nessun feedback', false);
       } catch (e) { setStatus(String(e), false); }
     }
+
     async function ensureCoupled(withPower) {
       _commandBusy = true;
       try {
         const { data } = await D1.apiJson('/api/arm/couple', {
           method: 'POST',
-          body: { with_power: !!withPower, force: !!withPower },
+          body: { with_power: !!withPower, force: false },
         });
         setStatus(data.ok || data.skipped ? 'Coppia attiva' : (data.reason || '?'), data.ok || data.skipped);
       } catch (e) { setStatus(String(e), false); }
       _commandBusy = false;
     }
 
+    async function gotoScanPreset(j0Delta) {
+      const label = j0Delta ? 'Scansione +90°' : 'Posizione scansione';
+      if (!confirm('Andare a «' + label + '» (dal programma salvato)?')) return;
+      if (_jointJog) await _jointJog.endSession();
+      setStatus(label + '…', null);
+      const { data } = await D1.apiJson('/api/presets/scan/goto', {
+        method: 'POST',
+        body: { j0_delta_deg: j0Delta },
+      });
+      if (data.ok) {
+        const hint = data.coupling_maintained !== false ? ' · coppia OK' : ' · verifica coppia';
+        setStatus((data.waypoint_name || label) + ' OK' + hint, true);
+        if (data.target_servo_deg) {
+          _cachedServoDeg = data.target_servo_deg.slice();
+          _robotSynced = true;
+          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
+        } else setTimeout(loadFeedback, 600);
+      } else {
+        const msg = data.reason === 'scan_waypoint_not_found'
+          ? 'Punto SCANSIONE non trovato — salvalo in Programma'
+          : (data.reason === 'not_coupled'
+            ? 'Braccio non in coppia — Leggi da robot, poi riprova (non serve ripremere Coppia ON)'
+            : (data.reason || data.hint || '?'));
+        setStatus(msg, false);
+      }
+    }
+
+    const _jointJog = D1.initJointJogModal({
+      getCachedServoDeg: () => _cachedServoDeg,
+      setCachedServoDeg: (sd) => { _cachedServoDeg = sd.slice(); _robotSynced = true; },
+      isRobotSynced: () => _robotSynced,
+      isJointSession: () => _jointSession,
+      isCartesianActive: () => _cartesianActive,
+      onJointSessionStart: () => { _jointSession = true; },
+      onJointSessionEnd: () => { _jointSession = false; },
+    });
+
     D1.initTcpJogModal({
       requireSynced: () => _robotSynced,
       getServoDeg: () => _cachedServoDeg,
       isBlocked: () => _jointSession,
-      onCartesianStart: () => { _cartesianActive = true; setSlidersDisabled(true); },
-      onCartesianEnd: () => { _cartesianActive = false; setSlidersDisabled(false); },
+      onCartesianStart: () => {
+        _cartesianActive = true;
+        if (_jointJog) _jointJog.setSlidersDisabled(true);
+      },
+      onCartesianEnd: () => {
+        _cartesianActive = false;
+        if (_jointJog) _jointJog.setSlidersDisabled(false);
+      },
     });
 
-    buildSliders();
     document.getElementById('btnRead').onclick = loadFeedback;
     document.getElementById('btnCouple').onclick = () => ensureCoupled(true);
     document.getElementById('btnRelease').onclick = async () => {
       const ok = prompt('ATTENZIONE: i motori cedono. Digita RELEASE per confermare:');
       if (ok !== 'RELEASE') return;
-      await endJointSession();
+      if (_jointJog) await _jointJog.endSession();
       await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
       setStatus('Coppia rilasciata (cedevole)', null);
     };
     document.getElementById('btnZero').onclick = async () => {
-      if (!confirm('Posizione zero?')) return;
-      await endJointSession();
+      if (!confirm('Portare il braccio alla posizione ZERO robot?')) return;
+      if (_jointJog) await _jointJog.endSession();
       setStatus('Zero…', null);
       const { data } = await D1.apiJson('/api/joints/zero', { method: 'POST', body: {} });
       setStatus(data.ok ? 'Zero OK' : (data.reason || '?'), data.ok);
       setTimeout(loadFeedback, 800);
     };
+    document.getElementById('btnScanPose').onclick = () => gotoScanPreset(0);
+    document.getElementById('btnScanJ90').onclick = () => gotoScanPreset(90);
+    document.getElementById('btnPickCalibZero').onclick = pickCalibZeroTask;
+    document.getElementById('btnPickNormal').onclick = pickSnapshotNormal;
+    document.getElementById('btnPickSavePose').onclick = savePickFromCurrentPose;
+    document.getElementById('btnPickFromProg').onclick = savePickFromProgram;
+    document.getElementById('btnGotoGrasp').onclick = gotoGrasp;
+    document.getElementById('btnViewLive').onclick = () => {
+      if (_orbbecLiveOn) stopOrbbecLive();
+      else startOrbbecLive();
+    };
+
     D1.pollHealth();
     setInterval(() => D1.pollHealth(), 10000);
     (async () => {
       await loadFeedback();
-      setStatus(_robotSynced ? 'Pronto — premi Coppia ON' : 'Leggi da robot', _robotSynced);
+      await refreshPickPreset();
+      setStatus(_robotSynced ? 'Pronto — scansione → foto e cerca → presa' : 'Leggi da robot', _robotSynced);
     })();
   </script>
 </body>

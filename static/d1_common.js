@@ -13,7 +13,22 @@ D1.apiJson = async function (path, opts) {
   if (init.body && typeof init.body === 'object') {
     init.body = JSON.stringify(init.body);
   }
-  const res = await fetch(D1.api(path), init);
+  const slow = /snapshot|capture|orbbec/i.test(String(path));
+  const timeoutMs = o.timeoutMs != null ? o.timeoutMs : (slow ? 90000 : 30000);
+  const ctrl = new AbortController();
+  const tid = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  delete init.timeoutMs;
+  let res;
+  try {
+    res = await fetch(D1.api(path), Object.assign({}, init, { signal: ctrl.signal }));
+  } catch (e) {
+    clearTimeout(tid);
+    if (e && e.name === 'AbortError') {
+      throw new Error('Timeout richiesta (' + Math.round(timeoutMs / 1000) + ' s) — ' + path);
+    }
+    throw e;
+  }
+  clearTimeout(tid);
   const text = await res.text();
   let data = {};
   if (text) {
@@ -23,6 +38,11 @@ D1.apiJson = async function (path, opts) {
       throw new Error('Risposta non JSON (HTTP ' + res.status + ')');
     }
   }
+  if (!res.ok && data.ok !== false) {
+    data.ok = false;
+    data.reason = data.reason || ('http_' + res.status);
+  }
+  data._http_status = res.status;
   return { res: res, data: data };
 };
 
@@ -260,4 +280,208 @@ D1.initTcpJogModal = function (opts) {
   });
 
   return { open: openModal, close: closeModal, stop: stopCartHold, refreshTcp: refreshTcp };
+};
+
+D1.initJointJogModal = function (opts) {
+  const o = opts || {};
+  const BOUNDS = o.bounds || [[-135, 135], [-90, 90], [-90, 90], [-135, 135], [-90, 90], [-135, 135], [0, 90]];
+  const LABELS = o.labels || ['J0', 'J1', 'J2', 'J3', 'J4', 'J5', 'Gr'];
+  const JOG_MIN_MS = o.jogMinMs || 32;
+  const overlay = document.getElementById('jointJogModal');
+  const btnOpen = document.getElementById('btnJointJog');
+  const btnClose = document.getElementById('jointModalClose');
+  const root = document.getElementById('jointSliders');
+  const statusEl = document.getElementById('jointModalStatus');
+  if (!overlay || !root) return null;
+
+  let _liveRaf = 0;
+  let _suppressSlider = 0;
+  let _activeJoint = -1;
+  let _jogThrottle = 0;
+  let _jogInflight = false;
+  let _pendingJog = null;
+
+  function setModalStatus(msg, ok) {
+    if (!statusEl) return;
+    statusEl.textContent = msg;
+    statusEl.style.color = ok === true ? 'var(--ok)' : (ok === false ? 'var(--danger)' : '');
+  }
+
+  function setSlidersDisabled(dis) {
+    root.querySelectorAll('input[type="range"]').forEach((el) => { el.disabled = dis; });
+  }
+
+  function displayJoint(i) {
+    const s = document.getElementById('jointJ' + i);
+    const v = document.getElementById('jointJv' + i);
+    if (s && v) v.textContent = parseFloat(s.value).toFixed(1) + '°';
+  }
+
+  function collectDeg() {
+    const out = [];
+    for (let i = 0; i < 7; i++) out.push(parseFloat(document.getElementById('jointJ' + i).value));
+    return out;
+  }
+
+  function collectDegForJog() {
+    const cached = o.getCachedServoDeg ? o.getCachedServoDeg() : null;
+    const base = cached && cached.length >= 7 ? cached.slice() : collectDeg();
+    if (_activeJoint >= 0 && _activeJoint < 7) {
+      base[_activeJoint] = parseFloat(document.getElementById('jointJ' + _activeJoint).value);
+    }
+    return base;
+  }
+
+  function applyServoDegDisplay(sd) {
+    if (!sd || !o.setCachedServoDeg) return;
+    _suppressSlider++;
+    o.setCachedServoDeg(sd.slice());
+    for (let i = 0; i < 7; i++) {
+      const inp = document.getElementById('jointJ' + i);
+      const b = BOUNDS[i];
+      let v = parseFloat(sd[i]);
+      if (Number.isNaN(v)) v = 0;
+      inp.value = String(Math.min(b[1], Math.max(b[0], v)));
+      displayJoint(i);
+    }
+    _suppressSlider--;
+  }
+
+  async function beginJointSession() {
+    if (o.isJointSession && o.isJointSession()) return true;
+    if (o.isCartesianActive && o.isCartesianActive()) return false;
+    const body = {};
+    const cached = o.getCachedServoDeg ? o.getCachedServoDeg() : null;
+    if (cached) body.servo_deg = cached;
+    const { data } = await D1.apiJson('/api/joints/session_begin', { method: 'POST', body: body });
+    if (!data.ok) {
+      setModalStatus(data.reason || '?', false);
+      return false;
+    }
+    if (o.onJointSessionStart) o.onJointSessionStart();
+    setSlidersDisabled(o.isCartesianActive && o.isCartesianActive());
+    return true;
+  }
+
+  async function endJointSession() {
+    if (!o.isJointSession || !o.isJointSession()) return;
+    if (o.onJointSessionEnd) o.onJointSessionEnd();
+    try { await D1.apiJson('/api/joints/session_end', { method: 'POST', body: {} }); } catch (_) {}
+    setSlidersDisabled(o.isCartesianActive && o.isCartesianActive());
+  }
+
+  function buildSliders() {
+    root.innerHTML = '';
+    for (let i = 0; i < 7; i++) {
+      const row = document.createElement('div');
+      row.className = 'joint-row';
+      const b = BOUNDS[i];
+      row.innerHTML =
+        '<span class="lab">' + LABELS[i] + '</span>' +
+        '<input type="range" id="jointJ' + i + '" min="' + b[0] + '" max="' + b[1] + '" step="0.25" value="0" />' +
+        '<span class="val" id="jointJv' + i + '">0.0°</span>';
+      root.appendChild(row);
+      const inp = row.querySelector('input');
+      inp.addEventListener('pointerdown', () => {
+        _activeJoint = i;
+        onSliderPointerDown();
+      });
+      inp.addEventListener('input', () => { displayJoint(i); onSliderInput(); });
+      inp.addEventListener('pointerup', onSliderFlush);
+      inp.addEventListener('pointercancel', onSliderFlush);
+    }
+  }
+
+  async function onSliderPointerDown() {
+    if (_suppressSlider || (o.isCartesianActive && o.isCartesianActive())) return;
+    if (!o.isJointSession || !o.isJointSession()) {
+      const ok = await beginJointSession();
+      if (!ok) setModalStatus('Premi Coppia ON sulla pagina principale', false);
+    }
+  }
+
+  function onSliderInput() {
+    if (_suppressSlider || !o.isJointSession || !o.isJointSession()) return;
+    if (o.isCartesianActive && o.isCartesianActive()) return;
+    const now = performance.now();
+    if (now - _jogThrottle < JOG_MIN_MS) return;
+    _jogThrottle = now;
+    if (_liveRaf) return;
+    _liveRaf = requestAnimationFrame(() => { _liveRaf = 0; sendJog(false); });
+  }
+
+  async function onSliderFlush() {
+    if (_suppressSlider) return;
+    if (o.isJointSession && o.isJointSession()) await sendJog(true);
+  }
+
+  function queueJog(flush) {
+    if (o.isCartesianActive && o.isCartesianActive()) return;
+    if (!o.isRobotSynced || !o.isRobotSynced()) return;
+    if (!o.isJointSession || !o.isJointSession()) return;
+    _pendingJog = { sd: collectDegForJog(), flush: !!flush, joint: _activeJoint };
+    pumpJog();
+  }
+
+  async function pumpJog() {
+    if (_jogInflight || !_pendingJog) return;
+    const job = _pendingJog;
+    _pendingJog = null;
+    _jogInflight = true;
+    const body = { servo_deg: job.sd, session: true };
+    if (job.joint >= 0) body.joint_index = job.joint;
+    try {
+      const { data } = await D1.apiJson('/api/joints/jog', { method: 'POST', body: body });
+      if (data.ok || data.skipped) {
+        if (o.setCachedServoDeg) o.setCachedServoDeg(job.sd.slice());
+        if (job.flush) setModalStatus('Posa aggiornata', true);
+      } else if (job.flush) setModalStatus(data.reason || '?', false);
+    } catch (e) {
+      if (job.flush) setModalStatus(String(e), false);
+    } finally {
+      _jogInflight = false;
+      if (_pendingJog) pumpJog();
+    }
+  }
+
+  async function sendJog(flush) {
+    if (o.isCartesianActive && o.isCartesianActive()) return;
+    if (!o.isRobotSynced || !o.isRobotSynced()) return;
+    if (!o.isJointSession || !o.isJointSession()) {
+      if (!(await beginJointSession())) return;
+    }
+    queueJog(flush);
+  }
+
+  function openModal() {
+    const cached = o.getCachedServoDeg ? o.getCachedServoDeg() : null;
+    if (cached) applyServoDegDisplay(cached);
+    overlay.classList.add('open');
+    setModalStatus('Slider giunti — richiede coppia ON', null);
+  }
+
+  function closeModal() {
+    overlay.classList.remove('open');
+    if (o.isJointSession && o.isJointSession()) {
+      endJointSession();
+    }
+  }
+
+  buildSliders();
+  if (btnOpen) btnOpen.addEventListener('click', openModal);
+  if (btnClose) btnClose.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
+  });
+
+  return {
+    open: openModal,
+    close: closeModal,
+    endSession: endJointSession,
+    applyServoDeg: applyServoDegDisplay,
+    setSlidersDisabled: setSlidersDisabled,
+  };
 };
