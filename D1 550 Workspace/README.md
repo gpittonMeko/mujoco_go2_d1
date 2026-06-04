@@ -39,3 +39,5 @@ python scripts/deploy_d1_jog_to_nx.py
 ```
 
 Apri: **http://192.168.123.18:5053/** — non modifica `nx_dashboard_supervise` né `nx_dashboard_env.sh`.
+
+Esperimenti visione YOLO/RealSense sulla stessa porta: branch `archive/vision-yolo-5053`.

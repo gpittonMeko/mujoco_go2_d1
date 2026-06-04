@@ -9,7 +9,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # --- D1 550 Workspace ---------------------------------------------------------
 D1_WORKSPACE = PROJECT_ROOT / "D1 550 Workspace"
-VISION_WORKSPACE = PROJECT_ROOT / "Vision Workspace"
 D1_OLD = D1_WORKSPACE / "OLD"
 D1_SDK = D1_WORKSPACE / "d1_sdk"
 D1_SDK_SRC = D1_SDK / "d1_sdk"

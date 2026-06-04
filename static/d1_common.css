@@ -31,34 +31,6 @@ button.top-jog {
   padding: 8px 14px;
 }
 
-/* Pulsante principale: alterna dashboard Braccio ↔ Vision */
-a.dash-switch {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 120px;
-  padding: 10px 22px;
-  border-radius: 10px;
-  font-size: 0.88rem;
-  font-weight: 800;
-  text-decoration: none;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  border: 2px solid;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-}
-a.dash-switch:hover { filter: brightness(1.12); }
-a.dash-switch-vision {
-  background: linear-gradient(180deg, #0c4a6e 0%, #075985 100%);
-  color: #e0f2fe;
-  border-color: #38bdf8;
-}
-a.dash-switch-arm {
-  background: linear-gradient(180deg, #14532d 0%, #166534 100%);
-  color: #ecfdf5;
-  border-color: #34d399;
-}
-
 .modal-overlay {
   display: none;
   position: fixed;

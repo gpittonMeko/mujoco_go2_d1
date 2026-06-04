@@ -20,7 +20,7 @@ print("exit", o.channel.recv_exit_status())
 time.sleep(3)
 for cmd in [
     'curl -s -o /dev/null -w "health %{http_code}\n" http://127.0.0.1:5053/api/health',
-    "curl -s http://127.0.0.1:5053/api/vision/camera/status | head -c 500",
+    "curl -s http://127.0.0.1:5053/api/joints/feedback | head -c 500",
 ]:
     _, o, _ = ssh.exec_command(cmd, timeout=15)
     print(o.read().decode(errors="replace"))

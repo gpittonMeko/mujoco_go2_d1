@@ -59,23 +59,6 @@ def create_d1_jog_app() -> Flask:
     def program_editor() -> str:
         return render_template("d1_program_editor.html", **_page_ctx(dash_mode="arm"))
 
-    try:
-        from go2_dashboard.d1_jog.vision_page import register_vision_routes
-
-        register_vision_routes(app, lambda: _page_ctx(dash_mode="vision"))
-    except Exception as _vision_exc:
-        import logging
-
-        logging.getLogger(__name__).warning("Vision routes disabled: %s", _vision_exc)
-
-        @app.route("/vision")
-        def vision_unavailable() -> tuple[str, int]:
-            return (
-                f"<h1>Vision non disponibile</h1><p>{_vision_exc}</p>"
-                "<p><a href='/'>Torna al braccio</a></p>",
-                503,
-            )
-
     @app.route("/api/motion/status")
     def motion_status() -> Response:
         return jsonify(service.motion_status())

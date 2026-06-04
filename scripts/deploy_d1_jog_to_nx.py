@@ -8,7 +8,7 @@ Uso (PC sulla LAN Unitree):
 
 Env: GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD (come deploy_dashboard_to_nx.py).
 
-URL: http://192.168.123.18:5053/  (Vision: /vision sulla stessa porta)
+URL: http://192.168.123.18:5053/
 """
 from __future__ import annotations
 
@@ -35,13 +35,6 @@ PUSH_FILES = [
     "go2_dashboard/d1_jog/tcp_motion.py",
     "go2_dashboard/d1_jog/jog_stream.py",
     "go2_dashboard/d1_jog/cartesian.py",
-    "go2_dashboard/d1_jog/vision_page.py",
-    "go2_dashboard/d1_jog/vision_detect.py",
-    "go2_dashboard/d1_jog/vision_fusion.py",
-    "go2_dashboard/d1_jog/vision_streams.py",
-    "go2_dashboard/d1_jog/vision_yolo.py",
-    "go2_dashboard/cameras.py",
-    "go2_dashboard/realsense_pyrs.py",
     "scripts/box_object_detector.py",
     "D1 550 Workspace/OLD/scripts/arm_kinematics_d1_template.py",
     "scripts/serve_d1_jog_dashboard.py",
@@ -49,11 +42,8 @@ PUSH_FILES = [
     "scripts/nx_d1_jog_env.sh",
     "scripts/nx_d1_jog_supervise.sh",
     "scripts/nx_start_d1_jog.sh",
-    "scripts/nx_install_yolo_vision.sh",
     "templates/d1_jog_dashboard.html",
     "templates/d1_program_editor.html",
-    "templates/vision_dashboard.html",
-    "templates/_d1_dash_switch.html",
     "templates/d1_tcp_jog_modal.html",
     "static/d1_common.js",
     "static/d1_common.css",
@@ -140,39 +130,6 @@ exit $EC
     return code
 
 
-def _remote_install_yolo(ssh: paramiko.SSHClient) -> None:
-    print("[d1-jog deploy] YOLO (ultralytics + yolo11n.pt) …")
-    _, stdout, stderr = ssh.exec_command(
-        f"bash {REMOTE_BASE}/scripts/nx_install_yolo_vision.sh",
-        timeout=600,
-    )
-    out = stdout.read().decode(errors="replace")
-    err = stderr.read().decode(errors="replace")
-    code = stdout.channel.recv_exit_status()
-    if out.strip():
-        print(out.strip()[-2000:].encode("ascii", errors="replace").decode("ascii"))
-    if code != 0:
-        if err.strip():
-            print(err.strip()[-800:])
-        print("[d1-jog deploy] WARN YOLO install — controlla rete pip / wget sulla NX")
-    else:
-        print("[d1-jog deploy] YOLO OK")
-
-
-def _remote_install_pyrealsense(ssh: paramiko.SSHClient) -> None:
-    print("[d1-jog deploy] pyrealsense2 (RGB RealSense) …")
-    _, stdout, stderr = ssh.exec_command(
-        "pip3 show pyrealsense2 >/dev/null 2>&1 || pip3 install -q pyrealsense2",
-        timeout=180,
-    )
-    code = stdout.channel.recv_exit_status()
-    if code != 0:
-        print(stderr.read().decode(errors="replace")[-500:])
-        print("[d1-jog deploy] WARN pyrealsense2 install failed — fallback V4L video4")
-    else:
-        print("[d1-jog deploy] pyrealsense2 OK")
-
-
 def _remote_start_jog(ssh: paramiko.SSHClient, host: str) -> None:
     print("[d1-jog deploy] Avvio dashboard jog (solo 5053) …")
     _, stdout, stderr = ssh.exec_command(f"bash {REMOTE_BASE}/scripts/nx_start_d1_jog.sh", timeout=60)
@@ -224,7 +181,6 @@ def main() -> None:
         "scripts/nx_d1_jog_env.sh",
         "scripts/nx_d1_jog_supervise.sh",
         "scripts/nx_start_d1_jog.sh",
-        "scripts/nx_install_yolo_vision.sh",
         "scripts/build_d1_sdk.sh",
     ):
         try:
@@ -243,8 +199,6 @@ def main() -> None:
     build_code = _remote_build_d1_sdk(ssh)
     if build_code != 0:
         print("[d1-jog deploy] Avvio comunque Flask (health segnalerà bin mancanti)")
-    _remote_install_pyrealsense(ssh)
-    _remote_install_yolo(ssh)
     _remote_start_jog(ssh, host)
     ssh.close()
 
