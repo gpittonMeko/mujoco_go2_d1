@@ -9,12 +9,130 @@
   window.__operatorsGraspPointsBaseLink_m = null;
   /** Ultimo URL immagine noto per anteprima VLA (preset o ``image_url_used`` dal worker). */
   window.__operatorsVlaInputUrl = null;
+  var _START_VARIANT_KEY = "go2StartVariant";
+
   function setGraspPhase(msg) {
     var el = document.getElementById("graspPhase");
     if (el) {
       el.textContent = msg;
     }
   }
+
+  function _startVariantSelectIds() {
+    return ["opStartVariant", "graspCoachStartVariant"];
+  }
+
+  window.operatorsStartVariant = function () {
+    var stored = "";
+    try {
+      stored = String(window.localStorage.getItem(_START_VARIANT_KEY) || "").trim();
+    } catch (_e) {}
+    if (stored === "frontal" || stored === "lateral") {
+      return stored;
+    }
+    var sel = document.getElementById("opStartVariant") || document.getElementById("graspCoachStartVariant");
+    var v = sel ? String(sel.value || "").trim() : "";
+    return v === "frontal" ? "frontal" : "lateral";
+  };
+
+  window.operatorsStartVariantPayload = function () {
+    return { start_variant: window.operatorsStartVariant() };
+  };
+
+  window.operatorsStartVariantChanged = function () {
+    var v = window.operatorsStartVariant();
+    _startVariantSelectIds().forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) {
+        el.value = v;
+      }
+    });
+    try {
+      window.localStorage.setItem(_START_VARIANT_KEY, v);
+    } catch (_e2) {}
+    if (typeof window.operatorsGraspRefreshStartPoseBadge === "function") {
+      window.operatorsGraspRefreshStartPoseBadge();
+    }
+  };
+
+  window.operatorsStartVariantInit = function () {
+    var v = "lateral";
+    try {
+      var stored = String(window.localStorage.getItem(_START_VARIANT_KEY) || "").trim();
+      if (stored === "frontal" || stored === "lateral") {
+        v = stored;
+      }
+    } catch (_e3) {}
+    _startVariantSelectIds().forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) {
+        el.value = v;
+      }
+    });
+  };
+
+  function statusLabelIt(st) {
+    if (st === "pass") return "OK";
+    if (st === "warn") return "ATTENZIONE";
+    if (st === "fail") return "BLOCCATO";
+    return "—";
+  }
+
+  /** Tab Presa → card «Validazione presa» (#graspValidationPanel). */
+  window.operatorsGraspRenderValidation = function (vui) {
+    vui = vui || {};
+    var banner = document.getElementById("graspValidationBanner");
+    var body = document.getElementById("graspValidationBody");
+    var panel = document.getElementById("graspValidationPanel");
+    if (banner) {
+      banner.textContent = vui.banner_it || "In attesa health + piano.";
+      banner.className = "op-grasp-validation-banner op-grasp-validation-banner--" + (vui.banner_level || "idle");
+    }
+    if (body) {
+      var rows = vui.checks || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="3" class="muted small">Nessun controllo — premi Health worker.</td></tr>';
+      } else {
+        var html = "";
+        var i;
+        for (i = 0; i < rows.length; i++) {
+          var c = rows[i];
+          html +=
+            "<tr><td>" +
+            (c.label_it || "") +
+            '</td><td class="op-grasp-val-status op-grasp-val-status--' +
+            (c.status || "idle") +
+            '">' +
+            statusLabelIt(c.status) +
+            "</td><td class=\"muted small\">" +
+            (c.detail_it || "") +
+            "</td></tr>";
+        }
+        body.innerHTML = html;
+      }
+    }
+    if (panel) {
+      panel.classList.toggle("op-grasp-validation--ready", !!vui.can_execute_phased);
+    }
+    window.operatorsGraspSyncExecuteButtons(vui);
+  };
+
+  window.operatorsGraspSyncExecuteButtons = function (vui) {
+    vui = vui || {};
+    var phased = document.getElementById("graspBtnExecutePhased");
+    var ik = document.getElementById("graspBtnExecuteIk");
+    var fk = document.getElementById("graspBtnExecuteFk");
+    if (phased) {
+      phased.disabled = !vui.can_execute_phased;
+      phased.title = vui.can_execute_phased ? "" : vui.banner_it || "Validazione non OK";
+    }
+    if (ik) {
+      ik.disabled = !vui.can_execute_ik;
+    }
+    if (fk) {
+      fk.disabled = true;
+    }
+  };
 
   /**
    * Barra avanzamento tab Presa (fasi 0..4). step=-1 azzera; indeterminate per ciclo server lungo.
@@ -666,15 +784,21 @@
       });
   };
 
-  function operatorsArmPostConfirm(url, confirmToken, confirmMessage) {
+  function operatorsArmPostConfirm(url, confirmToken, confirmMessage, extraBody) {
     if (!window.confirm(confirmMessage)) {
       return;
     }
     setGraspPhase("POST " + url + "…");
+    var body = { confirm: confirmToken };
+    if (extraBody && typeof extraBody === "object") {
+      Object.keys(extraBody).forEach(function (k) {
+        body[k] = extraBody[k];
+      });
+    }
     fetch(api(url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirm: confirmToken }),
+      body: JSON.stringify(body),
     })
       .then(function (r) {
         return r.json().then(function (j) {
@@ -706,10 +830,13 @@
   };
 
   window.operatorsArmGotoSavedStart = function () {
+    var variant = window.operatorsStartVariant();
+    var label = variant === "frontal" ? "frontale" : "laterale";
     operatorsArmPostConfirm(
       "/api/arm/goto_saved_start",
       "ARM_GOTO_SAVED_START",
-      "Portare il braccio alla posa START registrata (start_alignment.json, arm_at_start). Confermi?"
+      "Portare il braccio alla posa START " + label + " (start_alignment_" + variant + ".json). Confermi?",
+      window.operatorsStartVariantPayload()
     );
   };
 
@@ -717,7 +844,8 @@
     operatorsArmPostConfirm(
       "/api/arm/goto_zero_then_start",
       "ARM_GOTO_ZERO_THEN_START",
-      "Due movimenti in sequenza: ZERO salvato, poi START salvato. Confermi?"
+      "Due movimenti in sequenza: ZERO salvato, poi START " + window.operatorsStartVariant() + ". Confermi?",
+      window.operatorsStartVariantPayload()
     );
   };
 
@@ -885,6 +1013,58 @@
     }
   };
 
+  window.operatorsGraspEc2Start = function () {
+    setGraspPhase("POST /api/grasp/ec2/start…");
+    window.operatorsGraspProgressUi({ step: 0, label: "Avvio EC2 g5 (può richiedere 2–4 min)…" });
+    return fetch(api("/api/grasp/ec2/start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wait_health: true }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { status: r.status, j: j };
+        });
+      })
+      .then(function (o) {
+        setGraspPhase(JSON.stringify(o.j, null, 2) + "\nHTTP " + o.status);
+        if (o.status >= 400 || !o.j || o.j.ok === false) {
+          window.operatorsGraspProgressUi({
+            step: 0,
+            label: "Avvio EC2 fallito — controlla credenziali AWS sulla NX",
+            error: true,
+          });
+          return Promise.reject(new Error("EC2 start: HTTP " + o.status));
+        }
+        window.operatorsGraspProgressUi({ step: 0, label: "EC2 avviato — verifica worker…" });
+        return o.j;
+      });
+  };
+
+  window.operatorsGraspEc2Stop = function () {
+    setGraspPhase("POST /api/grasp/ec2/stop…");
+    return fetch(api("/api/grasp/ec2/stop"), { method: "POST" })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          setGraspPhase(JSON.stringify(j, null, 2));
+          return j;
+        });
+      });
+  };
+
+  /** Se health dice worker down ma EC2 control è disponibile, avvia istanza e ripete health. */
+  window.operatorsGraspEnsureWorker = function (health) {
+    if (health && health.worker_reachable) {
+      return Promise.resolve(health);
+    }
+    if (health && health.ec2_control_available && health.cloud_mode) {
+      return window.operatorsGraspEc2Start().then(function () {
+        return window.operatorsGraspHealth();
+      });
+    }
+    return Promise.reject(new Error("Grasp health: worker non disponibile"));
+  };
+
   window.operatorsGraspHealth = function () {
     setGraspPhase("GET /api/grasp/health…");
     window.operatorsGraspProgressUi({ step: 0, label: "Verifica worker grasp…" });
@@ -894,11 +1074,17 @@
       })
       .then(function (j) {
         setGraspPhase(JSON.stringify(j, null, 2));
-        if (j && j.ok !== false) {
+        if (j && j.validation_ui) {
+          window.operatorsGraspRenderValidation(j.validation_ui);
+        }
+        if (j && j.ok !== false && j.worker_reachable) {
           window.operatorsGraspProgressUi({ step: 1, label: "Worker OK — invio piano…" });
           return j;
         }
         window.operatorsGraspProgressUi({ step: 0, label: "Worker in errore o non raggiungibile", error: true });
+        if (j && j.validation_ui) {
+          window.operatorsGraspRenderValidation(j.validation_ui);
+        }
         return Promise.reject(new Error("Grasp health: worker non disponibile"));
       })
       .catch(function (e) {
@@ -934,8 +1120,25 @@
       })
       .then(function (o) {
         window.__operatorsLastGraspPlan = o.j;
+        if (o.j && o.j.validation_ui) {
+          window.operatorsGraspRenderValidation(o.j.validation_ui);
+        }
+        var ass = o.j && o.j.grasp_assessment;
+        if (ass && ass.label_it) {
+          window.operatorsGraspProgressUi({
+            step: 2,
+            label: "Piano · " + ass.label_it + (ass.execution_allowed ? " · eseguibile" : " · solo preview"),
+          });
+        }
         setGraspPhase(JSON.stringify(o.j, null, 2) + "\nHTTP " + o.status);
         if (o.status >= 400 || (o.j && o.j.ok === false)) {
+          if (o.j && o.j.reason === "worker_stub_plan_rejected") {
+            window.operatorsGraspProgressUi({
+              step: 1,
+              label: "STUB rifiutato — worker deve essere planner/auto",
+              error: true,
+            });
+          }
           window.operatorsGraspProgressUi({
             step: 1,
             label: "Piano rifiutato (HTTP " + o.status + ")",
@@ -1038,6 +1241,9 @@
     }
     window.__operatorsGraspPipelineBusy = true;
     window.operatorsGraspHealth()
+      .then(function (h) {
+        return window.operatorsGraspEnsureWorker(h);
+      })
       .then(function () {
         return window.operatorsGraspPlan();
       })
@@ -1046,6 +1252,372 @@
       })
       .finally(function () {
         window.__operatorsGraspPipelineBusy = false;
+      });
+  };
+
+  function graspFrontSetBadge(state, text) {
+    var b = document.getElementById("graspFrontBadge");
+    if (!b) {
+      return;
+    }
+    b.classList.remove("is-idle", "is-ok", "is-fail", "is-run");
+    b.classList.add(state);
+    b.textContent = text;
+  }
+
+  function graspFrontDrawDetection(det) {
+    var img = document.getElementById("graspFrontImg");
+    var cv = document.getElementById("graspFrontCanvas");
+    if (!img || !cv) {
+      return;
+    }
+    var w = img.clientWidth || img.naturalWidth || 320;
+    var h = img.clientHeight || img.naturalHeight || 240;
+    cv.width = w;
+    cv.height = h;
+    var ctx = cv.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    ctx.clearRect(0, 0, w, h);
+    if (!det || !det.ok || !det.bbox_xyxy || det.bbox_xyxy.length < 4) {
+      return;
+    }
+    var fw = (det.frame_size_px && det.frame_size_px[0]) || img.naturalWidth || 640;
+    var fh = (det.frame_size_px && det.frame_size_px[1]) || img.naturalHeight || 480;
+    var sx = w / Math.max(fw, 1);
+    var sy = h / Math.max(fh, 1);
+    var bx = det.bbox_xyxy;
+    var x0 = bx[0] * sx;
+    var y0 = bx[1] * sy;
+    var x1 = bx[2] * sx;
+    var y1 = bx[3] * sy;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(34, 197, 94, 0.96)";
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    var ccx = (x0 + x1) / 2;
+    var ccy = (y0 + y1) / 2;
+    ctx.beginPath();
+    ctx.moveTo(ccx - 9, ccy);
+    ctx.lineTo(ccx + 9, ccy);
+    ctx.moveTo(ccx, ccy - 9);
+    ctx.lineTo(ccx, ccy + 9);
+    ctx.stroke();
+    var conf = Math.round((Number(det.confidence) || 0) * 100);
+    var label = (det.label || "oggetto") + " · " + conf + "%";
+    ctx.font = "13px Inter,sans-serif";
+    var tw = ctx.measureText(label).width + 12;
+    var ty = Math.max(0, y0 - 19);
+    ctx.fillStyle = "rgba(22, 101, 52, 0.92)";
+    ctx.fillRect(x0, ty, tw, 19);
+    ctx.fillStyle = "#dcfce7";
+    ctx.fillText(label, x0 + 6, ty + 14);
+  }
+
+  window.operatorsGraspFrontLoadFrame = function () {
+    return new Promise(function (resolve) {
+      var img = document.getElementById("graspFrontImg");
+      if (!img) {
+        resolve(false);
+        return;
+      }
+      var sr = (window.__OPERATORS_SCRIPT_ROOT__ || "").replace(/\/$/, "");
+      img.onload = function () {
+        resolve(true);
+      };
+      img.onerror = function () {
+        resolve(false);
+      };
+      img.src = sr + "/api/robot/camera/6.jpg?ts=" + Date.now();
+    });
+  };
+
+  function graspFrontApplyDetection(det) {
+    graspFrontDrawDetection(det);
+    if (det && det.ok) {
+      var conf = Math.round((Number(det.confidence) || 0) * 100);
+      var be = String(det.backend || "");
+      var heur = be.indexOf("floor") >= 0 || be.indexOf("contour") >= 0 || be.indexOf("classic") >= 0;
+      graspFrontSetBadge("is-ok", "OGGETTO VISTO · " + conf + "%" + (heur ? " (euristico)" : ""));
+    } else {
+      graspFrontSetBadge("is-fail", "oggetto NON rilevato — riposiziona oggetto/cane");
+    }
+  }
+
+  /** Rileva l'oggetto sulla camera frontale (logical 6) e lo disegna con bbox + badge. */
+  window.operatorsGraspFrontDetect = function () {
+    var btn = document.getElementById("graspFrontDetectBtn");
+    if (btn) {
+      btn.disabled = true;
+    }
+    graspFrontSetBadge("is-run", "analisi frontale…");
+    return window.operatorsGraspFrontLoadFrame()
+      .then(function () {
+        return fetch(api("/api/vision/box_detect?camera=6&_=" + Date.now()), { cache: "no-store" }).then(function (r) {
+          return r.json();
+        });
+      })
+      .then(function (j) {
+        graspFrontApplyDetection(j && j.detection);
+        return j;
+      })
+      .catch(function (e) {
+        graspFrontSetBadge("is-fail", "errore: " + String(e));
+      })
+      .finally(function () {
+        if (btn) {
+          btn.disabled = false;
+        }
+      });
+  };
+
+  function graspFront3dSummary(plan) {
+    var el = document.getElementById("graspFront3d");
+    if (!el) {
+      return;
+    }
+    var pts = plan && (plan.operators_grasp_points_base_link_m || plan.grasp_points_base_link_m);
+    var g = plan && (plan.grasp_center_base_link_m || (plan.targets && plan.targets.grasp));
+    if (g && g.length >= 3) {
+      el.innerHTML =
+        "Punti 3D presa (base_link): centro <strong>x=" +
+        Number(g[0]).toFixed(3) +
+        " y=" +
+        Number(g[1]).toFixed(3) +
+        " z=" +
+        Number(g[2]).toFixed(3) +
+        " m</strong>" +
+        (pts && pts.length ? " · " + pts.length + " punti" : "") +
+        " → marker visibili nella tab <strong>3D</strong>.";
+    } else if (pts && pts.length) {
+      el.innerHTML = "Punti 3D presa: <strong>" + pts.length + " punti</strong> → vedi marker nella tab <strong>3D</strong>.";
+    }
+  }
+
+  var _GRASP_FULL_STEP_ORDER = ["front_detect", "goto_start", "start_pose_check", "wrist_plan", "execute_phased"];
+
+  window.operatorsGraspRefreshStartPoseBadge = function () {
+    var badge = document.getElementById("graspStartPoseBadge");
+    if (!badge) {
+      return Promise.resolve(null);
+    }
+    badge.className = "op-grasp-front-badge is-run";
+    badge.textContent = "START: verifica…";
+    var variant = window.operatorsStartVariant();
+    return fetch(api("/api/arm/at_start_check?start_variant=" + encodeURIComponent(variant)), { cache: "no-store" })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { status: r.status, j: j };
+        });
+      })
+      .then(function (o) {
+        var j = o.j || {};
+        var vLabel = variant === "frontal" ? "frontale" : "laterale";
+        if (j.ok) {
+          badge.className = "op-grasp-front-badge is-ok";
+          badge.textContent =
+            "START " + vLabel + ": OK (max err " + (j.max_error_deg != null ? j.max_error_deg : "?") + "°)";
+        } else {
+          badge.className = "op-grasp-front-badge is-fail";
+          badge.textContent =
+            "START " + vLabel + ": NON in posa" +
+            (j.max_error_deg != null ? " (max err " + j.max_error_deg + "°)" : "") +
+            " — usa «Prendi oggetto» (non dry-run)";
+        }
+        return j;
+      })
+      .catch(function () {
+        badge.className = "op-grasp-front-badge is-fail";
+        badge.textContent = "START: verifica non disponibile";
+      });
+  };
+
+  function graspFullSetStepClass(stepName, cls) {
+    var li = document.querySelector('#graspFullSteps [data-step="' + stepName + '"]');
+    if (!li) {
+      return;
+    }
+    li.classList.remove("is-idle", "is-run", "is-ok", "is-fail", "is-skip");
+    li.classList.add(cls);
+  }
+
+  function graspFullResetStoryboard(runningFirst) {
+    var i;
+    for (i = 0; i < _GRASP_FULL_STEP_ORDER.length; i++) {
+      graspFullSetStepClass(_GRASP_FULL_STEP_ORDER[i], "is-idle");
+    }
+    if (runningFirst) {
+      graspFullSetStepClass(_GRASP_FULL_STEP_ORDER[0], "is-run");
+    }
+  }
+
+  function graspFullStepLabel(stepName, fallback) {
+    var li = document.querySelector('#graspFullSteps [data-step="' + stepName + '"] .op-grasp-story-txt');
+    return (li && li.textContent) || fallback || stepName;
+  }
+
+  function graspFullRenderSteps(out) {
+    var steps = (out && out.steps) || [];
+    var byName = {};
+    var i;
+    for (i = 0; i < steps.length; i++) {
+      if (steps[i] && steps[i].step) {
+        byName[steps[i].step] = steps[i];
+      }
+    }
+    for (i = 0; i < _GRASP_FULL_STEP_ORDER.length; i++) {
+      var name = _GRASP_FULL_STEP_ORDER[i];
+      var s = byName[name];
+      var li = document.querySelector('#graspFullSteps [data-step="' + name + '"]');
+      if (!li) {
+        continue;
+      }
+      var txt = li.querySelector(".op-grasp-story-txt");
+      if (!s) {
+        graspFullSetStepClass(name, "is-idle");
+        continue;
+      }
+      var detail = s.label_it || s.hint_it || s.reason || "";
+      if (s.skipped) {
+        graspFullSetStepClass(name, "is-skip");
+      } else if (s.ok) {
+        graspFullSetStepClass(name, "is-ok");
+      } else {
+        graspFullSetStepClass(name, "is-fail");
+      }
+      if (txt && detail) {
+        txt.textContent = graspFullStepLabel(name, name).split(" — ")[0] + " — " + detail;
+      }
+      if (name === "front_detect" && s) {
+        var fdet = s.detection;
+        if (fdet && fdet.ok) {
+          window.operatorsGraspFrontLoadFrame().then(function () {
+            graspFrontApplyDetection(fdet);
+          });
+        } else {
+          graspFrontSetBadge("is-fail", "frontale: oggetto NON rilevato");
+        }
+      }
+    }
+    var failed = out && out.failed_step;
+    if (failed) {
+      graspFullSetStepClass(failed, "is-fail");
+    }
+  }
+
+  /**
+   * Sequenza presa completa (1 comando): frontale → START → pose estimation polso → presa a fasi.
+   * @param {boolean} [forceDryRun] se true forza l'anteprima senza muovere il braccio.
+   */
+  window.operatorsGraspRunFull = function (forceDryRun) {
+    var instInp = document.getElementById("graspFullInstruction");
+    var instruction =
+      (instInp && instInp.value && String(instInp.value).trim()) || "prendi l'oggetto davanti al braccio";
+    var dryCb = document.getElementById("graspFullDryRun");
+    var dryRun = forceDryRun === true || !!(dryCb && dryCb.checked);
+    var summary = document.getElementById("graspFullSummary");
+    var btn = document.getElementById("graspFullRunBtn");
+
+    if (!dryRun) {
+      if (
+        !window.confirm(
+          "SEQUENZA COMPLETA: fold + START, poi piano dal polso e PRESA («" +
+            instruction +
+            "»). Area libera e cane stabile? Continuare?"
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !window.confirm(
+        "ANTEPRIMA (dry-run): il braccio NON si muove. Se non sei già in START, il flusso si ferma prima del piano polso. Continuare?"
+      )
+    ) {
+      return;
+    }
+
+    var body = { instruction: instruction };
+    if (!dryRun) {
+      body.confirm = "RUN_FULL_GRASP";
+    }
+    if (btn) {
+      btn.disabled = true;
+    }
+    graspFullResetStoryboard(true);
+    graspFrontSetBadge("is-run", "frontale: analisi in corso…");
+    window.operatorsGraspFrontLoadFrame();
+    if (summary) {
+      summary.textContent = dryRun
+        ? "Anteprima in corso (nessun movimento braccio)…"
+        : "Sequenza in corso: frontale → START → polso → presa…";
+    }
+    setGraspPhase("POST /api/grasp/run_full…");
+    window.operatorsGraspProgressUi({
+      step: 1,
+      label: dryRun ? "Anteprima sequenza completa…" : "Sequenza presa completa…",
+      indeterminate: true,
+    });
+    fetch(api("/api/grasp/run_full"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { status: r.status, j: j };
+        });
+      })
+      .then(function (o) {
+        var out = o.j || {};
+        setGraspPhase(JSON.stringify(out, null, 2) + "\nHTTP " + o.status);
+        graspFullRenderSteps(out);
+        if (out.plan && typeof out.plan === "object") {
+          window.__operatorsLastGraspPlan = out.plan;
+          window.operatorsApplyGraspVisualization(out.plan);
+          window.operatorsRefreshGraspPreviewFrame();
+          graspFront3dSummary(out.plan);
+        }
+        if (out.validation_ui) {
+          window.operatorsGraspRenderValidation(out.validation_ui);
+        }
+        window.operatorsGraspRefreshStartPoseBadge();
+        if (out.ok) {
+          window.operatorsGraspProgressUi({
+            step: 4,
+            label: dryRun ? "Anteprima completata" : "Presa completata",
+          });
+          if (summary) {
+            summary.textContent = dryRun
+              ? "Anteprima OK — controlla overlay e validazione, poi lancia senza dry-run."
+              : "Sequenza completata: verifica fisicamente la presa.";
+          }
+        } else {
+          var fs = out.failed_step || "?";
+          window.operatorsGraspProgressUi({
+            step: fs === "execute_phased" ? 3 : fs === "wrist_plan" ? 2 : 1,
+            label: "Sequenza interrotta su «" + fs + "»",
+            error: true,
+          });
+          if (summary) {
+            var failedStep = (out.steps || []).filter(function (s) {
+              return s && s.step === out.failed_step;
+            })[0];
+            summary.textContent =
+              "Interrotta su «" + fs + "»: " + ((failedStep && (failedStep.hint_it || failedStep.reason)) || "vedi JSON sotto.");
+          }
+        }
+      })
+      .catch(function (e) {
+        setGraspPhase("Errore: " + String(e));
+        window.operatorsGraspProgressUi({ step: 1, label: String(e), error: true });
+        if (summary) {
+          summary.textContent = "Errore di rete: " + String(e);
+        }
+      })
+      .finally(function () {
+        if (btn) {
+          btn.disabled = false;
+        }
       });
   };
 
@@ -1114,8 +1686,87 @@
       });
   };
 
+  window.operatorsGraspExecutePhased = function () {
+    var lp = window.__operatorsLastGraspPlan;
+    var vui = lp && lp.validation_ui;
+    if (vui && !vui.can_execute_phased) {
+      alert(vui.banner_it || "Validazione non OK — controlla la tabella sopra.");
+      return;
+    }
+    var ass = lp && lp.grasp_assessment;
+    if (ass && ass.execution_allowed === false && ass.tier !== "heuristic_preview_only") {
+      if (
+        !window.confirm(
+          "Assessment: " +
+            (ass.label_it || ass.tier) +
+            " — esecuzione non consigliata. Continuare comunque?"
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !window.confirm(
+        "Eseguire sequenza a fasi (pre_grasp → approach → grasp → lift) dall'ultimo piano? Area libera?"
+      )
+    ) {
+      return;
+    }
+    setGraspPhase("POST /api/grasp/execute_phased…");
+    window.operatorsGraspProgressUi({ step: 3, label: "Sequenza presa a fasi…" });
+    fetch(api("/api/grasp/execute_phased"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "EXECUTE_PHASED_GRASP" }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { status: r.status, j: j };
+        });
+      })
+      .then(function (o) {
+        setGraspPhase(JSON.stringify(o.j, null, 2) + "\nHTTP " + o.status);
+        var gvTxt = "";
+        try {
+          var sl = (o.j && o.j.step_log) || [];
+          for (var i = 0; i < sl.length; i++) {
+            var gv = sl[i] && sl[i].grasp_verify;
+            if (gv && gv.ok) {
+              gvTxt = " · presa: " + (gv.grasp_detected ? "OK oggetto" : "a vuoto") +
+                " (pinza " + Number(gv.gripper_deg_achieved).toFixed(1) + "°)";
+            } else if (gv && !gv.ok) {
+              gvTxt = " · verifica presa n/d";
+            }
+          }
+        } catch (e) {}
+        if (o.j && o.j.ok) {
+          window.operatorsGraspProgressUi({ step: 4, label: "Sequenza completata (" + (o.j.stages_run || "?") + " fasi)" + gvTxt });
+        } else {
+          window.operatorsGraspProgressUi({ step: 3, label: "Sequenza fallita" + gvTxt, error: true });
+        }
+      })
+      .catch(function (e) {
+        setGraspPhase("Errore: " + String(e));
+        window.operatorsGraspProgressUi({ step: 3, label: String(e), error: true });
+      });
+  };
+
   window.operatorsExecuteLastPlanIkArm = function () {
     var lp = window.__operatorsLastGraspPlan;
+    var vui = lp && lp.validation_ui;
+    if (vui && !vui.can_execute_ik) {
+      alert(vui.banner_it || "IK bloccato — validazione non OK.");
+      return;
+    }
+    var ass = lp && lp.grasp_assessment;
+    if (ass && ass.execution_allowed === false && lp.backend !== "stub") {
+      if (
+        !window.confirm(
+          "Assessment: " + (ass.label_it || "") + " — IK singolo non validato 3D. Continuare?"
+        )
+      ) {
+        return;
+      }
+    }
     if (lp && lp.backend === "stub") {
       if (
         !window.confirm(
@@ -1197,6 +1848,7 @@
   };
 
   window.operatorsWireMjpegStream = operatorsWireMjpegStream;
+  window.operatorsMjpegLoadingSet = operatorsMjpegLoadingSet;
 
   window.operatorsGraspPipeline = function () {
     var pre = document.getElementById("graspPipelinePre");
@@ -1229,5 +1881,88 @@
         }
       });
   };
+
+  function graspFrontAutoLoad() {
+    if (document.getElementById("graspFrontImg") && window.operatorsGraspFrontLoadFrame) {
+      window.operatorsGraspFrontLoadFrame();
+    }
+  }
+
+  /* ---- Switch a 3 flussi: Locale · VLA AWS · Teaching --------------------- */
+  var _GRASP_FLOW_CAPTIONS = {
+    guided:
+      "<strong>Locale:</strong> sequenza completa in un comando, piano dal polso sulla NX (Orbbec metrico / GraspGen). È il flusso del laboratorio, <strong>senza</strong> OpenVLA; ricade sul worker solo se il locale fallisce.",
+    vla:
+      "<strong>VLA AWS:</strong> piano dal worker EC2 (OpenVLA) e poi esecuzione manuale (fasi / IK / FK). Health worker → Piano VLA → Esegui. Richiede worker raggiungibile + validazione verde.",
+    teach:
+      "<strong>Teaching:</strong> coach GPT-nano (OpenAI vision) passo-passo, con memoria e feedback. Usalo per recovery dopo un fallimento o per insegnare micro-correzioni, non come piano primario."
+  };
+
+  function graspSetFlow(flow) {
+    if (!_GRASP_FLOW_CAPTIONS[flow]) {
+      flow = "guided";
+    }
+    var btns = document.querySelectorAll(".op-grasp-flow-btn");
+    var i;
+    for (i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute("data-grasp-flow") === flow;
+      btns[i].classList.toggle("is-active", on);
+      btns[i].setAttribute("aria-selected", on ? "true" : "false");
+    }
+    var panels = document.querySelectorAll("[data-grasp-flow-panel]");
+    for (i = 0; i < panels.length; i++) {
+      var match = panels[i].getAttribute("data-grasp-flow-panel") === flow;
+      panels[i].hidden = !match;
+    }
+    var cap = document.getElementById("graspFlowCaption");
+    if (cap) {
+      cap.innerHTML = _GRASP_FLOW_CAPTIONS[flow];
+    }
+    // Validazione + log riguardano l'esecuzione del piano (locale/VLA): nascoste nel teaching.
+    var planScoped = ["graspValidationPanel", "graspLogDetails", "graspProgressCard"];
+    var hideForTeach = flow === "teach";
+    for (i = 0; i < planScoped.length; i++) {
+      var node = document.getElementById(planScoped[i]);
+      if (node) {
+        node.hidden = hideForTeach;
+      }
+    }
+    try {
+      window.localStorage.setItem("go2GraspFlow", flow);
+    } catch (e) {
+      /* storage non disponibile: ignora */
+    }
+  }
+  window.operatorsGraspSetFlow = graspSetFlow;
+
+  function graspFlowInit() {
+    var btns = document.querySelectorAll(".op-grasp-flow-btn");
+    if (!btns.length) {
+      return;
+    }
+    var i;
+    for (i = 0; i < btns.length; i++) {
+      btns[i].addEventListener("click", function () {
+        graspSetFlow(this.getAttribute("data-grasp-flow"));
+      });
+    }
+    var saved = null;
+    try {
+      saved = window.localStorage.getItem("go2GraspFlow");
+    } catch (e) {
+      saved = null;
+    }
+    graspSetFlow(saved || "guided");
+  }
+
+  function graspTabInit() {
+    graspFrontAutoLoad();
+    graspFlowInit();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", graspTabInit);
+  } else {
+    graspTabInit();
+  }
 
 })();

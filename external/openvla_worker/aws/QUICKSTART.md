@@ -1,99 +1,83 @@
-# Quickstart VLA AWS ↔ Jetson Go2 — copia/incolla
+# Setup VLA AWS — comando unico
 
-## 1) AWS EC2 (g5.xlarge, Ubuntu 22.04, 100 GB, SG: TCP 8765 inbound)
+## Un solo comando (PC, repo root)
 
-SSH sull’istanza:
+Prerequisiti:
+- AWS CLI configurato (`aws configure` o env `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`)
+- Chiave **`C:\Users\user\Documents\LLM_14.pem`** (key pair AWS nome **`LLM_14`**)
+- NX accesa su `192.168.123.18`, PC sulla LAN Unitree
 
-```bash
-# Opzione A — repo già copiato (scp/rsync da PC):
-cd ~/mujoco_go2_d1/external/openvla_worker
-bash aws/bootstrap-ec2.sh
-
-# Opzione B — clone git:
-export GO2_REPO_URL=https://github.com/TUO_ORG/mujoco_go2_d1.git
-curl -fsSL -o /tmp/bootstrap-ec2.sh \
-  "https://raw.githubusercontent.com/TUO_ORG/mujoco_go2_d1/main/external/openvla_worker/aws/bootstrap-ec2.sh"
-# oppure dopo clone:
-bash external/openvla_worker/aws/bootstrap-ec2.sh
+Se AWS CLI dà errore SSL su Windows:
+```powershell
+$env:AWS_CA_BUNDLE = ""
 ```
 
-Al termine stampa **`~/go2-vla-pairing.env`** con URL + token.
-
-OpenVLA reale (dopo test stub):
-
-```bash
-cd ~/mujoco_go2_d1/external/openvla_worker
-export GO2_WORKER_STUB=0
-bash aws/bootstrap-ec2.sh
-```
-
----
-
-## 2) PC di lab — collega la Jetson NX
+### Crea EC2 + Docker + collega NX
 
 ```powershell
 cd C:\Users\user\MujocoCaneD1\mujoco_go2_d1
-
-# Copia pairing da EC2 (sostituisci IP):
-scp ubuntu@<EC2_IP>:~/go2-vla-pairing.env .
-
-# Configura NX + riavvia dashboard + verifica proxy:
-python scripts/pair_nx_aws_vla.py --pairing-file go2-vla-pairing.env --verify
-
-# Test worker diretto dal PC:
-python scripts/verify_aws_vla_worker.py http://<EC2_IP>:8765 --token <TOKEN>
+powershell -ExecutionPolicy Bypass -File scripts/go2_vla_full_setup.ps1 -InstallPemOnNx -InstallEc2ControlOnNx
 ```
 
-Alternativa deploy completo:
+Fa in sequenza:
+1. Crea **g5.xlarge** (o riavvia se esiste già in `data/go2_vla_ec2_state.json`)
+2. Security group porte **22** e **8765**
+3. Copia worker, avvia Docker OpenVLA (stub prima)
+4. Salva `go2-vla-pairing.env` e `data/go2_vla_ec2_state.json`
+5. Configura NX (URL worker, token, cloud mode)
+6. Opzionale: copia **LLM_14.pem** sulla NX e metadata EC2 per start/stop
+
+### Solo collegare NX (EC2 già su)
 
 ```powershell
-$env:GO2_DEPLOY_ANYGRASP_WORKER_URL="http://<EC2_IP>:8765"
-python scripts/deploy_dashboard_to_nx.py
-# Poi pair solo per il token:
-python scripts/pair_nx_aws_vla.py --pairing-file go2-vla-pairing.env --skip-restart
+powershell -ExecutionPolicy Bypass -File scripts/go2_vla_full_setup.ps1 -SkipProvision -InstallPemOnNx
 ```
 
 ---
 
-## 3) Operatore — dashboard sul cane
+## Dopo il setup — cosa puoi fare
 
-Apri **http://192.168.123.18:5052** → tab **Presa**:
+| Azione | Dove |
+|--------|------|
+| **Piano presa VLA** (istruzione → cam → AWS → braccio) | Dashboard **Presa** → *Piano VLA (1 click)* |
+| **Muovi braccio** IK / FK | Stesso tab → *Muovi IK* / *Muovi FK D1* |
+| **Spegni EC2** (risparmio ~$1/h) | PC: `python scripts/aws_vla_ec2_control.py stop` |
+| **Accendi EC2** | PC: `python scripts/aws_vla_ec2_control.py start --wait-health` |
+| **Stato worker** | `python scripts/aws_vla_ec2_control.py status` |
 
-1. Scrivi istruzione (*afferra la scatola bianca*)
-2. **Piano VLA (1 click)** — invia cam 0+6 ad AWS
-3. Tab **3D** — marker arancione
-4. **Muovi IK** o **Muovi FK D1**
+### Start/stop EC2 dalla NX del cane
 
-Tab **Sistema** → mission console → verifica `grasp_worker` reachable.
-
----
-
-## Token / sicurezza
-
-| Dove | File / env |
-|------|------------|
-| EC2 container | `external/openvla_worker/aws/.env` → `GO2_WORKER_TOKEN` |
-| Jetson NX | `scripts/nx_secrets_dashboard.sh` → `export GO2_WORKER_TOKEN=...` |
-| Jetson NX URL | `scripts/nx_dashboard_env.sh` → `GO2_ANYGRASP_WORKER_URL` |
-
-**Non committare** token né `.env` reali.
-
----
-
-## Troubleshooting rapido
+Dopo `-InstallEc2ControlOnNx`, sulla NX aggiungi in  
+`/home/unitree/go2_visual_dashboard/scripts/nx_secrets_dashboard.sh`:
 
 ```bash
-# Su EC2:
-docker logs -f $(docker ps -q | head -1)
-curl -s http://127.0.0.1:8765/health
-
-# Sulla NX (SSH):
-curl -s http://127.0.0.1:5052/api/grasp/health | python3 -m json.tool
-curl -o /tmp/c0.jpg http://127.0.0.1:5052/api/robot/camera/0.jpg
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=eu-west-1
 ```
 
-| Errore | Fix |
-|--------|-----|
-| 401 unauthorized | Token NX ≠ EC2 `.env` |
-| worker_unreachable | SG EC2 porta 8765; IP pubblico corretto |
-| image_fetch_failed | `GO2_GRASP_CLOUD_MODE=1` sulla NX (auto se URL non LAN) |
+Poi SSH sulla NX:
+```bash
+cd ~/go2_visual_dashboard
+python3 scripts/aws_vla_ec2_control.py status
+python3 scripts/aws_vla_ec2_control.py stop
+python3 scripts/aws_vla_ec2_control.py start --wait-health
+```
+
+Serve **AWS CLI** sulla NX (`sudo apt install awscli`) oppure usa i comandi dal PC.
+
+Chiave PEM sulla NX: `~/.ssh/LLM_14.pem` (per SSH debug `ssh -i ~/.ssh/LLM_14.pem ubuntu@<IP_EC2>`).
+
+---
+
+## OpenVLA reale (dopo test stub)
+
+SSH su EC2:
+```bash
+ssh -i ~/Documents/LLM_14.pem ubuntu@<IP_EC2>
+cd mujoco_go2_d1/external/openvla_worker
+# in aws/.env: OPENVLA_RUNTIME_STUB=0 OPENVLA_USE_HF=1
+docker compose -f aws/docker-compose.yml up -d --build
+```
+
+Poi dalla NX rifare un piano VLA (token invariato se non ricrei container).

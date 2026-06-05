@@ -32,6 +32,9 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    if (window.operatorsStartVariantInit) {
+      window.operatorsStartVariantInit();
+    }
     if (window.operatorsFillStreamUrlCodes) {
       window.operatorsFillStreamUrlCodes();
     }
@@ -86,7 +89,8 @@
       window.operatorsRefreshGraspPreviewFrame();
     }
     window.operatorsGraspDockBumpPreviews();
+    if (window.operatorsGraspRefreshStartPoseBadge) {
+      window.operatorsGraspRefreshStartPoseBadge();
+    }
   });
-})();
-
 })();

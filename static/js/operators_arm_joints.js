@@ -1,5 +1,5 @@
 /**
- * Editor giunti D1 (7× slider) — stessa logica del monolite: live_deg / goto_deg / salvataggi.
+ * Editor giunti D1 (7× slider): session_begin + live_deg (SDK stream) / goto_deg / salvataggi.
  * Dipende da window.operatorsApi (operators.js).
  */
 (function () {
@@ -317,8 +317,20 @@
       });
   }
 
+  function _startVariantBody(extra) {
+    var body = extra || {};
+    if (typeof window.operatorsStartVariantPayload === "function") {
+      Object.keys(window.operatorsStartVariantPayload()).forEach(function (k) {
+        body[k] = window.operatorsStartVariantPayload()[k];
+      });
+    }
+    return body;
+  }
+
   function operatorsJointEditorSaveStart() {
-    if (!window.confirm("Salvare START (AprilTag + angoli dagli slider)?")) {
+    var variant =
+      typeof window.operatorsStartVariant === "function" ? window.operatorsStartVariant() : "lateral";
+    if (!window.confirm("Salvare START " + variant + " (angoli dagli slider)?")) {
       return;
     }
     var sd = operatorsJointCollectFromSliders();
@@ -329,7 +341,7 @@
     fetch(api("/api/alignment/start_pose"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ servo_deg: sd }),
+      body: JSON.stringify(_startVariantBody({ servo_deg: sd })),
       credentials: "same-origin",
       cache: "no-store",
     })
@@ -362,16 +374,169 @@
       });
   }
 
+  function operatorsJointEditorSaveStartLive() {
+    var variant =
+      typeof window.operatorsStartVariant === "function" ? window.operatorsStartVariant() : "lateral";
+    if (
+      !window.confirm(
+        "Leggere feedback motori e salvare come START " +
+          variant +
+          " (start_alignment_" +
+          variant +
+          ".json)?"
+      )
+    ) {
+      return;
+    }
+    var pre = el("opJointEditorLog");
+    fetch(api("/api/alignment/start_pose"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(_startVariantBody({})),
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then(function (r) {
+        return jsonFromResponse(r, "start_pose").then(function (data) {
+          return { status: r.status, data: data };
+        });
+      })
+      .then(function (pack) {
+        if (pre) {
+          pre.textContent =
+            "START da motori HTTP " + pack.status + "\n" + JSON.stringify(pack.data, null, 2);
+        }
+        var d = pack.data;
+        if (pack.status >= 400) {
+          issueErr("Allineamento · START motori", "HTTP " + pack.status, d);
+        } else if (d && d.ok === false) {
+          issueErr("Allineamento · START motori", d.reason || "salvataggio fallito", d);
+        } else if (typeof window.operatorsGraspRefreshStartPoseBadge === "function") {
+          window.operatorsGraspRefreshStartPoseBadge();
+        }
+      })
+      .catch(function (e) {
+        if (pre) {
+          pre.textContent = String(e);
+        }
+        issueErr("Allineamento · START motori", String(e), null);
+      });
+  }
+
+  function operatorsJointEndLiveSession(done) {
+    fetch(api("/api/arm/joints/session_end"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then(function (r) {
+        return jsonFromResponse(r, "session_end");
+      })
+      .then(function (data) {
+        if (typeof done === "function") {
+          done(data);
+        }
+      })
+      .catch(function (e) {
+        if (typeof done === "function") {
+          done({ ok: false, reason: String(e) });
+        }
+      });
+  }
+
+  function operatorsJointBeginLiveSession(servoDeg, done) {
+    var body = {};
+    if (servoDeg && servoDeg.length >= 6) {
+      body.servo_deg = servoDeg;
+    }
+    fetch(api("/api/arm/joints/session_begin"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+      cache: "no-store",
+    })
+      .then(function (r) {
+        return jsonFromResponse(r, "session_begin");
+      })
+      .then(function (data) {
+        if (!data.ok && data.reason === "not_coupled") {
+          return fetch(api("/api/arm/joints/couple"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ with_power: false }),
+            credentials: "same-origin",
+            cache: "no-store",
+          })
+            .then(function (r2) {
+              return jsonFromResponse(r2, "couple");
+            })
+            .then(function () {
+              return fetch(api("/api/arm/joints/session_begin"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+                credentials: "same-origin",
+                cache: "no-store",
+              });
+            })
+            .then(function (r3) {
+              return jsonFromResponse(r3, "session_begin_retry");
+            });
+        }
+        return data;
+      })
+      .then(function (data) {
+        if (typeof done === "function") {
+          done(data);
+        }
+      })
+      .catch(function (e) {
+        if (typeof done === "function") {
+          done({ ok: false, reason: String(e) });
+        }
+      });
+  }
+
   function operatorsJointLiveToggleRefresh() {
     var cb = el("opJointLiveEnabled");
+    var st = el("opJointLiveStatus");
     operatorsJointSlidersInitDisplay();
-    if (cb && cb.checked) {
-      operatorsJointEditorLoad(function (data) {
-        if (data && data.ok && cb.checked) {
+    if (!cb || !cb.checked) {
+      operatorsJointEndLiveSession(function () {
+        if (st) {
+          st.textContent = "Live off.";
+        }
+      });
+      return;
+    }
+    if (st) {
+      st.textContent = "Live: avvio sessione DDS…";
+    }
+    operatorsJointEditorLoad(function (data) {
+      if (!cb.checked) {
+        return;
+      }
+      var sd = data && data.ok && data.servo_deg ? data.servo_deg : operatorsJointCollectFromSliders();
+      operatorsJointBeginLiveSession(sd, function (sess) {
+        if (!cb.checked) {
+          return;
+        }
+        if (st) {
+          if (sess && sess.ok) {
+            st.textContent = "Live ON (SDK stream) · " + new Date().toLocaleTimeString();
+          } else {
+            st.textContent = "sessione: " + ((sess && sess.reason) || "ERR");
+            issueWarn("Braccio · live session", (sess && sess.reason) || "session_begin fallito", sess);
+          }
+        }
+        if (sess && sess.ok) {
           operatorsJointSendLivePose();
         }
       });
-    }
+    });
   }
 
   window.operatorsJointNudge = operatorsJointNudge;
@@ -381,6 +546,7 @@
   window.operatorsJointEditorGoto = operatorsJointEditorGoto;
   window.operatorsJointEditorSaveZero = operatorsJointEditorSaveZero;
   window.operatorsJointEditorSaveStart = operatorsJointEditorSaveStart;
+  window.operatorsJointEditorSaveStartLive = operatorsJointEditorSaveStartLive;
   window.operatorsJointLiveToggleRefresh = operatorsJointLiveToggleRefresh;
   window.operatorsJointSlidersInitDisplay = operatorsJointSlidersInitDisplay;
 
@@ -389,6 +555,10 @@
     if (_jointLiveRaf) {
       cancelAnimationFrame(_jointLiveRaf);
       _jointLiveRaf = 0;
+    }
+    var cb = el("opJointLiveEnabled");
+    if (cb && cb.checked) {
+      operatorsJointEndLiveSession();
     }
   };
 

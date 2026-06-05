@@ -211,6 +211,22 @@ def _depth_sysfs_hint_rows(
 
 def _robot_camera_jpeg(device: int) -> bytes | None:
     if go2_local() and cv2 is not None:
-        return CAMERA_CACHE.get_jpeg(device)
+        jpg = CAMERA_CACHE.get_jpeg(device, wait_s=2.0)
+        if jpg:
+            return jpg
+        jpg = CAMERA_CACHE.peek_jpeg(device)
+        if jpg:
+            return jpg
+        from go2_dashboard.cameras import usb_auto_v4l_mapping, v4l_open_candidates_for_logical
+
+        for v4l_idx in v4l_open_candidates_for_logical(device):
+            snap = debug_v4l_snapshot_jpeg(int(v4l_idx))
+            if snap:
+                return snap
+        auto = usb_auto_v4l_mapping()
+        if device in auto:
+            snap = debug_v4l_snapshot_jpeg(int(auto[device]))
+            if snap:
+                return snap
     return None
 

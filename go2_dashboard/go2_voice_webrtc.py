@@ -20,13 +20,27 @@ from pathlib import Path
 from go2_dashboard.paths import PROJECT_ROOT
 
 
+def kill_stale_webrtc_play_procs() -> int:
+    """Termina eventuali ``pc_go2_webrtc_play_mp3.py`` zombie (un solo slot WebRTC sul Go2)."""
+    try:
+        proc = subprocess.run(
+            ["pkill", "-f", "pc_go2_webrtc_play_mp3.py"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        return int(proc.returncode)
+    except (OSError, subprocess.TimeoutExpired):
+        return -1
+
+
 def try_play_mp3_bytes_via_webrtc_subprocess(mp3: bytes) -> bool:
     """Se ``GO2_HERMES_PLAY_ON_GO2_WEBRTC=1``, scrive MP3 temporaneo e invoca ``pc_go2_webrtc_play_mp3.py``.
 
     Env:
         GO2_WEBRTC_IP o UNITREE_ROBOT_IP — IP signaling del Go2 (non la Jetson).
         UNITREE_AES_128_KEY / GO2_WEBRTC_AES_128_KEY — obbligatorio su firmware Go2 ≥ 1.1.15 (data2=3).
-        GO2_WEBRTC_AUDIO_SUBPROCESS_TIMEOUT_S — timeout subprocess (default 240).
+        GO2_WEBRTC_AUDIO_SUBPROCESS_TIMEOUT_S — timeout subprocess (default 85).
     """
     flag = (os.environ.get("GO2_HERMES_PLAY_ON_GO2_WEBRTC") or "").strip().lower()
     if flag not in {"1", "true", "yes", "on"}:
@@ -42,11 +56,14 @@ def try_play_mp3_bytes_via_webrtc_subprocess(mp3: bytes) -> bool:
     if not script.is_file():
         return False
 
+    kill_stale_webrtc_play_procs()
+    time.sleep(0.8)
+
     try:
-        timeout_s = float((os.environ.get("GO2_WEBRTC_AUDIO_SUBPROCESS_TIMEOUT_S") or "240").strip() or "240")
+        timeout_s = float((os.environ.get("GO2_WEBRTC_AUDIO_SUBPROCESS_TIMEOUT_S") or "85").strip() or "85")
     except ValueError:
-        timeout_s = 240.0
-    timeout_s = max(30.0, min(timeout_s, 600.0))
+        timeout_s = 85.0
+    timeout_s = max(30.0, min(timeout_s, 120.0))
 
     path: Path | None = None
     try:
@@ -56,7 +73,7 @@ def try_play_mp3_bytes_via_webrtc_subprocess(mp3: bytes) -> bool:
         path.write_bytes(mp3)
         cmd = [sys.executable, str(script), "--ip", ip, "--file", str(path)]
         try:
-            retries = int((os.environ.get("GO2_WEBRTC_AUDIO_RETRIES") or "2").strip() or "2")
+            retries = int((os.environ.get("GO2_WEBRTC_AUDIO_RETRIES") or "1").strip() or "1")
         except ValueError:
             retries = 2
         retries = max(1, min(retries, 5))

@@ -23,6 +23,7 @@ import urllib.request
 from typing import Any
 
 from go2_dashboard.cameras import CAMERA_CACHE, debug_v4l_snapshot_jpeg, v4l_index_in_usb_inventory
+from go2_dashboard.d1_arm_publish_lite import START_VARIANT_LATERAL, normalize_start_variant
 from go2_dashboard.grasp_coach_memory import (
     append_grasp_coach_event,
     format_memory_for_prompt,
@@ -113,17 +114,37 @@ with `response_format: {type: json_object}` and multimodal `image_url` parts (ba
 Rules:
 - Rolling memory may include lines marked **OPERATOR_FEEDBACK**: treat them as **hard corrections** for the next moves (safety, direction, speed/grip). If **code_or_prompt_fix_request** appears, you cannot edit the codebase — acknowledge briefly and adapt your JSON advice; suggest concrete wording the operator could put in session note.
 - Put human-readable Italian line in `assistant_reply_it`.
-- Propose **small partial Cartesian moves** toward a grasp or pre-grasp point in **`base_link`** frame (same as grasp planner IK): x forward from robot, y left, z up. Typical reachable clutter on floor: x≈0.25–0.55 m, |y|<0.22 m, z≈0.00–0.35 m — stay conservative.
-- `approach_blend` ∈ (0,1]: fraction of remaining vector **from current tool tip to target** this step should cover. Prefer **0.12–0.28**; never above **0.35** unless operator explicitly demands.
+- Propose partial Cartesian moves toward a grasp or pre-grasp point in **`base_link`** frame (same as grasp planner IK): x forward from robot, y left (+) / right (−), z up. Reachable workspace is **much deeper than it looks**: x≈0.25–0.78 m, |y|≲0.20 m, z≈0.00–0.35 m. A real verified floor-grasp pose was TCP ≈ **[x=0.76, y=+0.08, z=0.01] m** (arm fully stretched forward, slight lateral offset, gripper near floor) — use this as the calibration anchor for "reach far forward, low only when far".
+- **ROBOT GEOMETRY (hard physical constraints — TOP PRIORITY):** the **robot's own head + front camera sit directly below/in-front-of the arm base**. Two ways to crash into them:
+  1. Going **DOWN (low z) while x is still small** → tool hits the dog's head.
+  2. Approaching **straight ahead with y≈0 (arm yaw J0≈0°)** → tool hits the dog's **front camera**.
+- **Two-phase + lateral-offset approach (mandatory):**
+  - **Phase 1 — REACH OUT:** while the tip is near the body (x ≲ 0.45 m), push x **strongly FORWARD** toward the object and keep z **HIGH (z ≥ ~0.20 m)**. Do **NOT** lower z yet. Each step must be a **clearly visible advance** (cover real distance), not a timid nudge.
+  - **Phase 2 — DESCEND:** only once the tip is **well forward / past the head (x ≳ 0.55 m)** may you lower z toward the object (down to ~0.01–0.05 m for a floor pick), as in the anchor pose.
+  - **LATERAL OFFSET (always):** never approach perfectly centered. Keep a small lateral offset **|y| ≳ 0.06 m** (object slightly to the LEFT or RIGHT) so the arm is angled and clears the dog's front camera. If the object looks dead-centered, bias y toward whichever side it leans in the image.
+- **NO-GO / NO-PICK ZONES — refuse the move (set `target_xyz_base_link_m` = null, `gripper_command` = "hold") and explain in `assistant_reply_it` when:**
+  - the only path to the object would require **low z with small x** (over the head), or a **centered y≈0** straight-ahead descent (over the front camera);
+  - an **obstacle / another object** sits between the gripper and the target, or the target is partially **occluded / unstable / too close to the robot body**;
+  - the object is **outside the reachable workspace** (x>0.78, |y|>0.20, or behind the robot).
+  In these cases advise the operator what to change (move the object a bit left/right, clear the obstacle, reposition the dog) instead of forcing a target.
+- **Symptom to avoid:** if previous steps kept lowering z and stayed far from the object, you are doing it wrong — switch to a bigger FORWARD x move with z kept high and a small lateral y offset.
+- **Framing:** choose the target so the requested object stays **in the camera frame** and gets **closer** every step. The arm must end up **noticeably stretched forward** (large x), not parked near the body.
+- `approach_blend` ∈ (0,1]: fraction of remaining vector **from current tool tip to target** this step covers. For Phase-1 forward reach use **0.25–0.35** (decisive advance); use smaller **0.12–0.20** only for fine descent/alignment in Phase 2. Never above **0.40**.
 - If unsure, set `target_xyz_base_link_m` null and only advise; explain in `assistant_reply_it`.
 - `gripper_command`: **hold** | **open** | **close** — close only when aligned and safe.
 - `memory_summary_line`: one English sentence to remember for next turns (what worked / constraint).
 - `pose_label_to_save`: optional short label if this pose should be recorded after a successful move (e.g. `pre_grasp_box_A`).
 
+- **OBJECT GROUNDING (required for visual feedback):** report whether the requested object is visible and WHERE in the RGB frame.
+  - `object_visible`: true/false. If you cannot clearly see the requested object, set `object_visible=false`, `target_xyz_base_link_m=null`, `gripper_command="hold"` and tell the operator in `assistant_reply_it` what to do (rotate dog, move object, etc.). **Never pretend to grasp an object you cannot see.**
+  - `object_pixel_norm`: [u, v] normalized in **0..1** (u=0 left, 1 right; v=0 top, 1 bottom) = center of the requested object in the RGB image; null if not visible. This is overlaid on the operator's screen so they can confirm you found the right object.
+
 JSON keys (all required):
 {
   "assistant_reply_it": "string",
   "memory_summary_line": "string",
+  "object_visible": true|false,
+  "object_pixel_norm": null | [number, number],
   "target_xyz_base_link_m": null | [number, number, number],
   "approach_blend": number,
   "gripper_command": "hold"|"open"|"close",
@@ -133,6 +154,44 @@ JSON keys (all required):
 }
 """
 
+_COACH_SYSTEM_LATERAL = """You are **GraspCoach** for a Unitree Go2 + **D1 arm** in **SIDE / LATERAL START** mode.
+
+The dog has already turned ~90° and the arm is in a **lateral START pose** (J0 ~90°). The **wrist camera (logical 0)**
+looks at the object from the side. There is **ample clearance** — the dog's head is **not** in the grasp path.
+
+**LATERAL MODE rules (override frontal constraints):**
+- **NO NO-GO zones** for head/camera/frontal cone — approach the object **directly** along the metric depth target.
+- **No mandatory lateral y-offset** — centered approaches are OK when the wrist sees the object.
+- Prefer targets from **metric Orbbec depth** when provided in context; move the tool tip toward the object in **base_link**
+  (x forward, y left+, z up). Reachable: x≈0.15–0.80 m, |y|≲0.35 m, z≈0.00–0.40 m in this pose.
+- `approach_blend` ∈ (0,1]: fraction toward target. Use **0.20–0.35** for visible advances; smaller for fine alignment.
+- `gripper_command`: **hold** | **open** | **close** — close only when aligned.
+- If unsure, set `target_xyz_base_link_m` null and advise in `assistant_reply_it`.
+
+**OBJECT GROUNDING:** `object_visible` true/false; `object_pixel_norm` [u,v] in 0..1 or null.
+
+JSON keys (all required): same schema as frontal mode (`assistant_reply_it`, `memory_summary_line`, `object_visible`,
+`object_pixel_norm`, `target_xyz_base_link_m`, `approach_blend`, `gripper_command`, `confidence_0_1`,
+`pose_label_to_save`, `rationale_en`).
+"""
+
+
+def _lateral_grasp_mode(body: dict[str, Any] | None = None) -> bool:
+    """True in presa laterale: niente NO-GO testa/camera né vincoli di offset angolato frontale."""
+    if body and normalize_start_variant(body.get("start_variant")) == START_VARIANT_LATERAL:
+        return True
+    return os.environ.get("GO2_GRASP_LATERAL_MODE", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _nogo_guard_enabled(*, lateral: bool) -> bool:
+    if lateral:
+        return False
+    return os.environ.get("GO2_GRASP_COACH_NOGO_GUARD", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _coach_system_prompt(*, lateral: bool) -> str:
+    return _COACH_SYSTEM_LATERAL.strip() if lateral else _COACH_SYSTEM.strip()
+
 
 def _openai_coach_call(
     *,
@@ -140,6 +199,7 @@ def _openai_coach_call(
     rgb_jpeg: bytes,
     depth_jpeg: bytes | None,
     rgb_label: str,
+    system_prompt: str | None = None,
 ) -> tuple[dict[str, Any], float]:
     key = openai_api_key()
     if not key:
@@ -158,7 +218,7 @@ def _openai_coach_call(
         parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{d_b64}", "detail": "low"}})
 
     messages = [
-        {"role": "system", "content": _COACH_SYSTEM.strip()},
+        {"role": "system", "content": (system_prompt or _COACH_SYSTEM).strip()},
         {"role": "user", "content": parts},
     ]
     try:
@@ -167,13 +227,32 @@ def _openai_coach_call(
         max_tok = 420
     max_tok = max(180, min(max_tok, 1200))
 
-    payload = {
-        "model": grasp_coach_model(),
-        "temperature": 0.08,
-        "max_tokens": max_tok,
+    model = grasp_coach_model()
+    ml = model.lower()
+    # gpt-5* e o-series (o1/o3/o4) usano max_completion_tokens e accettano solo temperature di default (=1):
+    # mandare temperature!=1 o max_tokens fa tornare 400 Bad Request.
+    new_style = (
+        ml.startswith("gpt-5")
+        or ml.startswith("o1")
+        or ml.startswith("o3")
+        or ml.startswith("o4")
+    )
+    payload: dict[str, Any] = {
+        "model": model,
         "response_format": {"type": "json_object"},
         "messages": messages,
     }
+    if new_style:
+        # i reasoning model consumano token di reasoning: lascia margine per il contenuto JSON.
+        payload["max_completion_tokens"] = max(max_tok, 768)
+        if ml.startswith("gpt-5"):
+            # mantiene il loop ~1 Hz ed evita risposte vuote (tutto budget speso in reasoning).
+            payload["reasoning_effort"] = (
+                os.environ.get("GO2_GRASP_COACH_REASONING_EFFORT") or "minimal"
+            ).strip() or "minimal"
+    else:
+        payload["temperature"] = 0.08
+        payload["max_tokens"] = max_tok
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -187,8 +266,24 @@ def _openai_coach_call(
     )
     ctx = ssl.create_default_context()
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
-        raw_r = resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
+            raw_r = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as he:
+        try:
+            body = he.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        # estrai il messaggio OpenAI (error.message) se presente, altrimenti corpo grezzo.
+        msg_txt = body
+        try:
+            j = json.loads(body)
+            err = j.get("error") if isinstance(j, dict) else None
+            if isinstance(err, dict) and err.get("message"):
+                msg_txt = str(err.get("message"))
+        except Exception:
+            pass
+        raise RuntimeError(f"openai_http_{he.code}: {msg_txt[:500]}") from he
     latency_ms = (time.perf_counter() - t0) * 1000.0
     outer = json.loads(raw_r)
     choices = outer.get("choices")
@@ -227,6 +322,73 @@ def _sanitize_xyz(raw: Any) -> list[float] | None:
     if abs(x) > 1.2 or abs(y) > 0.9 or abs(z) > 1.1:
         return None
     return [x, y, z]
+
+
+def _nogo_zone_reason(xyz: list[float]) -> str | None:
+    """NO-GO / NO-PICK guard (sicurezza dura): rifiuta target che colpirebbero testa/camera del cane.
+
+    Per scendere in basso (z piccolo) il braccio DEVE essere ben steso in avanti (x grande) e con
+    un offset laterale (|y| non centrato), altrimenti la punta sbatte sulla testa / camera frontale
+    del Go2. Soglie regolabili via env. Vedi posa di presa reale TCP≈[0.76, 0.08, 0.01].
+    """
+    x, y, z = xyz[0], xyz[1], xyz[2]
+
+    def _f(name: str, default: float) -> float:
+        try:
+            return float(os.environ.get(name, str(default)) or default)
+        except (TypeError, ValueError):
+            return default
+
+    z_min = _f("GO2_GRASP_COACH_NOGO_Z_MIN", 0.18)
+    x_min = _f("GO2_GRASP_COACH_NOGO_X_MIN", 0.55)
+    cone_deg = _f("GO2_GRASP_COACH_NOGO_CONE_DEG", 10.0)
+    x_max = _f("GO2_GRASP_COACH_REACH_X_MAX", 0.80)
+    y_max = _f("GO2_GRASP_COACH_REACH_Y_MAX", 0.22)
+
+    if x > x_max or abs(y) > y_max or x < 0.10:
+        return f"target fuori workspace (x={x:.2f}, y={y:.2f}); reach x≤{x_max:.2f}, |y|≤{y_max:.2f}"
+    if z < z_min and x < x_min:
+        return (
+            f"NO-GO testa: z basso ({z:.2f}<{z_min:.2f}) con x piccolo ({x:.2f}<{x_min:.2f}) → "
+            "il braccio sbatterebbe sulla testa del cane; estendi in avanti (x maggiore) prima di scendere"
+        )
+    # Cono centrale: scendere (z basso) entro ±cone_deg dall'asse frontale colpisce la testa/camera.
+    yaw_deg = abs(math.degrees(math.atan2(y, max(x, 1e-6))))
+    if z < z_min and yaw_deg < cone_deg:
+        return (
+            f"NO-GO cono centrale: discesa entro ±{cone_deg:.0f}° dall'asse frontale (yaw={yaw_deg:.1f}°) con z basso → "
+            "sposta il target un po' a destra o a sinistra (fuori dal cono centrale) per evitare testa/camera del cane"
+        )
+    return None
+
+
+def _coach_target_from_metric_plan(
+    mp: dict[str, Any],
+    cur_tip: list[float] | None,
+    *,
+    lateral: bool = False,
+) -> tuple[list[float] | None, str | None]:
+    """Waypoint per il coach: stadio IK sicuro (pre_grasp/approach), non la presa finale a z basso.
+
+    Ritorna ``(target_xyz_base_link_m, stage_name)``: lo stadio selezionato serve all'auto-close
+    (chiudere solo quando il target scelto e' lo stadio ``grasp``).
+    """
+    preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
+    plan = preview.get("plan") if isinstance(preview.get("plan"), list) else []
+    for prefer in ("pre_grasp", "approach", "grasp", "lift"):
+        for st in plan:
+            if not isinstance(st, dict) or st.get("stage") != prefer or not st.get("ik_ok"):
+                continue
+            s_tgt = st.get("target_xyz_m")
+            if not isinstance(s_tgt, (list, tuple)) or len(s_tgt) < 3:
+                continue
+            xyz = [float(s_tgt[i]) for i in range(3)]
+            if not lateral and _nogo_zone_reason(xyz) is not None:
+                continue
+            if not lateral and cur_tip is not None and xyz[0] < cur_tip[0] - 0.02:
+                continue
+            return _sanitize_xyz(xyz), prefer
+    return _sanitize_xyz(mp.get("grasp_display_base_link_m")), "grasp"
 
 
 def grasp_coach_feedback(body: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +448,10 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
     if not instruction:
         out["reason"] = "missing_instruction"
         return out
+
+    lateral = _lateral_grasp_mode(body)
+    out["start_variant"] = normalize_start_variant(body.get("start_variant"))
+    out["lateral_grasp_mode"] = lateral
 
     try:
         logical_rgb = int(body.get("logical_camera_rgb", body.get("logical_camera", 0)))
@@ -370,6 +536,18 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
         else "Robot head camera (logical 6)"
     )
 
+    # Posizione CORRENTE della punta utensile (FK) in base_link: senza questo il modello propone
+    # target alla cieca e fa RITRARRE il braccio (es. braccio a x≈0.71, target proposto x≈0.4).
+    cur_tip: list[float] | None = None
+    if go2_local():
+        try:
+            from go2_dashboard.d1_arm_publish_lite import current_tool_tip_base_link_m
+
+            cur_tip, _tip_diag = current_tool_tip_base_link_m()
+        except Exception:
+            cur_tip = None
+    out["tool_tip_base_link_m_now"] = cur_tip
+
     ctx_block = (
         "--- Rolling memory (recent grasp-coach steps) ---\n"
         + mem_txt
@@ -378,11 +556,37 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
     if session_note:
         ctx_block += f"\nOperator session note (persistent intent):\n{session_note}\n"
 
+    if cur_tip is not None:
+        if lateral:
+            state_block = (
+                f"\n--- ARM STATE NOW (base_link, meters) — LATERAL START ---\n"
+                f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
+                "WRIST camera (logical 0). Side approach: move directly toward the metric target / object in frame. "
+                "NO head/camera NO-GO zones in this mode.\n"
+                "--- End arm state ---\n"
+            )
+        else:
+            state_block = (
+                f"\n--- ARM STATE NOW (base_link, meters) ---\n"
+                f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
+                "The RGB image is from the WRIST camera mounted near the gripper, so it shows roughly what the tool tip is pointing at.\n"
+                "To REACH the object you must move the tip TOWARD it. If the object is not yet grasped, your target x is almost always "
+                "**>= current x** (extend further forward) — do NOT propose an x smaller than current x (that retracts the arm away from the object). "
+                "Move toward where the object appears in the frame: object on the right of the frame → decrease y; on the left → increase y; "
+                "lower in the frame / closer → only lower z once x is already large (past the head).\n"
+                "--- End arm state ---\n"
+            )
+    else:
+        state_block = (
+            "\n--- ARM STATE NOW ---\ncurrent_tool_tip unavailable this step; be conservative.\n--- End arm state ---\n"
+        )
+
     user_blob = (
         ctx_block
+        + state_block
         + "\nOperator instruction (this step):\n"
         + instruction
-        + f"\n\nLoop meta: step_index={step_idx}, depth_policy={policy}, depth_attached={bool(depth_small)}.\n"
+        + f"\n\nLoop meta: step_index={step_idx}, depth_policy={policy}, depth_attached={bool(depth_small)}, lateral_mode={lateral}.\n"
         "Respond with JSON only — propose cautious partial motion if appropriate."
     )
 
@@ -390,6 +594,7 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
         llm, openai_ms = _openai_coach_call(
             user_text=user_blob,
             rgb_jpeg=rgb_small,
+            system_prompt=_coach_system_prompt(lateral=lateral),
             depth_jpeg=depth_small,
             rgb_label=rgb_label,
         )
@@ -414,6 +619,18 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
     out["coach_json"] = llm
     out["assistant_reply_it"] = str(llm.get("assistant_reply_it") or "").strip()
     out["memory_summary_line"] = str(llm.get("memory_summary_line") or "").strip()
+    object_visible = bool(llm.get("object_visible", True))
+    object_pixel = None
+    _opx = llm.get("object_pixel_norm")
+    if isinstance(_opx, (list, tuple)) and len(_opx) >= 2:
+        try:
+            u, v = float(_opx[0]), float(_opx[1])
+            if math.isfinite(u) and math.isfinite(v):
+                object_pixel = [max(0.0, min(1.0, u)), max(0.0, min(1.0, v))]
+        except (TypeError, ValueError):
+            object_pixel = None
+    out["object_visible"] = object_visible
+    out["object_pixel_norm"] = object_pixel
     out["ok"] = True
     out["step_index"] = step_idx
     out["depth_policy"] = policy
@@ -422,6 +639,12 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
         "rgb_jpeg_bytes": len(rgb_small),
         "depth_jpeg_bytes": len(depth_small) if depth_small else 0,
     }
+    # Anteprima RGB (lo stesso frame analizzato) per overlay UI del marker oggetto.
+    if os.environ.get("GO2_GRASP_COACH_RETURN_PREVIEW", "1").lower() in {"1", "true", "yes", "on"}:
+        try:
+            out["rgb_preview_b64"] = base64.b64encode(rgb_small).decode("ascii")
+        except Exception:
+            out["rgb_preview_b64"] = None
     out["timings_ms"] = timings_ms
     try:
         timings_ms["pre_openai_total_ms"] = float(timings_ms.get("compress_rgb", 0)) + float(
@@ -432,26 +655,191 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
 
     tgt = _sanitize_xyz(llm.get("target_xyz_base_link_m"))
     blend = _clamp_blend(llm.get("approach_blend"))
+    blend_source = "model"
+    # Slider operatore: sovrascrive il blend del modello con un tetto più alto (passi più decisi se richiesto).
+    op_blend_raw = body.get("approach_blend_override", body.get("operator_blend"))
+    if op_blend_raw is not None:
+        try:
+            ob = float(op_blend_raw)
+        except (TypeError, ValueError):
+            ob = 0.0
+        if ob > 0:
+            try:
+                op_mx = float(os.environ.get("GO2_GRASP_COACH_OPERATOR_MAX_BLEND", "0.6") or "0.6")
+            except ValueError:
+                op_mx = 0.6
+            op_mx = max(0.1, min(op_mx, 0.9))
+            blend = max(0.04, min(op_mx, ob))
+            blend_source = "operator"
     grip = str(llm.get("gripper_command") or "hold").strip().lower()
     if grip not in {"hold", "open", "close"}:
         grip = "hold"
 
+    # GROUNDING METRICO: se la camera Orbbec del polso vede l'oggetto, le coordinate del target
+    # vengono dalla DEPTH REALE (pinhole + FK → base_link), non più indovinate dall'LLM. Stesso
+    # frame di goto_tool_target_base_link_m. Disattivabile con GO2_GRASP_COACH_METRIC_GROUNDING=0.
+    target_source = "model"
+    metric_info: dict[str, Any] | None = None
+    metric_coach_stage: str | None = None
+    metric_grasp_final: Any = None
+    metric_gripper_plan: Any = None
+    metric_on = os.environ.get("GO2_GRASP_COACH_METRIC_GROUNDING", "1").lower() in {"1", "true", "yes", "on"}
+    if metric_on and go2_local():
+        try:
+            from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
+            from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
+
+            servo_now, _sdiag = read_servo_deg_with_diag(PROJECT_ROOT)
+            if servo_now is not None and len(servo_now) >= 6:
+                mp = plan_wrist_grasp_metric([float(x) for x in servo_now[:7]], instruction=instruction)
+                det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
+                # Check collisione col cane su OGNI stadio della traiettoria IK pianificata.
+                stages_dbg: list[dict[str, Any]] = []
+                preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
+                for st in (preview.get("plan") or []):
+                    if not isinstance(st, dict):
+                        continue
+                    s_tgt = st.get("target_xyz_m")
+                    s_nogo = (
+                        None
+                        if lateral
+                        else (
+                            _nogo_zone_reason([float(v) for v in s_tgt])
+                            if isinstance(s_tgt, (list, tuple)) and len(s_tgt) >= 3
+                            else None
+                        )
+                    )
+                    stages_dbg.append({
+                        "stage": st.get("stage"),
+                        "target_xyz_m": s_tgt,
+                        "ik_ok": bool(st.get("ik_ok")),
+                        "collision_dog": s_nogo,
+                        "safe": bool(st.get("ik_ok") and s_nogo is None),
+                    })
+                metric_info = {
+                    "ok": bool(mp.get("ok")),
+                    "reason": mp.get("reason"),
+                    "grasp_display_base_link_m": mp.get("grasp_display_base_link_m"),
+                    "label": det.get("label"),
+                    "confidence": det.get("confidence"),
+                    "backend": det.get("backend"),
+                    "bbox_xyxy": det.get("bbox_xyxy"),
+                    "bbox_center_px": det.get("bbox_center_px"),
+                    # Asse di presa = asse REALE del pezzo (minAreaRect) se disponibile,
+                    # altrimenti il fallback orizzontale est-ovest.
+                    "grip_axis_px": det.get("orient_axis_px") or det.get("grip_axis_px"),
+                    "orientation_deg": det.get("orientation_deg"),
+                    "frame_size_px": det.get("frame_size_px"),
+                    "depth_m": mp.get("depth_m"),
+                    "reach_m": mp.get("reach_m"),
+                    "reachable": mp.get("reachable"),
+                    "ik_stages": stages_dbg,
+                }
+                snap = mp.get("debug_snapshot") if isinstance(mp.get("debug_snapshot"), dict) else {}
+                if snap.get("image_url"):
+                    metric_info["viz_image_url"] = str(snap["image_url"])
+                if mp.get("ok"):
+                    mtgt, mstage = _coach_target_from_metric_plan(mp, cur_tip, lateral=lateral)
+                    if mtgt is not None:
+                        tgt = mtgt
+                        metric_coach_stage = mstage
+                        metric_grasp_final = mp.get("grasp_display_base_link_m")
+                        metric_gripper_plan = (
+                            mp.get("preview", {}).get("gripper")
+                            if isinstance(mp.get("preview"), dict)
+                            else None
+                        )
+                        metric_info["coach_target_base_link_m"] = mtgt
+                        metric_info["coach_stage"] = mstage
+                        metric_info["grasp_final_base_link_m"] = metric_grasp_final
+                        target_source = "metric_orbbec"
+                        object_visible = True
+                        # pixel oggetto dalla detection metrica (più affidabile del guess LLM)
+                        ctr = det.get("bbox_center_px")
+                        fsz = det.get("frame_size_px")
+                        if (
+                            isinstance(ctr, (list, tuple))
+                            and len(ctr) >= 2
+                            and isinstance(fsz, (list, tuple))
+                            and len(fsz) >= 2
+                            and float(fsz[0]) > 0
+                            and float(fsz[1]) > 0
+                        ):
+                            object_pixel = [
+                                max(0.0, min(1.0, float(ctr[0]) / float(fsz[0]))),
+                                max(0.0, min(1.0, float(ctr[1]) / float(fsz[1]))),
+                            ]
+                            out["object_pixel_norm"] = object_pixel
+        except Exception as exc:
+            metric_info = {"ok": False, "reason": "metric_grounding_error", "detail": repr(exc)}
+    out["target_source"] = target_source
+    out["metric_grounding"] = metric_info
+    if metric_info and metric_info.get("viz_image_url"):
+        out["metric_viz_url"] = metric_info["viz_image_url"]
+
+    # NO-GO / NO-PICK guard lato server (disattivato in modalità laterale).
+    nogo_reason: str | None = None
+    guard_on = _nogo_guard_enabled(lateral=lateral)
+    metric_ok = bool(metric_info and metric_info.get("ok"))
+    if guard_on and not object_visible and not metric_ok:
+        nogo_reason = "oggetto non visibile nel frame: nessun movimento (ruota il cane o riposiziona l'oggetto)"
+        tgt = None
+        grip = "hold"
+    # Target da depth metrica: NO-GO già valutato sugli stadi IK; non bloccare la presa finale a z basso.
+    if tgt is not None and guard_on and target_source != "metric_orbbec":
+        nogo_reason = _nogo_zone_reason(tgt)
+        # Anti-ritrazione: durante l'avvicinamento (non chiusura) non lasciare che il braccio
+        # torni indietro (target x molto minore della punta attuale) — è il bug che faceva
+        # ritrarre il braccio già steso a x≈0.71 verso target ciechi x≈0.4. NON si applica al
+        # target metrico (depth reale): se l'oggetto è davvero più vicino, avvicinarsi è corretto.
+        if nogo_reason is None and cur_tip is not None and grip != "close" and target_source != "metric_orbbec":
+            try:
+                back_margin = float(os.environ.get("GO2_GRASP_COACH_NO_RETRACT_MARGIN_M", "0.04") or "0.04")
+            except ValueError:
+                back_margin = 0.04
+            if tgt[0] < cur_tip[0] - back_margin:
+                nogo_reason = (
+                    f"anti-ritrazione: target x={tgt[0]:.2f} < punta attuale x={cur_tip[0]:.2f} → "
+                    "il braccio si ritrarrebbe invece di allungarsi verso l'oggetto; estendi in avanti"
+                )
+        if nogo_reason is not None:
+            grip = "hold"
+
     out["interpreted"] = {
         "target_xyz_base_link_m": tgt,
         "approach_blend": blend,
+        "approach_blend_source": blend_source,
         "gripper_command": grip,
+        "nogo_zone": nogo_reason,
+        "nogo_blocked": bool(nogo_reason is not None),
+        "object_visible": object_visible,
+        "object_pixel_norm": object_pixel,
+        "tool_tip_base_link_m_now": cur_tip,
+        "target_source": target_source,
     }
+    if nogo_reason is not None:
+        out["assistant_reply_it"] = (
+            "[NO-GO] " + str(out.get("assistant_reply_it") or "") + f" — Mossa bloccata: {nogo_reason}."
+        )
 
     motion: dict[str, Any] | None = None
     grip_out: dict[str, Any] | None = None
 
-    if execute and go2_local() and tgt is not None:
+    if execute and go2_local() and tgt is not None and nogo_reason is None:
+        from go2_dashboard import d1_arm_motion
         from go2_dashboard.d1_arm_publish_lite import (
             current_tool_tip_base_link_m,
             goto_tool_target_base_link_m_partial,
             publish_move_one_joint_deg,
         )
         from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
+
+        # Stesso stack del tab «Braccio D1 · giunti»: sessione live + daemon DDS persistente (no cedimento).
+        sess = d1_arm_motion.ensure_grasp_motion_worker()
+        out["arm_motion_worker"] = sess
+        if not (sess.get("ok") or sess.get("skipped")):
+            out["motion"] = {"ok": False, "reason": "arm_session_failed", "motion_worker": sess}
+            return out
 
         try:
             delay_ms = int((os.environ.get("GO2_GRASP_COACH_DELAY_MS") or "620").strip() or "620")
@@ -485,12 +873,77 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
 
         angles_after, _diag_a = read_servo_deg_with_diag(PROJECT_ROOT)
         tip_after, _ = current_tool_tip_base_link_m()
+        # Verifica cinematica: il TCP è davvero arrivato al waypoint comandato? (punto 1 operatore)
+        wp = motion.get("waypoint_base_link_m")
+        if isinstance(wp, (list, tuple)) and len(wp) >= 3 and isinstance(tip_after, (list, tuple)) and len(tip_after) >= 3:
+            try:
+                err_vec = [float(tip_after[i]) - float(wp[i]) for i in range(3)]
+                err_norm = math.sqrt(sum(e * e for e in err_vec))
+                motion["tcp_reach_error_m"] = round(err_norm, 4)
+                motion["tcp_reach_error_vec_m"] = [round(e, 4) for e in err_vec]
+                motion["tcp_reach_ok"] = bool(err_norm <= float(os.environ.get("GO2_GRASP_COACH_TCP_TOL_M", "0.03") or "0.03"))
+            except (TypeError, ValueError):
+                pass
+
+        # AUTO-CLOSE DAL PIANO METRICO: chiudere quando il TCP ha raggiunto lo stadio ``grasp``
+        # del piano Orbbec, indipendentemente dal suggerimento dell'LLM (solo modalità laterale).
+        auto_close = False
+        auto_close_hold_s = 0.6
+        if (
+            os.environ.get("GO2_GRASP_COACH_AUTOCLOSE_FROM_PLAN", "1").lower() in {"1", "true", "yes", "on"}
+            and target_source == "metric_orbbec"
+            and lateral
+            and motion.get("ok")
+            and motion.get("tcp_reach_ok") is not False
+        ):
+            try:
+                close_dist = float(os.environ.get("GO2_GRASP_COACH_AUTOCLOSE_DIST_M", "0.04") or "0.04")
+            except ValueError:
+                close_dist = 0.04
+            near_grasp = False
+            if (
+                isinstance(metric_grasp_final, (list, tuple))
+                and len(metric_grasp_final) >= 3
+                and isinstance(tip_after, (list, tuple))
+                and len(tip_after) >= 3
+            ):
+                try:
+                    d = math.sqrt(
+                        sum((float(tip_after[i]) - float(metric_grasp_final[i])) ** 2 for i in range(3))
+                    )
+                    motion["dist_to_grasp_final_m"] = round(d, 4)
+                    near_grasp = d <= close_dist
+                except (TypeError, ValueError):
+                    pass
+            if metric_coach_stage == "grasp" or near_grasp:
+                auto_close = True
+                if isinstance(metric_gripper_plan, list):
+                    for g in metric_gripper_plan:
+                        if isinstance(g, dict) and g.get("stage") == "grasp":
+                            try:
+                                auto_close_hold_s = float(g.get("hold_s") or 0.6)
+                            except (TypeError, ValueError):
+                                auto_close_hold_s = 0.6
+                            break
+        if auto_close and grip != "close":
+            grip = "close"
+            out["gripper_command_source"] = "metric_plan_autoclose"
+            out["interpreted"]["gripper_command"] = "close"
+            out["gripper_command"] = "close"
+
         if motion.get("ok") and grip == "close":
             try:
                 ang = float((os.environ.get("GO2_GRASP_COACH_GRIPPER_CLOSE_DEG") or "-14").strip())
             except ValueError:
                 ang = -14.0
             grip_out = publish_move_one_joint_deg(6, ang)
+            if grip_out is not None and grip_out.get("ok"):
+                from go2_dashboard.grasp_close_verify import verify_gripper_grasp
+
+                verify = verify_gripper_grasp(ang, hold_s=auto_close_hold_s)
+                out["grasp_verify"] = verify
+                if metric_info is not None:
+                    metric_info["grasp_verify"] = verify
         elif motion.get("ok") and grip == "open":
             try:
                 ang = float((os.environ.get("GO2_GRASP_COACH_GRIPPER_OPEN_DEG") or "22").strip())
@@ -512,6 +965,8 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
                 "target_xyz_base_link_m": tgt,
                 "approach_blend": blend,
                 "gripper_command": grip,
+                "gripper_command_source": out.get("gripper_command_source"),
+                "grasp_verify": out.get("grasp_verify"),
                 "tool_tip_base_link_m_before": tip_before,
                 "tool_tip_base_link_m_after": tip_after,
                 "servo_deg_7_after": angles_after,
@@ -543,3 +998,125 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
                 "openai_http_ms": timings_ms.get("openai_http_ms"),
             }
         )
+
+    return out
+
+
+def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | None = None) -> dict[str, Any]:
+    """Anteprima presa dalla posa servo attuale (Orbbec metrico) — senza OpenAI e senza movimento.
+
+    Usata dal tab Teaching per mostrare bbox, asse di presa e traiettoria IK prima di eseguire.
+    """
+    lateral = normalize_start_variant(start_variant) == START_VARIANT_LATERAL or _lateral_grasp_mode(
+        {"start_variant": start_variant}
+    )
+    out: dict[str, Any] = {
+        "ok": False,
+        "preview_only": True,
+        "instruction": instruction,
+        "object_visible": False,
+        "interpreted": {},
+        "start_variant": normalize_start_variant(start_variant),
+        "lateral_grasp_mode": lateral,
+    }
+    if not go2_local():
+        out["reason"] = "not_go2_local"
+        return out
+    try:
+        from go2_dashboard.d1_arm_publish_lite import current_tool_tip_base_link_m
+        from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
+        from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
+
+        cur_tip, _ = current_tool_tip_base_link_m()
+        servo_now, _sdiag = read_servo_deg_with_diag(PROJECT_ROOT)
+        if servo_now is None or len(servo_now) < 6:
+            out["reason"] = "no_servo_feedback"
+            return out
+        mp = plan_wrist_grasp_metric([float(x) for x in servo_now[:7]], instruction=instruction)
+        det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
+        stages_dbg: list[dict[str, Any]] = []
+        preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
+        for st in (preview.get("plan") or []):
+            if not isinstance(st, dict):
+                continue
+            s_tgt = st.get("target_xyz_m")
+            s_nogo = (
+                None
+                if lateral
+                else (
+                    _nogo_zone_reason([float(v) for v in s_tgt])
+                    if isinstance(s_tgt, (list, tuple)) and len(s_tgt) >= 3
+                    else None
+                )
+            )
+            stages_dbg.append({
+                "stage": st.get("stage"),
+                "target_xyz_m": s_tgt,
+                "ik_ok": bool(st.get("ik_ok")),
+                "collision_dog": s_nogo,
+                "safe": bool(st.get("ik_ok") and s_nogo is None),
+            })
+        metric_info: dict[str, Any] = {
+            "ok": bool(mp.get("ok")),
+            "reason": mp.get("reason"),
+            "grasp_display_base_link_m": mp.get("grasp_display_base_link_m"),
+            "label": det.get("label"),
+            "confidence": det.get("confidence"),
+            "backend": det.get("backend"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "bbox_center_px": det.get("bbox_center_px"),
+            # Asse di presa = asse REALE del pezzo (minAreaRect) se disponibile.
+            "grip_axis_px": det.get("orient_axis_px") or det.get("grip_axis_px"),
+            "orientation_deg": det.get("orientation_deg"),
+            "frame_size_px": det.get("frame_size_px"),
+            "depth_m": mp.get("depth_m"),
+            "reach_m": mp.get("reach_m"),
+            "reachable": mp.get("reachable"),
+            "ik_stages": stages_dbg,
+        }
+        snap = mp.get("debug_snapshot") if isinstance(mp.get("debug_snapshot"), dict) else {}
+        if snap.get("image_url"):
+            metric_info["viz_image_url"] = str(snap["image_url"])
+        coach_tgt = None
+        if mp.get("ok"):
+            coach_tgt, _coach_stage = _coach_target_from_metric_plan(mp, cur_tip, lateral=lateral)
+        object_pixel = None
+        ctr = det.get("bbox_center_px")
+        fsz = det.get("frame_size_px")
+        if (
+            isinstance(ctr, (list, tuple))
+            and len(ctr) >= 2
+            and isinstance(fsz, (list, tuple))
+            and len(fsz) >= 2
+            and float(fsz[0]) > 0
+            and float(fsz[1]) > 0
+        ):
+            object_pixel = [
+                max(0.0, min(1.0, float(ctr[0]) / float(fsz[0]))),
+                max(0.0, min(1.0, float(ctr[1]) / float(fsz[1]))),
+            ]
+        out["ok"] = bool(mp.get("ok"))
+        out["reason"] = mp.get("reason") if not mp.get("ok") else ""
+        out["object_visible"] = bool(mp.get("ok"))
+        out["object_pixel_norm"] = object_pixel
+        out["metric_grounding"] = metric_info
+        out["target_source"] = "metric_orbbec" if mp.get("ok") else None
+        if metric_info.get("viz_image_url"):
+            out["metric_viz_url"] = metric_info["viz_image_url"]
+        out["interpreted"] = {
+            "target_xyz_base_link_m": coach_tgt,
+            "object_visible": out["object_visible"],
+            "object_pixel_norm": object_pixel,
+            "tool_tip_base_link_m_now": cur_tip,
+            "target_source": out["target_source"],
+            "nogo_blocked": False,
+        }
+        out["label_it"] = (
+            "Anteprima OK: oggetto visto dal polso, traiettoria IK calcolata."
+            if mp.get("ok")
+            else f"Anteprima: nessun oggetto metrico ({mp.get('reason') or 'unknown'})."
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = "preview_error"
+        out["detail"] = repr(exc)
+    return out

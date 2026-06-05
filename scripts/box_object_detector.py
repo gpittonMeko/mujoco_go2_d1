@@ -104,13 +104,23 @@ def detector_status() -> dict[str, Any]:
     model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
     p = Path(model_path).expanduser() if model_path else None
     meta = _model_metadata(str(p) if p else None)
+    backend = _pick_detect_backend()
+    color_only = _color_only_pick_detect()
     return {
         "ok": True,
-        "backend_preference": "tensorrt/onnx/ultralytics",
+        "pick_detect_backend": backend,
+        "color_only": color_only,
+        "backend_preference": "color_blue_box" if color_only or backend.startswith("color") else "tensorrt/onnx/ultralytics",
         "model_path": str(p) if p else None,
         "model_exists": bool(p and p.is_file()),
         "classic_fallback_enabled": os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower()
         in {"1", "true", "yes"},
+        "color_hsv": {
+            "h_min": _parse_int_env("D1_COLOR_BOX_H_MIN", 95),
+            "h_max": _parse_int_env("D1_COLOR_BOX_H_MAX", 130),
+            "s_min": _parse_int_env("D1_COLOR_BOX_S_MIN", 45),
+            "v_min": _parse_int_env("D1_COLOR_BOX_V_MIN", 35),
+        },
         "recommended_models": ["YOLO-World small TensorRT FP16", "YOLO11n TensorRT FP16"],
         **meta,
     }
@@ -145,7 +155,7 @@ def _detect_ultralytics(frame: np.ndarray, model_path: str) -> dict[str, Any]:
             cls_i = int(b.cls[0]) if getattr(b, "cls", None) is not None else -1
             label = str(names.get(cls_i, cls_i))
             boxes.append({"bbox_xyxy": xyxy, "confidence": round(conf, 4), "class_id": cls_i, "label": label})
-    return _select_detection(boxes, frame.shape[:2], "ultralytics", time.perf_counter() - t0)
+    return _select_detection(boxes, frame, "ultralytics", time.perf_counter() - t0)
 
 
 def _classic_box_proposal(frame: np.ndarray) -> dict[str, Any]:
@@ -179,16 +189,290 @@ def _classic_box_proposal(frame: np.ndarray) -> dict[str, Any]:
                 "label": "box_proposal",
             }
         )
-    return _select_detection(boxes, frame.shape[:2], "classic_contour_fallback", time.perf_counter() - t0)
+    return _select_detection(boxes, frame, "classic_contour_fallback", time.perf_counter() - t0)
+
+
+def _pick_detect_backend() -> str:
+    return (os.environ.get("D1_PICK_DETECT_BACKEND") or "color").strip().lower()
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _normalize_angle_deg(angle: float) -> float:
+    """Porta l'angolo in [-90, 90] (asse lungo del pezzo)."""
+    a = float(angle)
+    while a <= -90.0:
+        a += 180.0
+    while a > 90.0:
+        a -= 180.0
+    return round(a, 2)
+
+
+def _angle_from_min_area_rect(rw: float, rh: float, angle: float) -> float:
+    """Angolo asse lungo da cv2.minAreaRect (stessa convenzione OpenCV)."""
+    if rw < 1.0 or rh < 1.0:
+        return 0.0
+    a = float(angle)
+    if rw < rh:
+        a += 90.0
+    return _normalize_angle_deg(a)
+
+
+def _orient_axis_from_center(cx: float, cy: float, orient_deg: float, length: float) -> list[list[float]]:
+    import math
+
+    rad = math.radians(orient_deg)
+    return [
+        [round(cx, 1), round(cy, 1)],
+        [round(cx + length * math.cos(rad), 1), round(cy + length * math.sin(rad), 1)],
+    ]
+
+
+def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
+    """Azzera le fasce alta/bassa della maschera per escludere zone non-oggetto.
+
+    Sul polso (Orbbec) la **fascia bassa** dell'inquadratura e' occupata dal corpo del
+    cane: senza questo crop il detector lo prende come blob "blu" grande e lo preferisce
+    alla scatola. Tunable:
+      * ``D1_PICK_BOTTOM_CROP_FRAC`` (default 0.22) — frazione bassa azzerata (corpo cane);
+      * ``D1_PICK_TOP_CROP_FRAC``    (default 0.0)  — frazione alta azzerata (orizzonte).
+    """
+    h = int(mask.shape[0])
+    bottom_frac = min(max(_parse_float_env("D1_PICK_BOTTOM_CROP_FRAC", 0.22), 0.0), 0.6)
+    top_frac = min(max(_parse_float_env("D1_PICK_TOP_CROP_FRAC", 0.0), 0.0), 0.6)
+    if bottom_frac > 0.0:
+        y0 = int(round(h * (1.0 - bottom_frac)))
+        if 0 <= y0 < h:
+            mask[y0:, :] = 0
+    if top_frac > 0.0:
+        y1 = int(round(h * top_frac))
+        if 0 < y1 <= h:
+            mask[:y1, :] = 0
+    return mask
+
+
+def _color_box_hsv_mask(frame: np.ndarray) -> np.ndarray:
+    """Maschera HSV per scatoletta blu (tunable via env)."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h_min = _parse_int_env("D1_COLOR_BOX_H_MIN", 95)
+    h_max = _parse_int_env("D1_COLOR_BOX_H_MAX", 130)
+    s_min = _parse_int_env("D1_COLOR_BOX_S_MIN", 45)
+    v_min = _parse_int_env("D1_COLOR_BOX_V_MIN", 35)
+    lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
+    upper = np.array([min(179, h_max), 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    k = max(3, _parse_int_env("D1_COLOR_BOX_MORPH_K", 5))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = _apply_detect_roi_crop(mask)
+    return mask
+
+
+def _score_color_candidate(
+    *,
+    area: float,
+    cx: float,
+    cy: float,
+    rw: float,
+    rh: float,
+    frame_hw: tuple[int, int],
+) -> float:
+    """Preferisce blob blu grande, centrato in X, nella metà inferiore (tavolo/pezzo)."""
+    h, w = frame_hw
+    frame_area = max(float(w * h), 1.0)
+    area_ratio = area / frame_area
+    x_pen = abs(cx - w / 2.0) / max(w / 2.0, 1.0)
+    # Con la fascia bassa (corpo del cane) gia' esclusa dal crop, NON spingiamo piu' la
+    # scelta verso il basso: bias y neutro (centro frame) e peso ridotto, cosi' la scatola
+    # nella zona alta/centrale non viene penalizzata a favore di blob piu' bassi.
+    y_target = h * _parse_float_env("D1_COLOR_BOX_Y_TARGET_FRAC", 0.5)
+    y_pen = abs(cy - y_target) / max(h * 0.5, 1.0)
+    y_pen_w = _parse_float_env("D1_COLOR_BOX_Y_PEN_W", 0.10)
+    aspect = max(rw, rh) / max(min(rw, rh), 1.0)
+    aspect_pen = 0.0 if 1.1 <= aspect <= 4.5 else 0.25
+    return area_ratio - 0.18 * x_pen - y_pen_w * y_pen - aspect_pen
+
+
+def _detection_from_color_contour(
+    frame: np.ndarray,
+    cnt: np.ndarray,
+    *,
+    score: float,
+    elapsed_s: float,
+) -> dict[str, Any]:
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    (cx, cy), (rw, rh), angle = cv2.minAreaRect(cnt)
+    cx_f, cy_f = float(cx), float(cy)
+    rw_f, rh_f = float(rw), float(rh)
+    orient = _angle_from_min_area_rect(rw_f, rh_f, angle)
+    box_pts = cv2.boxPoints(((cx, cy), (rw, rh), angle))
+    x1 = float(np.min(box_pts[:, 0]))
+    y1 = float(np.min(box_pts[:, 1]))
+    x2 = float(np.max(box_pts[:, 0]))
+    y2 = float(np.max(box_pts[:, 1]))
+    bw = max(1.0, x2 - x1)
+    bh = max(1.0, y2 - y1)
+    long_side = max(rw_f, rh_f)
+    base = {
+        "ok": True,
+        "backend": "color_blue_box",
+        "label": "blue_box",
+        "confidence": round(max(0.05, min(0.99, score + 0.35)), 4),
+        "bbox_xyxy": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+        "bbox_center_px": [round(cx_f, 1), round(cy_f, 1)],
+        "bbox_size_px": [round(bw, 1), round(bh, 1)],
+        "bbox_area_px": round(bw * bh, 1),
+        "bbox_area_ratio": round((bw * bh) / max(w * h, 1), 5),
+        "norm": [
+            round((cx_f - w / 2.0) / max(w / 2.0, 1.0), 4),
+            round((cy_f - h / 2.0) / max(h / 2.0, 1.0), 4),
+        ],
+        "grip_center_px": [round(cx_f, 1), round(cy_f, 1)],
+        "grip_axis_px": [
+            [round(x1, 1), round(cy_f, 1)],
+            [round(x2, 1), round(cy_f, 1)],
+        ],
+        "gripper_model": "color_box_center",
+        "latency_ms": round(elapsed_s * 1000.0, 2),
+        "all_count": 1,
+        "orientation_deg": orient,
+        "orient_axis_px": _orient_axis_from_center(cx_f, cy_f, orient, long_side * 0.45),
+        "orient_box_px": [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in box_pts],
+        "detect_method": "hsv_blue_contour",
+    }
+    return base
+
+
+def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+    """Rileva scatoletta blu per maschera HSV + minAreaRect (posizione e rotazione reali)."""
+    t0 = time.perf_counter()
+    h, w = frame.shape[:2]
+    mask = _color_box_hsv_mask(frame)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return {
+            "ok": False,
+            "backend": "color_blue_box",
+            "reason": "no_blue_contour",
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+    min_area = _parse_float_env("D1_COLOR_BOX_MIN_AREA_FRAC", 0.012) * float(w * h)
+    min_solidity = _parse_float_env("D1_COLOR_BOX_MIN_SOLIDITY", 0.55)
+    best_cnt = None
+    best_score = -1.0
+    for cnt in cnts:
+        area = float(cv2.contourArea(cnt))
+        if area < min_area:
+            continue
+        hull = cv2.convexHull(cnt)
+        hull_area = float(cv2.contourArea(hull))
+        if hull_area < 1.0:
+            continue
+        solidity = area / hull_area
+        if solidity < min_solidity:
+            continue
+        (cx, cy), (rw, rh), _angle = cv2.minAreaRect(cnt)
+        if min(rw, rh) < 12.0:
+            continue
+        sc = _score_color_candidate(
+            area=area,
+            cx=float(cx),
+            cy=float(cy),
+            rw=float(rw),
+            rh=float(rh),
+            frame_hw=(h, w),
+        )
+        if sc > best_score:
+            best_score = sc
+            best_cnt = cnt
+    if best_cnt is None:
+        return {
+            "ok": False,
+            "backend": "color_blue_box",
+            "reason": "blue_contour_filtered",
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+    return _detection_from_color_contour(
+        frame,
+        best_cnt,
+        score=best_score,
+        elapsed_s=time.perf_counter() - t0,
+    )
+
+
+def _orientation_deg_from_bbox_roi(frame: np.ndarray, xyxy: list[float]) -> float:
+    """Stima rotazione del pezzo nel bbox (minAreaRect sul contorno)."""
+    if frame is None or not getattr(frame, "size", 0) or len(xyxy) < 4:
+        return 0.0
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in xyxy[:4]]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w - 1, x2), min(h - 1, y2)
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return 0.0
+    roi = frame[y1:y2, x1:x2]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thr = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return 0.0
+    cnt = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < 80.0:
+        return 0.0
+    _, (rw, rh), angle = cv2.minAreaRect(cnt)
+    if rw < 1.0 or rh < 1.0:
+        return 0.0
+    if rw < rh:
+        angle = float(angle) + 90.0
+    return _normalize_angle_deg(angle)
+
+
+def enrich_detection_orientation(frame: np.ndarray, det: dict[str, Any]) -> dict[str, Any]:
+    """Aggiunge orientamento pezzo e asse per overlay / correzione J5."""
+    if not det.get("ok"):
+        return det
+    xyxy = det.get("bbox_xyxy") or []
+    orient = _orientation_deg_from_bbox_roi(frame, xyxy)
+    cx, cy = det.get("bbox_center_px") or det.get("grip_center_px") or [0, 0]
+    import math
+
+    length = max(float(det.get("bbox_size_px", [40, 40])[0]), 30.0) * 0.42
+    rad = math.radians(orient)
+    ax2 = float(cx) + length * math.cos(rad)
+    ay2 = float(cy) + length * math.sin(rad)
+    out = dict(det)
+    out["orientation_deg"] = orient
+    out["orient_axis_px"] = [[round(float(cx), 1), round(float(cy), 1)], [round(ax2, 1), round(ay2, 1)]]
+    return out
 
 
 def _select_detection(
     boxes: list[dict[str, Any]],
-    frame_hw: tuple[int, int],
+    frame: np.ndarray,
     backend: str,
     elapsed_s: float,
 ) -> dict[str, Any]:
-    h, w = frame_hw
+    h, w = int(frame.shape[0]), int(frame.shape[1])
     if not boxes:
         return {
             "ok": False,
@@ -210,7 +494,7 @@ def _select_detection(
     nx = (cx - w / 2.0) / max(w / 2.0, 1.0)
     ny = (cy - h / 2.0) / max(h / 2.0, 1.0)
     area = bw * bh
-    return {
+    base = {
         "ok": True,
         "backend": backend,
         "label": det.get("label", "box"),
@@ -227,6 +511,7 @@ def _select_detection(
         "latency_ms": round(elapsed_s * 1000.0, 2),
         "all_count": len(boxes),
     }
+    return enrich_detection_orientation(frame, base)
 
 
 def _bbox_area(xyxy: list[float]) -> float:
@@ -235,7 +520,141 @@ def _bbox_area(xyxy: list[float]) -> float:
     return max(0.0, float(xyxy[2]) - float(xyxy[0])) * max(0.0, float(xyxy[3]) - float(xyxy[1]))
 
 
+def detect_all_objects(frame: np.ndarray) -> dict[str, Any]:
+    """Tutte le detection YOLO (o una sola proposta classic) — per vision dinamica."""
+    model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
+    t0 = time.perf_counter()
+    if model_path:
+        p = Path(model_path).expanduser()
+        if p.is_file():
+            try:
+                model = _load_ultralytics_model(str(p))
+                imgsz = int(os.environ.get("GO2_YOLO_IMGSZ", "640"))
+                conf_min = float(os.environ.get("GO2_YOLO_CONF", "0.25"))
+                results = model.predict(frame, imgsz=imgsz, conf=conf_min, verbose=False)
+                boxes: list[dict[str, Any]] = []
+                for result in results:
+                    names = getattr(result, "names", {}) or {}
+                    rb = getattr(result, "boxes", None)
+                    if rb is None:
+                        continue
+                    for b in rb:
+                        xyxy = [float(x) for x in b.xyxy[0].tolist()]
+                        conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                        cls_i = int(b.cls[0]) if getattr(b, "cls", None) is not None else -1
+                        label = str(names.get(cls_i, cls_i))
+                        boxes.append(
+                            {
+                                "bbox_xyxy": xyxy,
+                                "confidence": round(conf, 4),
+                                "class_id": cls_i,
+                                "label": label,
+                            }
+                        )
+                return {
+                    "ok": bool(boxes),
+                    "backend": "ultralytics",
+                    "model_path": str(p),
+                    "boxes": boxes,
+                    "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+            except Exception as exc:
+                err = repr(exc)
+                # yolo11.pt su ultralytics vecchio (Jetson): riprova yolov8n se presente
+                if "C3k2" in err or "yolo11" in str(p).lower():
+                    v8 = p.parent / "yolov8n.pt"
+                    if v8.is_file() and v8 != p:
+                        try:
+                            model = _load_ultralytics_model(str(v8))
+                            results = model.predict(
+                                frame,
+                                imgsz=int(os.environ.get("GO2_YOLO_IMGSZ", "640")),
+                                conf=float(os.environ.get("GO2_YOLO_CONF", "0.20")),
+                                verbose=False,
+                            )
+                            boxes = []
+                            for result in results:
+                                names = getattr(result, "names", {}) or {}
+                                rb = getattr(result, "boxes", None)
+                                if rb is None:
+                                    continue
+                                for b in rb:
+                                    xyxy = [float(x) for x in b.xyxy[0].tolist()]
+                                    conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                                    cls_i = int(b.cls[0]) if getattr(b, "cls", None) is not None else -1
+                                    label = str(names.get(cls_i, cls_i))
+                                    boxes.append(
+                                        {
+                                            "bbox_xyxy": xyxy,
+                                            "confidence": round(conf, 4),
+                                            "class_id": cls_i,
+                                            "label": label,
+                                        }
+                                    )
+                            return {
+                                "ok": bool(boxes),
+                                "backend": "ultralytics",
+                                "model_path": str(v8),
+                                "boxes": boxes,
+                                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                            }
+                        except Exception:
+                            pass
+                return {
+                    "ok": False,
+                    "backend": "ultralytics",
+                    "reason": err,
+                    "boxes": [],
+                    "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+    if os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower() in {"1", "true", "yes"}:
+        one = _classic_box_proposal(frame)
+        boxes = []
+        if one.get("ok"):
+            boxes.append(
+                {
+                    "bbox_xyxy": one["bbox_xyxy"],
+                    "confidence": one.get("confidence", 0.0),
+                    "class_id": -1,
+                    "label": one.get("label", "box_proposal"),
+                }
+            )
+        return {
+            "ok": bool(boxes),
+            "backend": one.get("backend", "classic_contour_fallback"),
+            "boxes": boxes,
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+    return {
+        "ok": False,
+        "backend": "disabled",
+        "reason": "GO2_YOLO_MODEL mancante",
+        "boxes": [],
+        "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
+def _color_only_pick_detect() -> bool:
+    """Dashboard presa D1: solo scatoletta blu HSV — mai YOLO/classic."""
+    backend = _pick_detect_backend()
+    if backend in {"yolo", "ultralytics", "classic", "classic_contour"}:
+        return False
+    if os.environ.get("D1_PICK_COLOR_ONLY", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
 def detect_box_object(frame: np.ndarray) -> dict[str, Any]:
+    """Rilevamento pezzo per presa D1 — default: color_blue_box + orientamento minAreaRect."""
+    if _color_only_pick_detect():
+        return _detect_color_box(frame)
+
+    backend = _pick_detect_backend()
+    if backend in {"color", "blue", "color_blue", "color_blue_box", "color_then_yolo"}:
+        out = _detect_color_box(frame)
+        if out.get("ok") or backend != "color_then_yolo":
+            return out
+
     model_path = os.environ.get("GO2_YOLO_MODEL", "").strip()
     if model_path:
         p = Path(model_path).expanduser()

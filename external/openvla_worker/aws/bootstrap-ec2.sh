@@ -42,7 +42,12 @@ cd "$WORKER_DIR"
 echo "[bootstrap] Docker + NVIDIA toolkit…"
 bash aws/ec2-setup.sh
 
-TOKEN="$(openssl rand -hex 32)"
+TOKEN="${GO2_WORKER_TOKEN:-$(openssl rand -hex 32)}"
+if [[ -n "${GO2_WORKER_TOKEN:-}" ]]; then
+  echo "[bootstrap] token da env (CloudShell user-data)"
+else
+  echo "[bootstrap] token generato su EC2"
+fi
 PUBLIC_IP="$(curl -sf --connect-timeout 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
 if [[ -z "$PUBLIC_IP" ]]; then
   PUBLIC_IP="$(curl -sf --connect-timeout 3 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
@@ -63,6 +68,12 @@ fi
 
 echo "[bootstrap] docker compose build + up…"
 docker compose -f aws/docker-compose.yml up -d --build
+
+echo "[bootstrap] auto-stop idle (systemd timer)…"
+GO2_EC2_REGION="${GO2_EC2_REGION:-eu-north-1}"
+GO2_EC2_IDLE_STOP_MIN="${GO2_EC2_IDLE_STOP_MIN:-20}"
+export GO2_EC2_REGION GO2_EC2_IDLE_STOP_MIN
+bash aws/setup-auto-stop.sh || echo "[bootstrap] AVVISO: setup-auto-stop non riuscito (serve IAM profile?)"
 
 PAIR_FILE="$HOME/go2-vla-pairing.env"
 WORKER_URL="http://${PUBLIC_IP}:8765"

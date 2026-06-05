@@ -4,3 +4,6 @@ flask>=3.0.0,<4
 gunicorn>=22.0.0,<24
 numpy>=1.23,<3
 opencv-python-headless>=4.8,<5
+pyzmq>=25.0,<27
+msgpack>=1.0,<2
+msgpack-numpy>=0.4,<0.5

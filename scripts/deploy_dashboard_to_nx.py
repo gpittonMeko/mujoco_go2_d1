@@ -16,6 +16,7 @@ sul PC al deploy (default ``http://192.168.123.3:8765`` — verificare con ``pyt
 sovrascrivere con ``GO2_DEPLOY_ANYGRASP_WORKER_URL`` se il PC worker ha un altro IP).
 Per AWS: ``GO2_DEPLOY_ANYGRASP_WORKER_URL=https://...`` e opz. ``GO2_DEPLOY_GRASP_CLOUD_MODE=1``.
 """
+import json
 import os
 import paramiko
 from pathlib import Path
@@ -33,8 +34,30 @@ def nx_password() -> str:
     return os.environ.get("GO2_NX_PASSWORD") or "123"
 
 
-REMOTE_BASE = "/home/unitree/go2_visual_dashboard"
+REMOTE_BASE = (os.environ.get("GO2_DEPLOY_REMOTE_BASE") or "/home/unitree/go2_visual_dashboard").strip()
+DEPLOY_PORT = (os.environ.get("GO2_DEPLOY_PORT") or "5052").strip() or "5052"
+DEPLOY_INSTANCE = (os.environ.get("GO2_DEPLOY_INSTANCE") or "main").strip() or "main"
+SKIP_AUTOSTART = os.environ.get("GO2_DEPLOY_SKIP_AUTOSTART", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+SKIP_SDK_BUILD = os.environ.get("GO2_DEPLOY_SKIP_SDK_BUILD", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _supervise_script() -> str:
+    return "nx_dashboard_dev_supervise.sh" if DEPLOY_INSTANCE == "dev" else "nx_dashboard_supervise.sh"
+
+
+def _start_script() -> str:
+    return "nx_start_dashboard_dev.sh" if DEPLOY_INSTANCE == "dev" else "nx_start_dashboard.sh"
 
 REMOTE_PUSH_FILES = [
     "diagnostics_dashboard.py",
@@ -43,6 +66,7 @@ REMOTE_PUSH_FILES = [
     "msg/ArmString_.cpp",
     "msg/PubServoInfo_.cpp",
     "scripts/build_d1_arm_helpers.sh",
+    "scripts/build_d1_sdk.sh",
     "scripts/d1_arm_dds_helper.cpp",
     "scripts/d1_arm_feedback_helper.cpp",
     "scripts/d1_arm_servo_read_python.py",
@@ -55,8 +79,11 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/legacy_mount.py",
     "go2_dashboard/cameras.py",
     "go2_dashboard/paths.py",
+    "go2_dashboard/sdk_backend.py",
     "go2_dashboard/d1_servo_feedback.py",
     "go2_dashboard/d1_arm_publish_lite.py",
+    "go2_dashboard/d1_arm_motion.py",
+    "go2_dashboard/operator_arm_motion.py",
     "go2_dashboard/sport_lane.py",
     "go2_dashboard/go2_voice_playback.py",
     "go2_dashboard/go2_voice_webrtc.py",
@@ -68,6 +95,15 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/grasp_coach_agent.py",
     "go2_dashboard/operator_scene.py",
     "go2_dashboard/grasp_assessment.py",
+    "go2_dashboard/grasp_ec2_control.py",
+    "go2_dashboard/grasp_rgbd_embed.py",
+    "go2_dashboard/grasp_phased_execute.py",
+    "go2_dashboard/grasp_close_verify.py",
+    "go2_dashboard/grasp_detect_debug.py",
+    "go2_dashboard/grasp_full_sequence.py",
+    "go2_dashboard/grasp_side_approach.py",
+    "go2_dashboard/orbbec_wrist_grasp.py",
+    "go2_dashboard/orbbec_lock.py",
     "go2_dashboard/blueprints/__init__.py",
     "go2_dashboard/blueprints/meta.py",
     "go2_dashboard/blueprints/grasp.py",
@@ -98,15 +134,22 @@ REMOTE_PUSH_FILES = [
     "scripts/nx_dashboard_supervise.sh",
     "scripts/nx_machine_diag.sh",
     "scripts/nx_peripheral_probe.sh",
+    "scripts/nx_webrtc_reset.sh",
     "scripts/probe_nx_dds_servo.py",
     "scripts/verify_go2_lab.py",
     "scripts/verify_dashboard_http.py",
     "scripts/verify_d1_arm_small_move_http.py",
     "scripts/verify_grasp_coach_http.py",
+    "scripts/verify_grasp_orbbec_local_http.py",
     "scripts/verify_anygrasp_worker_http.py",
     "scripts/verify_aws_vla_worker.py",
     "scripts/pair_nx_aws_vla.py",
+    "scripts/nx_fix_restart_lite.py",
+    "scripts/nx_test_grasp_plan_proxy.py",
+    "scripts/test_grasp_pipeline_e2e.py",
+    "docs/GRASP_AWS_PIPELINE.md",
     "scripts/aws_vla_ec2_control.py",
+    "data/go2_vla_ec2_state.json",
     "scripts/go2_vla_connect_nx.ps1",
     "scripts/go2_vla_full_setup.ps1",
     "scripts/verify_go2_voice_playback.py",
@@ -144,6 +187,8 @@ REMOTE_PUSH_FILES = [
     "external/openvla_worker/requirements-openvla.txt",
     "external/openvla_worker/app.py",
     "external/openvla_worker/planner_runtime.py",
+    "external/openvla_worker/graspgen_runtime.py",
+    "external/openvla_worker/rgbd_pointcloud.py",
     "external/openvla_worker/openvla_runtime.py",
     "external/openvla_worker/Dockerfile",
     "external/openvla_worker/aws/Dockerfile",
@@ -155,6 +200,8 @@ REMOTE_PUSH_FILES = [
     "external/openvla_worker/aws/bootstrap-ec2.sh",
     "external/openvla_worker/aws/QUICKSTART.md",
     "external/openvla_worker/aws/provision-ec2.ps1",
+    "external/openvla_worker/aws/bootstrap-cloudshell.sh",
+    "external/openvla_worker/aws/CLOUDSHELL.md",
     "external/openvla_worker/bootstrap_worker_host.sh",
     "external/openvla_worker/bootstrap_worker_host.ps1",
     "external/openvla_worker/setup_windows_worker.py",
@@ -209,6 +256,12 @@ export GO2_SPORT_ASYNC_STAND_MODES=1
 # StandDown/StandUp in subprocess (segfault Cyclone non uccide Flask).
 export GO2_SPORT_SUBPROCESS_STAND_MODES=1
 export GO2_GRASP_EXECUTE_ARM=1
+# Presa (locale/VLA/coach): TUTTO il movimento braccio passa dallo stack del tab «Braccio D1 · giunti»
+# (couple + begin_live_session + publish_goto_servo_deg7). Evita i percorsi one-shot che facevano cadere il braccio.
+export GO2_GRASP_USE_OPERATOR_ARM_MOTION=1
+# All'avvio sessione presa: NON uccidere/riavviare il daemon DDS (gap senza publisher → il
+# braccio CADE). Il tab «Braccio D1 · giunti» non lo fa mai. Tieni 0 salvo debug specifico.
+export GO2_GRASP_RECONCILE_DDS=0
 export GO2_DASHBOARD_HOST=0.0.0.0
 export GO2_DASHBOARD_PORT=5052
 # Log tempi richiesta→risposta API operator (logger ``go2_dashboard.operator_api.timing``); JSON: ``_http_timing_ms``, header ``X-Dashboard-Server-Ms``.
@@ -261,12 +314,24 @@ export GO2_HERMES_PERSONALITY=bender_meeting
 # Tono VIP sarcastico trattenuto (override dalla UI Agent). Voce OpenAI default per questo preset: onyx (codice).
 # Grasp Coach trial: OpenAI Chat Completions + vision, IK parziale D1; depth V4L se GO2_DEPTH_VIDEO_INDEX_* .
 export GO2_ENABLE_GRASP_COACH=1
+export GO2_GRASP_COACH_PRIMARY=0
+export GO2_GRASP_EMBED_RGBD=1
+export GO2_GRASP_REQUIRE_VALIDATED_EXECUTE=1
+export GO2_DEPTH_SCALE_M_PER_UNIT=0.001
 export GO2_GRASP_COACH_MODEL=gpt-5-nano
 export GO2_GRASP_COACH_DEPTH_POLICY=alternate
 export GO2_GRASP_COACH_MAX_TOKENS=420
 export GO2_GRASP_COACH_TIMEOUT_S=22
 export GO2_GRASP_COACH_DELAY_MS=650
-export GO2_GRASP_COACH_MAX_APPROACH_BLEND=0.26
+export GO2_GRASP_COACH_MAX_APPROACH_BLEND=0.38
+# Approach all'oggetto: lento e a sotto-step parziali (mai salto IK unico). START resta veloce.
+export GO2_GRASP_COACH_APPROACH_SUBSTEPS=1
+export GO2_GRASP_COACH_APPROACH_DELAY_MS=320
+# Grounding metrico: coordinate target dalla DEPTH reale (Orbbec polso + detect), non stima LLM.
+export GO2_GRASP_COACH_METRIC_GROUNDING=1
+# NO-GO zone: cono centrale ±gradi e tolleranza errore TCP (verifica cinematica).
+export GO2_GRASP_COACH_NOGO_CONE_DEG=10
+export GO2_GRASP_COACH_TCP_TOL_M=0.03
 # Opzionale: prima di IK braccio, Sport ``balance_hold`` sul Go2 (richiede GO2_ENABLE_BASE_MOTION=1).
 # export GO2_GRASP_COACH_BALANCE_HOLD_FIRST=1
 # export GO2_HERMES_MODEL=gpt-4o-mini
@@ -276,9 +341,13 @@ export GO2_GRASP_COACH_MAX_APPROACH_BLEND=0.26
 # export GO2_DASHBOARD_RESTART_DELAY_S=15
 export GO2_VIS_GEOMETRY_DEFAULT_PRESET=2
 export GO2_CAMERA_AUTO_USB_MAP=1
-# Orbbec Gemini 335Lg (lab): RGB su /dev/video6; depth IR sinistra /dev/video4; depth IR destra /dev/video2 (solo doc).
+# Orbbec Gemini 335Lg: lo stream **RGB a colori** del polso è su /dev/video6 quando l'enumerazione USB
+# è completa (video0..13). I nodi video0..3 sono sempre presenti ma mostrano depth/IR (puntini), non il
+# colore. Il deploy fa un trigger udev che ripristina l'enumerazione completa, così video6 c'è.
+# NB: se l'enumerazione torna parziale (video4..7 assenti) video6 può sparire → in quel caso ritoccare
+# l'indice (0..3) da GET /api/cameras/status > v4l_nodes_detail per evitare crash dell'open obsensor.
 export GO2_VIDEO_INDEX_0=6
-export GO2_DEPTH_VIDEO_INDEX_0=4
+# GO2_DEPTH_VIDEO_INDEX_0 disabilitato: nodo V4L inesistente faceva fallire l'open; depth via SDK Orbbec.
 export GO2_REALSENSE_V4L_DEFAULT=6
 export GO2_REALSENSE_VIDEO_PROBE=1
 export GO2_ORBBEC_PREFER_MJPEG=1
@@ -308,8 +377,14 @@ export GO2_FRONT_CAMERA_FALLBACK_GRASP=1
 # Grasp: meno punti fold→START (meno «cede»); yaw tag in immagine solo se GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW=1.
 export GO2_GRASP_FAST_START_ALIGN=1
 export GO2_GRASP_START_PREHOLD_CAP=5
-export D1_GRASP_START_ALIGN_MAX_STEP_DEG=4.8,2.5,2.3,3.4,4.8,5.0,8.5
-export D1_GRASP_FOLD_MAX_STEP_DEG=4.5,2.3,2.1,3.0,4.5,4.8,8.0
+export D1_AUTO_COUPLE_ON_MOVE=1
+export D1_GRASP_ENTRY_DELAY_MS=120
+export D1_GRASP_ENTRY_TRAJ_STEP_SCALE=1.0
+export D1_GRASP_ENTRY_POSTHOLD_REPEATS=4
+export D1_GRASP_ZERO_MAX_STEP_DEG=6.5,3.2,2.8,4.0,6.5,6.8,10.0
+export D1_GRASP_START_ALIGN_MAX_STEP_DEG=5.5,2.8,2.5,3.6,5.5,5.8,9.0
+export D1_GRASP_FOLD_MAX_STEP_DEG=5.0,2.5,2.2,3.2,5.0,5.2,8.5
+export GO2_ARM_MAX_REACH_M=0.58
 export GO2_GRASP_ORIENT_PREVIEW_TO_TAG=1
 # 0 (default): NON ruotare offset pre‑presa nel base XY con lo yaw del tag **in immagine** (errore con camera polso).
 # 1 = sperimentale (può «allontanare» il braccio se ψ immagine ≠ rotazione base).
@@ -320,14 +395,34 @@ export GO2_GRASP_ORIENT_PREVIEW_IMAGE_AS_BASE_YAW=0
 export GO2_GRASP_FUSED_CONFIRM_FRAMES=1
 export D1_SEARCH_DELAY_MS=260
 export D1_PLAN_DELAY_MS=420
-export D1_START_ALIGN_DELAY_MS=260
-export D1_FOLD_DELAY_MS=620
-export D1_ZERO_TO_START_DELAY_MS=520
+export D1_START_ALIGN_DELAY_MS=120
+export D1_FOLD_DELAY_MS=120
+export D1_ZERO_TO_START_DELAY_MS=120
+export D1_LITE_FILE_POSE_DELAY_MS=120
 export D1_EDITOR_MOVE_DELAY_MS=340
 export D1_ONE_JOINT_DELAY_MS=320
 export D1_ONE_JOINT_MAX_STEP_DEG=1.4,0.7,0.6,0.9,1.4,1.6,4.0
 export D1_MAX_STEP_DEG_SEARCH=2.0,1.0,1.7,2.5,2.5,3.0,5.0
 export D1_MAX_STEP_DEG_GRASP=1.5,0.8,1.2,2.0,2.0,2.5,4.0
+export GO2_GRASP_PHASE_HOLD_BETWEEN=1
+export GO2_GRASP_PHASE_HOLD_REPEATS=14
+export GO2_GRASP_PHASE_DELAY_MS=500
+export GO2_GRASP_REQUIRE_START_BEFORE_PLAN=1
+export GO2_START_POSE_MAX_ERROR_DEG=8
+export GO2_GRASP_ENTRY_HOLD=0
+export GO2_GRASP_ARM_WITH_POWER=1
+export GO2_WRIST_GRASPGEN_FIRST=0
+export GO2_GRASP_STAGED_MOTION=1
+export GO2_GRASP_PARTIAL_FRACTIONS=0.10,0.20,0.32,0.46,0.62,0.78,0.92,1.0
+export D1_GRASP_JOINT_STEP_DEG=1.5
+export D1_PROG_POSITION_TOL_DEG=5.0
+export D1_PROG_SOFT_TOL_DEG=8.0
+export GO2_WRIST_DETECT_MIN_CY_RATIO=0.30
+export GO2_WRIST_DETECT_MIN_CONF=0.40
+export GO2_WRIST_DETECT_MIN_AREA_RATIO=0.010
+export GO2_GRASP_FOLD_SETTLE_MS=500
+export GO2_GRASP_START_SETTLE_MS=900
+export GO2_GRASP_START_ALIGN_RETRY=1
 export D1_START_ALIGN_MAX_STEP_DEG=3.0,1.4,1.2,1.8,3.0,3.2,5.5
 export D1_FOLD_MAX_STEP_DEG=2.0,1.0,0.9,1.2,2.0,2.2,4.0
 export D1_EDITOR_MAX_STEP_DEG=1.6,0.8,0.7,1.0,1.6,1.8,4.0
@@ -413,8 +508,24 @@ def _worker_url_is_cloud(grasp_url: str) -> bool:
     return True
 
 
+def _default_grasp_worker_url() -> str:
+    env_url = (os.environ.get("GO2_DEPLOY_ANYGRASP_WORKER_URL") or "").strip()
+    if env_url:
+        return env_url
+    state_path = REPO_ROOT / "data" / "go2_vla_ec2_state.json"
+    if state_path.is_file():
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            w = (data.get("worker_url") or "").strip()
+            if w:
+                return w
+        except (OSError, json.JSONDecodeError):
+            pass
+    return "http://192.168.123.3:8765"
+
+
 def _nx_dashboard_env_sh() -> str:
-    grasp_url = (os.environ.get("GO2_DEPLOY_ANYGRASP_WORKER_URL") or "http://192.168.123.3:8765").strip()
+    grasp_url = _default_grasp_worker_url()
     cloud_mode = (os.environ.get("GO2_DEPLOY_GRASP_CLOUD_MODE") or "0").strip()
     cloud_line = ""
     if cloud_mode.lower() in {"1", "true", "yes", "on"} or _worker_url_is_cloud(grasp_url):
@@ -434,39 +545,72 @@ def _nx_dashboard_env_sh() -> str:
         f"  source '{REMOTE_BASE}/scripts/nx_secrets_dashboard.sh'\n"
         "fi\n"
     )
+    exports = NX_EXPORTS.replace(
+        "export GO2_DASHBOARD_PORT=5052",
+        f"export GO2_DASHBOARD_PORT={DEPLOY_PORT}",
+    )
+    exports += f"export GO2_DASHBOARD_INSTANCE={DEPLOY_INSTANCE}\n"
+    # Dev: lascia auto-probe Orbbec RGB invece dell'indice fisso (evita conflitti se i nodi si rinumerano).
+    if DEPLOY_INSTANCE == "dev":
+        exports = exports.replace(
+            "export GO2_VIDEO_INDEX_0=6\n",
+            "# dev: auto-probe Orbbec RGB (nessun indice V4L fisso)\n",
+        )
     return (
         "#!/bin/bash\n# Sorgente unica env dashboard (deploy_dashboard_to_nx.py).\n"
         "# shellcheck disable=SC2034\n"
-        + NX_EXPORTS
+        + exports
         + extra
         + secrets_hook
         + "\n"
     )
 
 
+def _nx_supervise_sh() -> str:
+    run_log = "dashboard_dev_run.log" if DEPLOY_INSTANCE == "dev" else "dashboard_run.log"
+    return f"""#!/bin/bash
+# Supervisore istanza {DEPLOY_INSTANCE} (porta {DEPLOY_PORT}) — non killare l'altra dashboard.
+set +e
+cd {REMOTE_BASE} || exit 1
+# shellcheck disable=SC1091
+source "$PWD/scripts/nx_dashboard_env.sh"
+export PYTHONFAULTHANDLER="${{PYTHONFAULTHANDLER:-1}}"
+RESTART_SEC="${{GO2_DASHBOARD_RESTART_DELAY_S:-15}}"
+echo "$(date -Is) nx_dashboard_supervise instance={DEPLOY_INSTANCE} pid=$$ port=${{GO2_DASHBOARD_PORT}}"
+while true; do
+  echo "$(date -Is) exec serve_dashboard_lite.py"
+  python3 scripts/serve_dashboard_lite.py >> {run_log} 2>&1
+  ex=$?
+  echo "$(date -Is) serve_dashboard_lite.py exited code=${{ex}} — sleep ${{RESTART_SEC}}s"
+  sleep "$RESTART_SEC"
+done
+"""
+
+
 def _nx_start_dashboard_sh(host: str) -> str:
+    sup = _supervise_script()
+    sup_log = "dashboard_dev_supervise.log" if DEPLOY_INSTANCE == "dev" else "dashboard_supervise.log"
+    run_log = "dashboard_dev_run.log" if DEPLOY_INSTANCE == "dev" else "dashboard_run.log"
     return f"""#!/bin/bash
 set -e
 cd {REMOTE_BASE} || exit 1
 source "{REMOTE_BASE}/scripts/nx_dashboard_env.sh"
-pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
-pkill -f diagnostics_dashboard 2>/dev/null || true
-pkill -f serve_dashboard_modular 2>/dev/null || true
-pkill -f serve_dashboard_lite 2>/dev/null || true
+# Solo questa istanza: libera la porta e ferma il supervisore dedicato (NON tocca 5052/5053 del collega).
+fuser -k "${{GO2_DASHBOARD_PORT}}"/tcp 2>/dev/null || true
+pkill -f "{sup}" 2>/dev/null || true
 sleep 1
-python3 -c "import diagnostics_dashboard as d; print('legacy_module_ok', d.GO2_LOCAL, d.GO2_DASHBOARD_BIND)"
-nohup bash scripts/nx_dashboard_supervise.sh >> dashboard_supervise.log 2>&1 &
+python3 -c "import diagnostics_dashboard as d; print('legacy_module_ok', d.GO2_LOCAL, d.GO2_DASHBOARD_BIND, 'instance={DEPLOY_INSTANCE}', 'port={DEPLOY_PORT}')"
+nohup bash scripts/{sup} >> {sup_log} 2>&1 &
 echo $! > dashboard.pid
 sleep 4
-python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=10); print('HTTP_HEALTH_OK')" || (
+python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','{DEPLOY_PORT}'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=10); print('HTTP_HEALTH_OK')" || (
   echo HTTP_HEALTH_FAIL
-  tail -40 dashboard_run.log
-  tail -20 dashboard_supervise.log 2>/dev/null || true
+  tail -40 {run_log}
+  tail -20 {sup_log} 2>/dev/null || true
   exit 1
 )
-echo "Remote checks done (full smoke: run on PC: python scripts/test_dashboard_smoke.py)"
-echo "From your laptop on LAN: python scripts/verify_dashboard_http.py http://{host}:5052"
-echo "Grasp Coach smoke (PC): python scripts/verify_grasp_coach_http.py http://{host}:5052 --step"
+echo "Dashboard {DEPLOY_INSTANCE} OK — http://{host}:{DEPLOY_PORT}"
+echo "verify: python scripts/verify_dashboard_http.py http://{host}:{DEPLOY_PORT}"
 """
 
 
@@ -478,7 +622,14 @@ def _nx_boot_dashboard_wrapper_sh() -> str:
 LOG="{log}"
 {{
   echo "=== boot $(date -Is) nx_boot_dashboard_wrapper pid=$$ ==="
-  sleep 45
+  # RTC Jetson spesso ancora 1970 al @reboot: attendi rete + orologio prima di avviare Flask/camera.
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    Y=$(date +%Y 2>/dev/null || echo 1970)
+    if [ "$Y" -ge 2024 ]; then break; fi
+    echo "wait_clock year=$Y sleep 15s ($i/12)"
+    sleep 15
+  done
+  sleep 30
   set +e
   cd {REMOTE_BASE} || {{ echo "cd_fail"; exit 0; }}
   if ! source "{REMOTE_BASE}/scripts/nx_dashboard_env.sh"; then
@@ -492,11 +643,19 @@ LOG="{log}"
   sleep 2
   nohup bash scripts/nx_dashboard_supervise.sh >> dashboard_supervise.log 2>&1 &
   echo $! > dashboard.pid || true
-  sleep 8
-  if python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=20)" 2>/dev/null; then
+  OK=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 6
+    if python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=12)" 2>/dev/null; then
+      OK=1
+      break
+    fi
+    echo "health_retry $i/15"
+  done
+  if [ "$OK" = "1" ]; then
     echo "HTTP_HEALTH_OK (boot)"
   else
-    echo "WARN: health non risponde subito dopo boot (vedi dashboard_run.log e dashboard_supervise.log)"
+    echo "WARN: health non risponde dopo boot (vedi dashboard_run.log e dashboard_supervise.log)"
   fi
   echo "=== fine boot $(date -Is) ==="
 }} >> "$LOG" 2>&1 &
@@ -626,6 +785,70 @@ def _remote_run_probe(ssh: paramiko.SSHClient) -> None:
         print("probe stderr:", err)
 
 
+def _d1_jog_rel_paths() -> list[str]:
+    d = REPO_ROOT / "go2_dashboard" / "d1_jog"
+    if not d.is_dir():
+        return []
+    out: list[str] = []
+    for p in sorted(d.rglob("*.py")):
+        out.append(str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
+    return out
+
+
+def _d1_sdk_rel_paths() -> list[str]:
+    """Sorgenti CMake SDK D1 (ramo d1-arm-control) per ``bin/d1_sdk_*``."""
+    sdk = REPO_ROOT / "D1 550 Workspace" / "d1_sdk"
+    if not sdk.is_dir():
+        return []
+    out: list[str] = []
+    for p in sorted(sdk.rglob("*")):
+        if p.is_file() and p.suffix.lower() in (".cpp", ".hpp", ".txt", ".cmake"):
+            out.append(str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
+    return out
+
+
+def _remote_build_d1_sdk(ssh: paramiko.SSHClient) -> None:
+    """Compila ``bin/d1_sdk_command`` e ``bin/d1_sdk_feedback`` (protocollo ufficiale D1)."""
+    sdk_cmake = REPO_ROOT / "D1 550 Workspace" / "d1_sdk" / "d1_sdk" / "CMakeLists.txt"
+    if not sdk_cmake.is_file():
+        print("[deploy] skip build_d1_sdk — manca D1 550 Workspace/d1_sdk (merge da origin/d1-arm-control)")
+        return
+    print("[deploy] Compilazione SDK D1 (bin/d1_sdk_command, d1_sdk_feedback) …")
+    log = "/tmp/go2_d1_sdk_build.log"
+    script = f"""set +e
+cd "{REMOTE_BASE}"
+mkdir -p bin
+set -a
+if [ -f scripts/nx_dashboard_env.sh ]; then
+  # shellcheck disable=SC1091
+  . scripts/nx_dashboard_env.sh
+fi
+set +a
+bash scripts/build_d1_sdk.sh >{log} 2>&1
+EC=$?
+echo "EXIT_CODE=$EC" >>{log}
+cat {log}
+chmod +x bin/d1_sdk_command bin/d1_sdk_feedback bin/d1_sdk_get_angles 2>/dev/null || true
+ls -la bin/d1_sdk_command bin/d1_sdk_feedback 2>/dev/null || true
+exit $EC
+"""
+    stdin, stdout, stderr = ssh.exec_command(script)
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode(errors="replace")
+    err = stderr.read().decode(errors="replace")
+    if out.strip():
+        print(out.strip())
+    if err.strip():
+        print("build_d1_sdk stderr:", err.strip())
+    if code != 0:
+        print(
+            f"[deploy] AVVISO: build_d1_sdk.sh exit={code} — "
+            "la dashboard userà fallback d1_arm_command se presente."
+        )
+    else:
+        print("[deploy] SDK D1 compilato OK (backend braccio preferito).")
+
+
 def _remote_build_d1_arm_helpers(ssh: paramiko.SSHClient) -> None:
     """Compila ``bin/d1_arm_command`` e ``bin/d1_arm_feedback_helper`` sulla NX (g++ + Unitree SDK2)."""
     print("[deploy] Compilazione helper braccio D1 (bin/d1_arm_command) …")
@@ -701,8 +924,22 @@ def _scene_xml_rel_paths() -> list[str]:
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Deploy dashboard lite sulla Jetson NX")
+    ap.add_argument(
+        "--skip-meshes",
+        action="store_true",
+        help="Non caricare mesh .obj/.STL (usa se già sulla NX; equivale a GO2_DEPLOY_SKIP_MESHES=1)",
+    )
+    args = ap.parse_args()
+    if args.skip_meshes:
+        os.environ["GO2_DEPLOY_SKIP_MESHES"] = "1"
+
     host = nx_host()
-    print(f"[deploy] Connecting SSH {nx_user()}@{host} …")
+    skip_m = os.environ.get("GO2_DEPLOY_SKIP_MESHES", "").strip().lower() in ("1", "true", "yes", "on")
+    inst_tag = f" instance={DEPLOY_INSTANCE} port={DEPLOY_PORT} dir={REMOTE_BASE}"
+    print(f"[deploy] Connecting SSH {nx_user()}@{host} …{inst_tag}" + (" (skip meshes)" if skip_m else ""))
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(host, username=nx_user(), password=nx_password(), timeout=45)
@@ -712,6 +949,8 @@ def main() -> None:
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes "
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/urdf "
         f"{REMOTE_BASE}/go2_dashboard/blueprints/operator_api "
+        f"{REMOTE_BASE}/go2_dashboard/d1_jog "
+        f'"{REMOTE_BASE}/D1 550 Workspace/d1_sdk" '
         f"{REMOTE_BASE}/msg "
         f"{REMOTE_BASE}/templates "
         f"{REMOTE_BASE}/static/css "
@@ -759,7 +998,12 @@ def main() -> None:
                 rel_presets,
                 "— preset salvati sulla NX non sovrascritti (imposta GO2_DEPLOY_OVERWRITE_PRESETS=1 per forzare)",
             )
+    skip_meshes = os.environ.get("GO2_DEPLOY_SKIP_MESHES", "").strip().lower() in ("1", "true", "yes", "on")
+    if skip_meshes:
+        print("[deploy] GO2_DEPLOY_SKIP_MESHES=1 — salto upload mesh .obj/.STL (già sulla NX o non necessarie ora)")
     for rel in _mesh_rel_paths():
+        if skip_meshes:
+            break
         loc = REPO_ROOT / rel
         if not loc.is_file():
             continue
@@ -780,12 +1024,34 @@ def main() -> None:
         remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
         sftp.put(str(loc), remote_path)
         print("pushed scene_xml", rel)
+    for rel in _d1_jog_rel_paths():
+        loc = REPO_ROOT / rel
+        if not loc.is_file():
+            continue
+        remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+        sftp.put(str(loc), remote_path)
+        print("pushed d1_jog", rel)
+    if DEPLOY_INSTANCE != "dev":
+        for rel in _d1_sdk_rel_paths():
+            loc = REPO_ROOT / rel
+            if not loc.is_file():
+                continue
+            remote_path = f"{REMOTE_BASE}/{rel.replace(chr(92), '/')}"
+            sftp.put(str(loc), remote_path)
+            print("pushed d1_sdk_src", rel)
+    else:
+        print("[deploy] dev: skip upload sorgenti D1 SDK (usa bin/ symlink dalla tree principale)")
 
-    for path, content, mode in (
+    generated_scripts: list[tuple[str, str, int]] = [
         (f"{REMOTE_BASE}/scripts/nx_dashboard_env.sh", _nx_dashboard_env_sh(), 0o644),
-        (f"{REMOTE_BASE}/scripts/nx_start_dashboard.sh", _nx_start_dashboard_sh(host), 0o755),
-        (f"{REMOTE_BASE}/scripts/nx_boot_dashboard_wrapper.sh", _nx_boot_dashboard_wrapper_sh(), 0o755),
-    ):
+        (f"{REMOTE_BASE}/scripts/{_start_script()}", _nx_start_dashboard_sh(host), 0o755),
+        (f"{REMOTE_BASE}/scripts/{_supervise_script()}", _nx_supervise_sh(), 0o755),
+    ]
+    if not SKIP_AUTOSTART:
+        generated_scripts.append(
+            (f"{REMOTE_BASE}/scripts/nx_boot_dashboard_wrapper.sh", _nx_boot_dashboard_wrapper_sh(), 0o755),
+        )
+    for path, content, mode in generated_scripts:
         with sftp.file(path, "wb") as rf:
             rf.write(content.encode("utf-8"))
         sftp.chmod(path, mode)
@@ -804,20 +1070,47 @@ def main() -> None:
     strip_stdout.channel.recv_exit_status()
     sftp.close()
 
-    _remote_build_d1_arm_helpers(ssh)
+    skip_sdk_build = SKIP_SDK_BUILD or DEPLOY_INSTANCE == "dev"
+    if DEPLOY_INSTANCE == "dev":
+        main_tree = "/home/unitree/go2_visual_dashboard"
+        stdin, stdout, stderr = ssh.exec_command(
+            f"mkdir -p {REMOTE_BASE} && "
+            f"rm -rf {REMOTE_BASE}/bin {REMOTE_BASE}/unitree_mujoco && "
+            f"ln -sfn {main_tree}/bin {REMOTE_BASE}/bin && "
+            f"ln -sfn {main_tree}/unitree_mujoco {REMOTE_BASE}/unitree_mujoco && "
+            f"ls -la {REMOTE_BASE}/bin {REMOTE_BASE}/unitree_mujoco | head -6"
+        )
+        print(stdout.read().decode(errors="replace").strip())
+        print("[deploy] dev: bin/ + unitree_mujoco/ symlink dalla tree principale")
 
-    print("[deploy] Dipendenze audio Hermes / WebRTC Go2 (ARM) …")
-    _remote_install_go2_audio_deps(ssh)
+    if not skip_sdk_build:
+        _remote_build_d1_sdk(ssh)
+        _remote_build_d1_arm_helpers(ssh)
+    else:
+        print("[deploy] SKIP build SDK/helpers (usa bin esistente)")
 
-    print("[deploy] Install cron @reboot (non blocca boot; log in dashboard_boot.log) …")
-    _remote_install_crontab(ssh)
-    print("[deploy] Optional systemd --user unit …")
-    _remote_install_systemd_user_optional(ssh)
-    print("[deploy] udev RealSense (permessi /dev/video*) …")
-    _remote_install_realsense_udev(ssh)
+    if not SKIP_AUTOSTART:
+        print("[deploy] Dipendenze audio Hermes / WebRTC Go2 (ARM) …")
+        _remote_install_go2_audio_deps(ssh)
+        print("[deploy] Install cron @reboot (non blocca boot; log in dashboard_boot.log) …")
+        _remote_install_crontab(ssh)
+        print("[deploy] Optional systemd --user unit …")
+        _remote_install_systemd_user_optional(ssh)
+        print("[deploy] udev RealSense (permessi /dev/video*) …")
+        _remote_install_realsense_udev(ssh)
+    else:
+        print("[deploy] SKIP autostart/cron/udev (istanza dev — non tocca il setup del collega)")
 
-    print("[deploy] Riavvio dashboard ora …")
-    stdin, stdout, stderr = ssh.exec_command(f"bash {REMOTE_BASE}/scripts/nx_start_dashboard.sh")
+    if DEPLOY_INSTANCE == "dev":
+        main_secrets = "/home/unitree/go2_visual_dashboard/scripts/nx_secrets_dashboard.sh"
+        dev_secrets = f"{REMOTE_BASE}/scripts/nx_secrets_dashboard.sh"
+        stdin, stdout, stderr = ssh.exec_command(
+            f"test -f '{dev_secrets}' || ( test -f '{main_secrets}' && cp '{main_secrets}' '{dev_secrets}' && chmod 600 '{dev_secrets}' && echo 'copied secrets from main' ) || echo 'no secrets file'"
+        )
+        print(stdout.read().decode(errors="replace").strip())
+
+    print(f"[deploy] Riavvio dashboard {DEPLOY_INSTANCE} …")
+    stdin, stdout, stderr = ssh.exec_command(f"bash {REMOTE_BASE}/scripts/{_start_script()}")
     print(stdout.read().decode())
     err = stderr.read().decode()
     if err.strip():

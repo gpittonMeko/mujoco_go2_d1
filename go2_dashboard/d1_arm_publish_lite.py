@@ -28,15 +28,63 @@ import sys
 import time
 from typing import Any
 
+from go2_dashboard import d1_arm_motion
 from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
 from go2_dashboard.paths import PROJECT_ROOT
+from go2_dashboard.sdk_backend import prefer_sdk_backend
 
 # Stesso mount usato in ``operator_scene`` / ``openvla_runtime`` (base_link = arm + mount).
 _MOUNT_BASE_LINK_M = (0.15, 0.0, 0.06)
 
 # Snapshot ZERO e START su disco (stessi path della dashboard diagnostica completa).
 TRUE_ZERO_POSE_PATH = PROJECT_ROOT / "data" / "true_zero_pose.json"
-ALIGNMENT_START_PATH = PROJECT_ROOT / "data" / "start_alignment.json"
+START_VARIANT_LATERAL = "lateral"
+START_VARIANT_FRONTAL = "frontal"
+START_VARIANTS = (START_VARIANT_LATERAL, START_VARIANT_FRONTAL)
+LEGACY_ALIGNMENT_START_PATH = PROJECT_ROOT / "data" / "start_alignment.json"
+START_ALIGNMENT_PATHS: dict[str, Path] = {
+    START_VARIANT_LATERAL: PROJECT_ROOT / "data" / "start_alignment_lateral.json",
+    START_VARIANT_FRONTAL: PROJECT_ROOT / "data" / "start_alignment_frontal.json",
+}
+# Default operativo: START laterale (90° — presa di lato).
+ALIGNMENT_START_PATH = START_ALIGNMENT_PATHS[START_VARIANT_LATERAL]
+
+
+def normalize_start_variant(variant: str | None) -> str:
+    raw = (variant or os.environ.get("GO2_DEFAULT_START_VARIANT") or START_VARIANT_LATERAL).strip().lower()
+    if raw in {"side", "lato", "laterale"}:
+        return START_VARIANT_LATERAL
+    if raw in {"front", "frontale"}:
+        return START_VARIANT_FRONTAL
+    return raw if raw in START_ALIGNMENT_PATHS else START_VARIANT_LATERAL
+
+
+def resolve_start_alignment_path(variant: str | None = None) -> Path:
+    """File START per variante; fallback su ``start_alignment.json`` legacy se il preset manca."""
+    v = normalize_start_variant(variant)
+    primary = START_ALIGNMENT_PATHS[v]
+    if primary.is_file():
+        return primary
+    if LEGACY_ALIGNMENT_START_PATH.is_file():
+        return LEGACY_ALIGNMENT_START_PATH
+    return primary
+
+
+def start_alignment_status() -> dict[str, Any]:
+    return {
+        "default_variant": START_VARIANT_LATERAL,
+        "variants": {
+            v: {
+                "path": str(START_ALIGNMENT_PATHS[v]),
+                "exists": START_ALIGNMENT_PATHS[v].is_file(),
+                "resolved_path": str(resolve_start_alignment_path(v)),
+                "resolved_exists": resolve_start_alignment_path(v).is_file(),
+            }
+            for v in START_VARIANTS
+        },
+        "legacy_path": str(LEGACY_ALIGNMENT_START_PATH),
+        "legacy_exists": LEGACY_ALIGNMENT_START_PATH.is_file(),
+    }
 
 _DEFAULT_ZERO_TRANSITION_STEPS = [3.4, 1.7, 1.5, 2.0, 3.4, 3.8, 6.5]
 _DEFAULT_START_ALIGN_STEPS = [2.2, 1.0, 0.9, 1.2, 2.2, 2.4, 4.0]
@@ -56,20 +104,7 @@ def arm_plan_execute_allowed() -> bool:
 
 def _require_lite_arm_motion() -> dict[str, Any] | None:
     """Vincoli comuni movimento DDS dalla dashboard lite. ``None`` se OK."""
-    if os.environ.get("GO2_LOCAL", "0").lower() not in {"1", "true", "yes", "on"}:
-        return {"ok": False, "reason": "go2_local_off"}
-    if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes", "on"}:
-        return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM_off"}
-    if not arm_plan_execute_allowed():
-        return {
-            "ok": False,
-            "reason": "arm_plan_execute_disabled",
-            "hint_it": "Serve uno tra GO2_ENABLE_ARM_PLAN_EXECUTE, GO2_ENABLE_OPENVLA_ARM_EXECUTE, GO2_ENABLE_GRASP_IK_EXECUTE.",
-        }
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        return {"ok": False, "reason": "missing_d1_arm_command"}
-    return None
+    return d1_arm_motion.motion_gate_error(require_plan_execute=True)
 
 
 def _d1_fc2_multijoint_mode_stream() -> int:
@@ -107,12 +142,67 @@ def _parse_max_step_deg_7(env_key: str, default_csv: str) -> list[float]:
     return parts[:7]
 
 
-def _file_pose_delay_ms(delay_ms: int | None) -> int:
+def _grasp_fast_align_enabled() -> bool:
+    return os.environ.get("GO2_GRASP_FAST_START_ALIGN", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _use_operator_arm_motion() -> bool:
+    """Presa/fold/START usano lo stesso DDS del tab Giunti (session_begin + goto_deg)."""
+    return os.environ.get("GO2_GRASP_USE_OPERATOR_ARM_MOTION", "1").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _file_pose_delay_ms(delay_ms: int | None, *, motion_profile: str = "default") -> int:
     if delay_ms is not None:
-        return max(70, int(delay_ms))
+        return max(50, int(delay_ms))
+    if (motion_profile or "").strip().lower() == "grasp_entry":
+        for key in ("D1_GRASP_ENTRY_DELAY_MS", "D1_START_ALIGN_DELAY_MS", "D1_FOLD_DELAY_MS"):
+            raw = (os.environ.get(key) or "").strip()
+            if raw:
+                try:
+                    return max(50, int(raw))
+                except ValueError:
+                    break
+        return 120
     v = (os.environ.get("D1_LITE_FILE_POSE_DELAY_MS") or os.environ.get("D1_EDITOR_MOVE_DELAY_MS") or "420").strip()
     try:
         return max(70, int(v))
+    except ValueError:
+        return 420
+
+
+def _resolve_start_align_max_step_deg() -> list[float]:
+    default_s = ",".join(str(x) for x in _DEFAULT_START_ALIGN_STEPS)
+    if _grasp_fast_align_enabled():
+        raw = (os.environ.get("D1_GRASP_START_ALIGN_MAX_STEP_DEG") or "").strip()
+        if raw:
+            return _parse_max_step_deg_7("D1_GRASP_START_ALIGN_MAX_STEP_DEG", default_s)
+    return _parse_max_step_deg_7("D1_START_ALIGN_MAX_STEP_DEG", default_s)
+
+
+def _resolve_zero_max_step_deg() -> list[float]:
+    default_z = ",".join(str(x) for x in _DEFAULT_ZERO_TRANSITION_STEPS)
+    if _grasp_fast_align_enabled():
+        raw = (os.environ.get("D1_GRASP_ZERO_MAX_STEP_DEG") or "").strip()
+        if raw:
+            return _parse_max_step_deg_7("D1_GRASP_ZERO_MAX_STEP_DEG", default_z)
+    return _parse_max_step_deg_7("D1_ZERO_TRANSITION_MAX_STEP_DEG", default_z)
+
+
+def _grasp_phase_max_step_deg_7() -> list[float]:
+    """Stessi passi del monolite ``_stage_messages(..., max_step_deg=D1_MAX_STEP_DEG_GRASP)``."""
+    return _parse_max_step_deg_7("D1_MAX_STEP_DEG_GRASP", "1.5,0.8,1.2,2.0,2.0,2.5,4.0")
+
+
+def _grasp_phase_delay_ms(delay_ms: int | None) -> int:
+    if delay_ms is not None:
+        return max(120, int(delay_ms))
+    try:
+        return max(120, int((os.environ.get("D1_PLAN_DELAY_MS") or "420").strip()))
     except ValueError:
         return 420
 
@@ -164,53 +254,9 @@ def _interpolate_deg(start: list[float], target: list[float], max_step_deg: list
     ]
 
 
-def _d1_cmd_run(stdin_payload: str, delay_ms: int, timeout_s: float) -> subprocess.CompletedProcess[str]:
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    env_sh = PROJECT_ROOT / "scripts" / "nx_dashboard_env.sh"
-    domain = int(os.environ.get("GO2_DDS_DOMAIN", "0"))
-    cwd = str(PROJECT_ROOT)
-    if os.name != "nt" and env_sh.is_file():
-        script = (
-            f"cd {shlex.quote(cwd)} && . {shlex.quote(str(env_sh))} && "
-            f"exec {shlex.quote(str(helper))} {domain} {int(delay_ms)}"
-        )
-        return subprocess.run(
-            ["bash", "-c", script],
-            cwd=cwd,
-            input=stdin_payload,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    return subprocess.run(
-        [str(helper), str(domain), str(int(delay_ms))],
-        cwd=cwd,
-        input=stdin_payload,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-    )
-
-
 def _pkill_d1_arm_command_processes() -> dict[str, Any]:
-    """Termina processi ``d1_arm_command`` ancora in esecuzione (best-effort, solo Linux)."""
-    if os.name == "nt":
-        return {"ok": True, "skipped": True, "reason": "pkill_unavailable_on_windows"}
-    try:
-        result = subprocess.run(
-            ["pkill", "-f", "d1_arm_command"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-        )
-        return {
-            "ok": result.returncode in (0, 1),
-            "returncode": result.returncode,
-            "stderr_tail": (result.stderr or "")[-400:],
-        }
-    except Exception as exc:
-        return {"ok": False, "reason": repr(exc)}
+    """Termina publisher DDS (``d1_sdk_command`` / ``d1_arm_command``)."""
+    return d1_arm_motion.kill_command_processes()
 
 
 def arm_emergency_stop_hold() -> dict[str, Any]:
@@ -225,9 +271,8 @@ def arm_emergency_stop_hold() -> dict[str, Any]:
         return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM_off"}
     if os.environ.get("GO2_ENABLE_ARM_ESTOP_HTTP", "1").lower() in {"0", "false", "no", "off"}:
         return {"ok": False, "reason": "arm_estop_http_disabled", "hint_it": "GO2_ENABLE_ARM_ESTOP_HTTP=0 sulla NX."}
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        return {"ok": False, "reason": "missing_d1_arm_command"}
+    if not d1_arm_motion.command_binary_ready():
+        return {"ok": False, "reason": "missing_arm_command_bin", "backend": d1_arm_motion.motion_backend_name()}
 
     kill = _pkill_d1_arm_command_processes()
     time.sleep(0.12)
@@ -251,29 +296,15 @@ def arm_emergency_stop_hold() -> dict[str, Any]:
     except ValueError:
         dms = 85
 
-    seq = int(time.time()) % 100000
     fc2_mode = _d1_fc2_multijoint_mode_trajectory()
-    messages: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
-    for i in range(rpt):
-        data = {f"angle{j}": cur[j] for j in range(7)}
-        data["mode"] = fc2_mode
-        messages.append({"seq": seq + 1 + i, "address": 1, "funcode": 2, "data": data})
-
-    stdin = "\n".join(json.dumps(m, separators=(",", ":")) for m in messages) + "\n"
-    timeout_s = max(20.0, (dms / 1000.0 + 0.45) * len(messages))
-    proc = _d1_cmd_run(stdin, dms, timeout_s)
+    pub = d1_arm_motion.emergency_stop_hold(cur, repeats=rpt, delay_ms=dms, fc2_mode=fc2_mode)
     return {
-        "ok": proc.returncode == 0,
-        "mode": "arm_emergency_stop_hold",
-        "returncode": proc.returncode,
-        "kill_helper": kill,
+        **pub,
+        "feedback_diag": diag,
         "hold_repeats": rpt,
         "hold_delay_ms": dms,
-        "hold_servo_deg_7": cur,
-        "stdout_tail": (proc.stdout or "")[-900:],
-        "stderr_tail": (proc.stderr or "")[-600:],
-        "feedback_diag": diag,
         "warning_it": "E-stop software: verifica fisicamente braccio e zona; ripeti se necessario.",
+        "backend": d1_arm_motion.motion_backend_name(),
     }
 
 
@@ -284,6 +315,7 @@ def _publish_servo_deg_trajectory(
     start7_deg: list[float] | None = None,
     feedback_diag: dict[str, Any] | None = None,
     max_step_deg: list[float] | None = None,
+    motion_profile: str = "default",
 ) -> dict[str, Any]:
     """Interpola da feedback (o ``start7_deg``) a ``target7_deg`` e pubblica su DDS."""
     if start7_deg is not None and len(start7_deg) >= 7:
@@ -296,11 +328,16 @@ def _publish_servo_deg_trajectory(
         current = [round(float(angles_fb[i]), 3) for i in range(7)]
     tgt = [round(float(target7_deg[i]), 3) for i in range(7)]
 
+    profile = (motion_profile or "default").strip().lower()
     if max_step_deg is not None and len(max_step_deg) >= 1:
         msd = list(max_step_deg[:7])
         while len(msd) < 7:
             msd.append(msd[-1])
         steps = msd
+    elif profile == "grasp":
+        steps = _grasp_phase_max_step_deg_7()
+    elif profile == "grasp_entry":
+        steps = _parse_max_step_deg_7("D1_GRASP_ENTRY_MAX_STEP_DEG", "6,3,2.8,4,6,6,10")
     else:
         max_step_raw = (os.environ.get("GO2_OPENVLA_ARM_MAX_STEP_DEG") or "10,10,10,10,10,10,12").strip()
         try:
@@ -314,8 +351,31 @@ def _publish_servo_deg_trajectory(
         step_scale = float(os.environ.get("D1_LITE_TRAJ_STEP_SCALE", "0.5") or "0.5")
     except ValueError:
         step_scale = 0.5
+    if profile == "grasp_entry":
+        try:
+            step_scale = float(os.environ.get("D1_GRASP_ENTRY_TRAJ_STEP_SCALE", "1.0") or "1.0")
+        except ValueError:
+            step_scale = 1.0
+    elif profile == "grasp":
+        step_scale = max(step_scale, float(os.environ.get("D1_GRASP_TRAJ_STEP_SCALE_MIN", "0.45") or "0.45"))
     step_scale = max(0.12, min(1.0, step_scale))
     steps = [max(0.12, float(s) * step_scale) for s in steps]
+
+    if prefer_sdk_backend():
+        from go2_dashboard.d1_jog import service as jog_svc
+
+        jog_step = min(steps) if steps else float(os.environ.get("D1_GRASP_JOINT_STEP_DEG", "1.8"))
+        if profile == "grasp_entry":
+            jog_step = max(steps)
+        elif profile == "grasp":
+            jog_step = min(steps)
+        pub = jog_svc.move_servo_deg_jog_trajectory(tgt, max_step_deg=jog_step)
+        return {
+            **pub,
+            "target_servo_deg_7": tgt,
+            "feedback_diag": diag,
+            "motion_profile": motion_profile,
+        }
 
     path = _interpolate_deg(current, tgt, steps)
     try:
@@ -331,29 +391,26 @@ def _publish_servo_deg_trajectory(
         path.append(list(hold_angles))
 
     fc2_mode = _d1_fc2_multijoint_mode_trajectory()
-    seq = int(time.time()) % 100000
-    messages: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
-    for point in path:
-        data = {f"angle{i}": point[i] for i in range(7)}
-        data["mode"] = fc2_mode
-        messages.append({"seq": seq + len(messages), "address": 1, "funcode": 2, "data": data})
-
-    dms = max(120, int(delay_ms if delay_ms is not None else int(os.environ.get("GO2_OPENVLA_ARM_DELAY_MS", "500"))))
-    stdin = "\n".join(json.dumps(m, separators=(",", ":")) for m in messages) + "\n"
-    timeout_s = max(25.0, (dms / 1000.0 + 0.55) * len(messages))
-    proc = _d1_cmd_run(stdin, dms, timeout_s)
+    messages = d1_arm_motion.build_fc2_trajectory_messages(path, fc2_mode=fc2_mode)
+    if profile == "grasp":
+        dms = _grasp_phase_delay_ms(delay_ms)
+    elif profile == "grasp_entry":
+        dms = _file_pose_delay_ms(delay_ms, motion_profile="grasp_entry")
+    else:
+        dms = max(120, int(delay_ms if delay_ms is not None else int(os.environ.get("GO2_OPENVLA_ARM_DELAY_MS", "500"))))
+    pub = d1_arm_motion.publish_messages(messages, delay_ms=dms)
     return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
+        **pub,
         "path_points": len(path),
         "target_servo_deg_7": tgt,
-        "stdout_tail": (proc.stdout or "")[-1200:],
-        "stderr_tail": (proc.stderr or "")[-800:],
         "feedback_diag": diag,
+        "backend": d1_arm_motion.motion_backend_name(),
+        "motion_profile": motion_profile,
+        "traj_delay_ms": dms,
     }
 
 
-def goto_joints_rad_clamped_six(joints_rad: list[float]) -> dict[str, Any]:
+def goto_joints_rad_clamped_six(joints_rad: list[float], *, motion_profile: str = "default") -> dict[str, Any]:
     """Interpolazione feedback→target (6 giunti in rad, modello ``arm_kinematics_d1_template``). Pinza = angolo attuale."""
     if os.environ.get("GO2_LOCAL", "0").lower() not in {"1", "true", "yes", "on"}:
         return {"ok": False, "reason": "go2_local_off"}
@@ -365,9 +422,8 @@ def goto_joints_rad_clamped_six(joints_rad: list[float]) -> dict[str, Any]:
             "reason": "arm_plan_execute_disabled",
             "hint_it": "Imposta GO2_ENABLE_ARM_PLAN_EXECUTE=1 (o GO2_ENABLE_OPENVLA_ARM_EXECUTE / GO2_ENABLE_GRASP_IK_EXECUTE).",
         }
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        return {"ok": False, "reason": "missing_d1_arm_command"}
+    if not d1_arm_motion.command_binary_ready():
+        return {"ok": False, "reason": "missing_arm_command_bin", "backend": d1_arm_motion.motion_backend_name()}
 
     s_scripts = str(PROJECT_ROOT / "scripts")
     if s_scripts not in sys.path:
@@ -383,12 +439,19 @@ def goto_joints_rad_clamped_six(joints_rad: list[float]) -> dict[str, Any]:
     if angles_fb is None or len(angles_fb) < 7:
         return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
     target7 = target_deg + [round(float(angles_fb[6]), 3)]
-    out = _publish_servo_deg_trajectory(
-        target7_deg=target7,
-        delay_ms=None,
-        start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
-        feedback_diag=diag,
-    )
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import goto_servo_deg7_operator
+
+        steps = _grasp_phase_max_step_deg_7() if motion_profile == "grasp" else editor_max_step_deg_7()
+        out = goto_servo_deg7_operator(target7, max_step_deg=steps)
+    else:
+        out = _publish_servo_deg_trajectory(
+            target7_deg=target7,
+            delay_ms=None,
+            start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
+            feedback_diag=diag,
+            motion_profile=motion_profile,
+        )
     out["target_joints_rad_6"] = [round(float(x), 5) for x in q_pol]
     out["target_servo_deg_6"] = target_deg
     return out
@@ -465,35 +528,55 @@ def goto_true_zero_from_json(*, delay_ms: int | None = None) -> dict[str, Any]:
     angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
     if angles_fb is None or len(angles_fb) < 7:
         return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
-    dms = _file_pose_delay_ms(delay_ms)
-    default_z = ",".join(str(x) for x in _DEFAULT_ZERO_TRANSITION_STEPS)
-    steps = _parse_max_step_deg_7("D1_ZERO_TRANSITION_MAX_STEP_DEG", default_z)
-    out = _publish_servo_deg_trajectory(
-        target7_deg=t7,
-        delay_ms=dms,
-        start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
-        feedback_diag=diag,
-        max_step_deg=steps,
-    )
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import goto_servo_deg7_operator_staged
+
+        out = goto_servo_deg7_operator_staged(
+            t7,
+            max_step_deg=_resolve_zero_max_step_deg(),
+            delay_ms=_file_pose_delay_ms(delay_ms, motion_profile="grasp_entry"),
+        )
+    else:
+        profile = "grasp_entry" if _grasp_fast_align_enabled() else "default"
+        dms = _file_pose_delay_ms(delay_ms, motion_profile=profile)
+        steps = _resolve_zero_max_step_deg()
+        out = _publish_servo_deg_trajectory(
+            target7_deg=t7,
+            delay_ms=dms,
+            start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
+            feedback_diag=diag,
+            max_step_deg=steps,
+            motion_profile=profile,
+        )
     out["mode"] = "goto_true_zero_file"
     out["true_zero_file"] = str(TRUE_ZERO_POSE_PATH)
     return out
 
 
-def goto_saved_start_from_json(*, delay_ms: int | None = None) -> dict[str, Any]:
-    """Vai alla posa **START** salvata con AprilTag (``data/start_alignment.json`` → ``arm_at_start``)."""
+def goto_saved_start_from_json(
+    *,
+    delay_ms: int | None = None,
+    start_variant: str | None = None,
+) -> dict[str, Any]:
+    """Vai alla posa **START** salvata (``start_alignment_lateral.json`` default, o frontale)."""
     bad = _require_lite_arm_motion()
     if bad:
         return bad
-    if not ALIGNMENT_START_PATH.is_file():
+    variant = normalize_start_variant(start_variant)
+    start_path = resolve_start_alignment_path(variant)
+    if not start_path.is_file():
         return {
             "ok": False,
             "reason": "no_start_alignment_json",
-            "path": str(ALIGNMENT_START_PATH),
-            "hint_it": "Genera o copia data/start_alignment.json sulla NX (contiene arm_at_start).",
+            "start_variant": variant,
+            "path": str(start_path),
+            "hint_it": (
+                f"Salva START {variant} (tab Giunti / Teaching) — manca "
+                f"data/start_alignment_{variant}.json."
+            ),
         }
     try:
-        data = json.loads(ALIGNMENT_START_PATH.read_text(encoding="utf-8"))
+        data = json.loads(start_path.read_text(encoding="utf-8"))
     except Exception as exc:
         return {"ok": False, "reason": "start_alignment_read_failed", "detail": repr(exc)}
     arm = data.get("arm_at_start") or {}
@@ -509,29 +592,212 @@ def goto_saved_start_from_json(*, delay_ms: int | None = None) -> dict[str, Any]
     angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
     if angles_fb is None or len(angles_fb) < 7:
         return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
-    dms = _file_pose_delay_ms(delay_ms)
-    default_s = ",".join(str(x) for x in _DEFAULT_START_ALIGN_STEPS)
-    steps = _parse_max_step_deg_7("D1_START_ALIGN_MAX_STEP_DEG", default_s)
-    out = _publish_servo_deg_trajectory(
-        target7_deg=t7,
-        delay_ms=dms,
-        start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
-        feedback_diag=diag,
-        max_step_deg=steps,
-    )
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import goto_servo_deg7_operator_staged
+
+        # START = transizione nota tra due pose valide: poche frazioni grosse (la suddivisione
+        # interna per max_step_deg garantisce comunque la fluidità). Evita gli 8 sotto-passi lenti.
+        start_fracs_raw = (os.environ.get("D1_START_ALIGN_PARTIAL_FRACTIONS") or "0.5,1.0").strip()
+        try:
+            start_fracs = [float(x.strip()) for x in start_fracs_raw.split(",") if x.strip()]
+        except ValueError:
+            start_fracs = [0.5, 1.0]
+        out = goto_servo_deg7_operator_staged(
+            t7,
+            max_step_deg=_resolve_start_align_max_step_deg(),
+            delay_ms=_file_pose_delay_ms(delay_ms, motion_profile="grasp_entry"),
+            partial_fractions=start_fracs or [0.5, 1.0],
+        )
+    else:
+        profile = "grasp_entry" if _grasp_fast_align_enabled() else "default"
+        dms = _file_pose_delay_ms(delay_ms, motion_profile=profile)
+        steps = _resolve_start_align_max_step_deg()
+        out = _publish_servo_deg_trajectory(
+            target7_deg=t7,
+            delay_ms=dms,
+            start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
+            feedback_diag=diag,
+            max_step_deg=steps,
+            motion_profile=profile,
+        )
     out["mode"] = "goto_saved_start_file"
-    out["start_alignment_file"] = str(ALIGNMENT_START_PATH)
+    out["start_variant"] = variant
+    out["start_alignment_file"] = str(start_path)
     if isinstance(data.get("saved_at"), str):
         out["start_saved_at"] = data["saved_at"]
     return out
 
 
-def goto_true_zero_then_saved_start_from_json(*, delay_ms: int | None = None) -> dict[str, Any]:
+def _servo_delta_deg7(current: list[float], target: list[float]) -> list[float]:
+    n = min(len(current), len(target), 7)
+    return [round(float(current[i]) - float(target[i]), 3) for i in range(n)]
+
+
+def save_start_alignment_json(
+    *,
+    servo_deg: list[float] | None = None,
+    start_variant: str | None = None,
+) -> dict[str, Any]:
+    """Scrive preset START laterale (default) o frontale su ``data/``."""
+    variant = normalize_start_variant(start_variant)
+    start_path = START_ALIGNMENT_PATHS[variant]
+    if os.environ.get("GO2_LOCAL", "0").lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": False, "reason": "go2_local_off"}
+    if isinstance(servo_deg, list) and len(servo_deg) >= 6:
+        try:
+            sd = [round(max(-135.0, min(135.0, float(servo_deg[i]))), 3) for i in range(min(7, len(servo_deg)))]
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "bad_servo_deg_list"}
+        while len(sd) < 7:
+            sd.append(sd[-1])
+        source = "ui_servo_deg"
+    else:
+        angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
+        if angles_fb is None or len(angles_fb) < 7:
+            return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
+        sd = [round(float(angles_fb[i]), 3) for i in range(7)]
+        source = "live_feedback"
+    arm: dict[str, Any] = {
+        "feedback_ok": True,
+        "servo_deg": sd,
+        "joints_rad": [round(math.radians(sd[i]), 6) for i in range(6)],
+        "gripper_deg": sd[6],
+        "ik_seed_note": f"START saved via dashboard lite ({source}).",
+    }
+    variant_label = "laterale" if variant == START_VARIANT_LATERAL else "frontale"
+    payload = {
+        "label": f"START {variant_label}",
+        "start_variant": variant,
+        "saved_at": datetime.now().astimezone().isoformat(),
+        "note": f"Operational START {variant_label} — saved from operator dashboard.",
+        "arm_at_start": arm,
+    }
+    try:
+        start_path.parent.mkdir(parents=True, exist_ok=True)
+        start_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {"ok": False, "reason": "start_alignment_write_failed", "detail": repr(exc)}
+    return {
+        "ok": True,
+        "start_variant": variant,
+        "saved_to": str(start_path),
+        "servo_deg_7": sd,
+        "start_pose": payload,
+    }
+
+
+def check_at_saved_start_pose(
+    *,
+    max_error_deg: float | None = None,
+    start_variant: str | None = None,
+) -> dict[str, Any]:
+    """Confronta feedback servo con ``arm_at_start`` nel preset START scelto."""
+    variant = normalize_start_variant(start_variant)
+    start_path = resolve_start_alignment_path(variant)
+    if not start_path.is_file():
+        return {
+            "ok": False,
+            "reason": "no_start_alignment_json",
+            "start_variant": variant,
+            "hint_it": f"Salva START {variant} prima della presa.",
+        }
+    try:
+        data = json.loads(start_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "reason": "start_alignment_read_failed", "detail": repr(exc)}
+    t7 = _servo_deg7_from_arm_blob(data.get("arm_at_start") or {})
+    if t7 is None:
+        return {"ok": False, "reason": "saved_start_no_servo_angles"}
+    angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
+    if angles_fb is None or len(angles_fb) < 7:
+        return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
+    cur = [round(float(angles_fb[i]), 3) for i in range(7)]
+    if max_error_deg is None:
+        try:
+            max_error_deg = float((os.environ.get("GO2_START_POSE_MAX_ERROR_DEG") or "6").strip())
+        except ValueError:
+            max_error_deg = 6.0
+    deltas = _servo_delta_deg7(cur, t7)
+    worst_i = max(range(len(deltas)), key=lambda i: abs(deltas[i])) if deltas else 0
+    worst = abs(deltas[worst_i]) if deltas else 999.0
+    ok = worst <= float(max_error_deg)
+    return {
+        "ok": ok,
+        "at_saved_start": ok,
+        "start_variant": variant,
+        "start_alignment_file": str(start_path),
+        "max_error_deg": round(worst, 3),
+        "tolerance_deg": float(max_error_deg),
+        "worst_joint": int(worst_i),
+        "delta_deg_7": deltas,
+        "current_servo_deg_7": cur,
+        "target_servo_deg_7": t7,
+        "hint_it": (
+            "Braccio in posa START salvata."
+            if ok
+            else (
+                f"Non in START: giunto {worst_i} err {worst:.1f}° (tol {max_error_deg}°). "
+                "Esegui goto START o sequenza con confirm RUN_FULL_GRASP."
+            )
+        ),
+    }
+
+
+def goto_fold_compact_for_grasp() -> dict[str, Any]:
+    """Fold compatto prima di START (come monolite ``_goto_fold_arm_pose``)."""
+    if os.environ.get("GO2_GRASP_START_FOLD", "1").lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "GO2_GRASP_START_FOLD_off"}
+    bad = _require_lite_arm_motion()
+    if bad:
+        return bad
+    s_scripts = str(PROJECT_ROOT / "scripts")
+    if s_scripts not in sys.path:
+        sys.path.insert(0, s_scripts)
+    from arm_kinematics_d1_template import ARM_FOLD_POSE
+
+    angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
+    if angles_fb is None or len(angles_fb) < 7:
+        return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
+    q = [float(ARM_FOLD_POSE[i]) for i in range(min(6, len(ARM_FOLD_POSE)))]
+    target_deg = [round(max(-135.0, min(135.0, math.degrees(q[i]))), 3) for i in range(6)]
+    target7 = target_deg + [round(float(angles_fb[6]), 3)]
+    steps = _parse_max_step_deg_7("D1_GRASP_FOLD_MAX_STEP_DEG", "4.5,2.3,2.1,3.0,4.5,4.8,8.0")
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import goto_servo_deg7_operator_staged
+
+        out = goto_servo_deg7_operator_staged(
+            target7,
+            max_step_deg=steps,
+            delay_ms=_file_pose_delay_ms(None, motion_profile="grasp_entry"),
+        )
+    else:
+        profile = "grasp_entry" if _grasp_fast_align_enabled() else "grasp"
+        out = _publish_servo_deg_trajectory(
+            target7_deg=target7,
+            delay_ms=_file_pose_delay_ms(None, motion_profile=profile),
+            start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
+            feedback_diag=diag,
+            max_step_deg=steps,
+            motion_profile=profile,
+        )
+    out["mode"] = "goto_fold_compact"
+    out["pose"] = "ARM_FOLD_POSE"
+    return out
+
+
+def goto_true_zero_then_saved_start_from_json(
+    *,
+    delay_ms: int | None = None,
+    start_variant: str | None = None,
+) -> dict[str, Any]:
     """Due traiettorie: ZERO file poi START file."""
     z = goto_true_zero_from_json(delay_ms=delay_ms)
     if not z.get("ok"):
         return {**z, "failed_segment": "true_zero"}
-    s = goto_saved_start_from_json(delay_ms=delay_ms)
+    s = goto_saved_start_from_json(delay_ms=delay_ms, start_variant=start_variant)
     out: dict[str, Any] = {
         "ok": bool(s.get("ok")),
         "mode": "goto_true_zero_then_start_file",
@@ -544,7 +810,19 @@ def goto_true_zero_then_saved_start_from_json(*, delay_ms: int | None = None) ->
     return out
 
 
-def goto_tool_target_base_link_m(xyz_base_link: list[float], *, delay_ms: int | None = None) -> dict[str, Any]:
+def _grasp_partial_fractions() -> list[float]:
+    raw = (os.environ.get("GO2_GRASP_PARTIAL_FRACTIONS") or "0.12,0.24,0.38,0.52,0.68,0.84,1.0").strip()
+    try:
+        parts = [float(x.strip()) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        parts = [0.12, 0.24, 0.38, 0.52, 0.68, 0.84, 1.0]
+    out = [max(0.05, min(1.0, p)) for p in parts]
+    return sorted(set(out))
+
+
+def goto_tool_target_base_link_m(
+    xyz_base_link: list[float], *, delay_ms: int | None = None, motion_profile: str = "default"
+) -> dict[str, Any]:
     """IK verso punta utensile in ``base_link`` (stesso frame di ``grasp_display_base_link_m`` / viewer)."""
     if os.environ.get("GO2_LOCAL", "0").lower() not in {"1", "true", "yes", "on"}:
         return {"ok": False, "reason": "go2_local_off"}
@@ -556,9 +834,8 @@ def goto_tool_target_base_link_m(xyz_base_link: list[float], *, delay_ms: int | 
             "reason": "arm_plan_execute_disabled",
             "hint_it": "Imposta GO2_ENABLE_ARM_PLAN_EXECUTE=1 (o GO2_ENABLE_GRASP_IK_EXECUTE) sulla NX e riavvia la dashboard.",
         }
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        return {"ok": False, "reason": "missing_d1_arm_command"}
+    if not d1_arm_motion.command_binary_ready():
+        return {"ok": False, "reason": "missing_arm_command_bin", "backend": d1_arm_motion.motion_backend_name()}
 
     if len(xyz_base_link) < 3:
         return {"ok": False, "reason": "bad_xyz"}
@@ -572,11 +849,19 @@ def goto_tool_target_base_link_m(xyz_base_link: list[float], *, delay_ms: int | 
 
     tip_arm = [bl[i] - float(_MOUNT_BASE_LINK_M[i]) for i in range(3)]
 
-    if os.environ.get("D1_GOTO_PREHOLD", "1").lower() in {"1", "true", "yes", "on"}:
-        publish_d1_hold_current_lite(
-            repeats=max(6, int(os.environ.get("D1_GOTO_PREHOLD_REPEATS", "14"))),
-            delay_ms=max(35, int(os.environ.get("D1_GOTO_PREHOLD_DELAY_MS", "55"))),
-        )
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import begin_operator_arm_session
+
+        beg = begin_operator_arm_session()
+        if not (beg.get("ok") or beg.get("skipped")):
+            return {**beg, "mode": "ik_base_link"}
+    elif prefer_sdk_backend():
+        from go2_dashboard.d1_jog import service as jog_svc
+
+        if jog_svc._arm_coupled:  # noqa: SLF001
+            jog_svc.hold_pose_stream()
+    elif os.environ.get("D1_GOTO_PREHOLD", "1").lower() in {"1", "true", "yes", "on"}:
+        publish_d1_hold_current_lite(repeats=6)
 
     s_scripts = str(PROJECT_ROOT / "scripts")
     if s_scripts not in sys.path:
@@ -608,12 +893,19 @@ def goto_tool_target_base_link_m(xyz_base_link: list[float], *, delay_ms: int | 
             pass
     target7 = target_deg + [round(float(grip), 3)]
 
-    out = _publish_servo_deg_trajectory(
-        target7_deg=target7,
-        delay_ms=delay_ms,
-        start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
-        feedback_diag=diag,
-    )
+    if _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import goto_servo_deg7_operator
+
+        steps = _grasp_phase_max_step_deg_7() if motion_profile == "grasp" else editor_max_step_deg_7()
+        out = goto_servo_deg7_operator(target7, max_step_deg=steps, delay_ms=delay_ms)
+    else:
+        out = _publish_servo_deg_trajectory(
+            target7_deg=target7,
+            delay_ms=delay_ms,
+            start7_deg=[round(float(angles_fb[i]), 3) for i in range(7)],
+            feedback_diag=diag,
+            motion_profile=motion_profile,
+        )
     out["mode"] = "ik_base_link"
     out["ik_target_base_link_m"] = [round(x, 5) for x in bl]
     out["ik_tip_arm_m"] = [round(x, 5) for x in tip_arm]
@@ -701,13 +993,111 @@ def goto_tool_target_base_link_m_partial(
     mx = max(0.06, min(mx, 0.45))
     ab = max(0.04, min(mx, ab))
     partial = [cur[i] + ab * (tgt[i] - cur[i]) for i in range(3)]
-    inner = dict(goto_tool_target_base_link_m(partial, delay_ms=delay_ms))
+    # Approach all'oggetto: lento e a sotto-step parziali (mai un salto IK unico) verso il
+    # waypoint, come richiesto. Disattivabile con GO2_GRASP_COACH_APPROACH_SUBSTEPS=0.
+    substeps_on = os.environ.get("GO2_GRASP_COACH_APPROACH_SUBSTEPS", "1").lower() in {"1", "true", "yes", "on"}
+    if substeps_on:
+        try:
+            approach_delay = int((os.environ.get("GO2_GRASP_COACH_APPROACH_DELAY_MS") or "").strip())
+        except (TypeError, ValueError):
+            approach_delay = delay_ms if delay_ms is not None else None
+        inner = dict(
+            goto_tool_target_base_link_m_staged(
+                partial, delay_ms=approach_delay, motion_profile="grasp"
+            )
+        )
+    else:
+        inner = dict(goto_tool_target_base_link_m(partial, delay_ms=delay_ms))
     inner["mode"] = "ik_base_link_partial"
     inner["approach_blend_applied"] = ab
     inner["target_full_base_link_m"] = [round(tgt[i], 5) for i in range(3)]
     inner["waypoint_base_link_m"] = [round(partial[i], 5) for i in range(3)]
     inner["current_tip_base_link_m"] = cur
     return inner
+
+
+def goto_tool_target_base_link_m_staged(
+    xyz_base_link: list[float],
+    *,
+    delay_ms: int | None = None,
+    motion_profile: str = "grasp",
+    partial_fractions: list[float] | None = None,
+) -> dict[str, Any]:
+    """Progressioni parziali in ``base_link`` (come coach/jog) — mai un salto IK unico."""
+    cur, diag = current_tool_tip_base_link_m()
+    if cur is None:
+        return {"ok": False, "reason": "no_current_tip_fk", "diag": diag}
+    try:
+        tgt = [float(xyz_base_link[i]) for i in range(3)]
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "bad_xyz"}
+    fracs = partial_fractions if partial_fractions else _grasp_partial_fractions()
+    partial_steps: list[dict[str, Any]] = []
+    ok_all = True
+    for frac in fracs:
+        wp = [cur[i] + float(frac) * (tgt[i] - cur[i]) for i in range(3)]
+        r = goto_tool_target_base_link_m(wp, delay_ms=delay_ms, motion_profile=motion_profile)
+        r["partial_fraction"] = float(frac)
+        r["waypoint_base_link_m"] = [round(x, 5) for x in wp]
+        partial_steps.append(r)
+        if not r.get("ok"):
+            ok_all = False
+            break
+        if prefer_sdk_backend():
+            from go2_dashboard.d1_jog import service as jog_svc
+
+            jog_svc.hold_pose_stream()
+    return {
+        "ok": ok_all,
+        "mode": "ik_base_link_staged",
+        "partial_count": len(partial_steps),
+        "partial_steps": partial_steps,
+        "target_full_base_link_m": [round(tgt[i], 5) for i in range(3)],
+        "current_tip_base_link_m": cur,
+    }
+
+
+def goto_joints_rad_clamped_six_staged(
+    joints_rad: list[float],
+    *,
+    motion_profile: str = "grasp",
+    partial_fractions: list[float] | None = None,
+) -> dict[str, Any]:
+    """Progressioni parziali in spazio giunti verso ``joints_rad`` (micro-step jog)."""
+    angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
+    if angles_fb is None or len(angles_fb) < 7:
+        return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
+    s_scripts = str(PROJECT_ROOT / "scripts")
+    if s_scripts not in sys.path:
+        sys.path.insert(0, s_scripts)
+    from arm_kinematics_d1_template import J_LIMITS, clamp
+
+    if len(joints_rad) < 6:
+        return {"ok": False, "reason": "need_6_joint_radians"}
+    tgt_q = [clamp(float(joints_rad[i]), *J_LIMITS[i]) for i in range(6)]
+    cur_q = [math.radians(float(angles_fb[i])) for i in range(6)]
+    fracs = partial_fractions if partial_fractions else _grasp_partial_fractions()
+    partial_steps: list[dict[str, Any]] = []
+    ok_all = True
+    for frac in fracs:
+        q = [cur_q[i] + float(frac) * (tgt_q[i] - cur_q[i]) for i in range(6)]
+        r = goto_joints_rad_clamped_six(q, motion_profile=motion_profile)
+        r["partial_fraction"] = float(frac)
+        partial_steps.append(r)
+        if not r.get("ok"):
+            ok_all = False
+            break
+        if prefer_sdk_backend():
+            from go2_dashboard.d1_jog import service as jog_svc
+
+            jog_svc.hold_pose_stream()
+    return {
+        "ok": ok_all,
+        "mode": "joints_rad_staged",
+        "partial_count": len(partial_steps),
+        "partial_steps": partial_steps,
+        "target_joints_rad_6": [round(float(x), 5) for x in tgt_q],
+    }
 
 
 # --- Movimenti manuali UI (slider / editor): stessi gate DDS della monolite per comandi diretti,
@@ -739,11 +1129,10 @@ def editor_max_step_deg_7() -> list[float]:
 
 
 def _manual_dds_gate() -> dict[str, Any] | None:
-    if os.environ.get("GO2_LOCAL", "0").lower() not in {"1", "true", "yes", "on"}:
-        return {"ok": False, "skipped": False, "reason": "go2_local_off"}
-    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
-    if not helper.is_file() or not os.access(helper, os.X_OK):
-        return {"ok": False, "skipped": False, "reason": "missing_d1_arm_command"}
+    gate = d1_arm_motion.motion_gate_error()
+    if gate:
+        gate["skipped"] = False
+        return gate
     return None
 
 
@@ -759,45 +1148,51 @@ def publish_d1_hold_current_lite(*, repeats: int | None = None, delay_ms: int | 
     rpt = repeats if repeats is not None else max(6, int(os.environ.get("D1_GOTO_PREHOLD_REPEATS", "14")))
     dms = delay_ms if delay_ms is not None else max(35, int(os.environ.get("D1_GOTO_PREHOLD_DELAY_MS", "55")))
     cur = [round(float(angles_fb[i]), 3) for i in range(7)]
-    seq = int(time.time()) % 100000
-    messages: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
+    if prefer_sdk_backend():
+        if _use_operator_arm_motion():
+            from go2_dashboard.operator_arm_motion import hold_operator_arm_pose
+
+            holds = [hold_operator_arm_pose() for _ in range(max(1, int(rpt)))]
+            ok = all(h.get("ok") or h.get("skipped") for h in holds)
+            return {
+                "ok": ok,
+                "mode": "hold_current",
+                "stream": True,
+                "holds": holds,
+                "snapshot_deg": cur,
+                "motion_path": "operator_ui_hold",
+            }
+        from go2_dashboard.d1_jog import service as jog_svc
+
+        if not jog_svc._arm_coupled:  # noqa: SLF001
+            wp = os.environ.get("GO2_GRASP_ARM_WITH_POWER", "0").lower() in {"1", "true", "yes", "on"}
+            prep = jog_svc.arm_motion_session_begin(with_power=wp)
+            if not prep.get("ok"):
+                return {**prep, "mode": "hold_current"}
+        holds: list[dict[str, Any]] = []
+        for _ in range(max(1, int(rpt))):
+            holds.append(jog_svc.hold_pose_stream(servo_deg=cur))
+        return {"ok": True, "mode": "hold_current", "stream": True, "holds": holds, "snapshot_deg": cur}
     fc2_mode = _d1_fc2_multijoint_mode_trajectory()
-    for i in range(max(1, int(rpt))):
-        data = {f"angle{j}": cur[j] for j in range(7)}
-        data["mode"] = fc2_mode
-        messages.append({"seq": seq + 1 + i, "address": 1, "funcode": 2, "data": data})
-    stdin = "\n".join(json.dumps(m, separators=(",", ":")) for m in messages) + "\n"
-    timeout_s = max(20.0, (dms / 1000.0 + 0.45) * len(messages))
-    proc = _d1_cmd_run(stdin, dms, timeout_s)
-    return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "mode": "hold_current",
-        "stdout_tail": (proc.stdout or "")[-600:],
-        "stderr_tail": (proc.stderr or "")[-400:],
-    }
+    path = [cur] * max(1, int(rpt))
+    msgs = d1_arm_motion.build_fc2_trajectory_messages(path, fc2_mode=fc2_mode, include_couple=True)
+    pub = d1_arm_motion.publish_messages(msgs, delay_ms=int(dms))
+    pub["mode"] = "hold_current"
+    return pub
 
 
 def publish_live_pose_deg7(servo_deg: list[float]) -> dict[str, Any]:
-    """Raffica funcode 5 + 2 come slider real-time della dashboard monolite.
-
-    Tra una richiesta e la successiva il processo DDS termina: se il firmware non mantiene da solo
-    la coppia senza messaggi su ``rt/arm_Command``, lunghi vuoti possono far **collassare** il braccio.
-    ``D1_LIVE_PREHOLD`` riduce il tempo «aperto» dopo lettura feedback; vedi anche fix lettura servo
-    (uscita rapida da ``d1_arm_feedback_helper``).
-    """
+    """Slider live: con SDK usa daemon DDS persistente (come dashboard jog 5053)."""
     if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes", "on"}:
         return {"ok": True, "skipped": True, "reason": "GO2_ENABLE_REAL_ARM off (dry)"}
     bad = _manual_dds_gate()
     if bad:
         return bad
-    sd_in = [float(servo_deg[i]) for i in range(min(7, len(servo_deg)))]
-    while len(sd_in) < 7:
-        sd_in.append(sd_in[-1])
-    sd = [round(max(-135.0, min(135.0, sd_in[i])), 3) for i in range(7)]
-
     pre_meta: dict[str, Any] = {}
-    if os.environ.get("D1_LIVE_PREHOLD", "1").lower() in {"1", "true", "yes", "on"}:
+    if (
+        not prefer_sdk_backend()
+        and os.environ.get("D1_LIVE_PREHOLD", "1").lower() in {"1", "true", "yes", "on"}
+    ):
         try:
             prpt = int(os.environ.get("D1_LIVE_PREHOLD_REPEATS", "10") or "10")
         except ValueError:
@@ -811,46 +1206,7 @@ def publish_live_pose_deg7(servo_deg: list[float]) -> dict[str, Any]:
         pre_meta = dict(publish_d1_hold_current_lite(repeats=prpt, delay_ms=pdms))
         pre_meta["live_prehold_repeats"] = prpt
         pre_meta["live_prehold_delay_ms"] = pdms
-
-    repeats = max(1, int(os.environ.get("D1_LIVE_REPEAT", "10")))
-    delay_ms = max(10, int(os.environ.get("D1_LIVE_DELAY_MS", "26")))
-    try:
-        post_hold = max(0, int(os.environ.get("D1_LIVE_POSTHOLD_REPEATS", "20") or "20"))
-    except ValueError:
-        post_hold = 20
-    try:
-        post_cap = int(os.environ.get("D1_LIVE_POSTHOLD_CAP", "56") or "56")
-    except ValueError:
-        post_cap = 56
-    post_cap = max(12, min(96, post_cap))
-    post_hold = min(post_hold, post_cap)
-    fc2_live = _d1_fc2_multijoint_mode_stream()
-    seq = int(time.time()) % 100000
-    messages: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
-    angles = {f"angle{idx}": sd[idx] for idx in range(7)}
-    angles["mode"] = fc2_live
-    for r in range(repeats):
-        messages.append({"seq": seq + 1 + r, "address": 1, "funcode": 2, "data": dict(angles)})
-    for r in range(post_hold):
-        messages.append(
-            {"seq": seq + 1 + repeats + r, "address": 1, "funcode": 2, "data": dict(angles)}
-        )
-    stdin = "\n".join(json.dumps(m, separators=(",", ":")) for m in messages) + "\n"
-    timeout_s = max(25.0, (delay_ms / 1000.0 + 0.4) * len(messages))
-    proc = _d1_cmd_run(stdin, delay_ms, timeout_s)
-    ok = proc.returncode == 0
-    out: dict[str, Any] = {
-        "ok": ok,
-        "skipped": False,
-        "mode": "live_direct",
-        "target_servo_deg": sd,
-        "live_burst_repeats": repeats,
-        "live_fc2_angle_mode": fc2_live,
-        "live_posthold_repeats": post_hold,
-        "returncode": proc.returncode,
-        "stdout_tail": (proc.stdout or "")[-900:],
-        "stderr_tail": (proc.stderr or "")[-600:],
-    }
+    out = d1_arm_motion.publish_live_servo_deg7(servo_deg)
     if pre_meta:
         out["live_prehold"] = pre_meta
     return out
@@ -875,12 +1231,20 @@ def publish_goto_servo_deg7(
 
     if (
         not skip_prehold
+        and not d1_arm_motion.is_live_session_active()
         and os.environ.get("D1_GOTO_PREHOLD", "1").lower() in {"1", "true", "yes"}
     ):
         publish_d1_hold_current_lite(
             repeats=max(6, int(os.environ.get("D1_GOTO_PREHOLD_REPEATS", "14"))),
             delay_ms=max(35, int(os.environ.get("D1_GOTO_PREHOLD_DELAY_MS", "55"))),
         )
+
+    if prefer_sdk_backend() and not d1_arm_motion.is_live_session_active() and _use_operator_arm_motion():
+        from go2_dashboard.operator_arm_motion import begin_operator_arm_session
+
+        beg = begin_operator_arm_session()
+        if not (beg.get("ok") or beg.get("skipped")):
+            return beg
 
     angles_fb, diag = read_servo_deg_with_diag(PROJECT_ROOT)
     if angles_fb is None or len(angles_fb) < 7:

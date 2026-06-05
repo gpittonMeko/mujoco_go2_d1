@@ -125,13 +125,52 @@ def _verify_nx_grasp(ssh: paramiko.SSHClient) -> None:
         raise RuntimeError("grasp health sulla NX fallito")
 
 
+def _install_pem_on_nx(ssh: paramiko.SSHClient, pem_path: Path) -> None:
+    if not pem_path.is_file():
+        raise FileNotFoundError(pem_path)
+    remote = "/home/unitree/.ssh/LLM_14.pem"
+    sftp = ssh.open_sftp()
+    try:
+        sftp.put(str(pem_path), remote)
+    finally:
+        sftp.close()
+    code, out, err = _ssh_run(ssh, f"chmod 600 {remote} && ls -la {remote}")
+    if code != 0:
+        raise RuntimeError(err or out)
+    print(f"OK PEM su NX: {remote}")
+
+
+def _install_ec2_control_on_nx(ssh: paramiko.SSHClient, state_path: Path) -> None:
+    if state_path.is_file():
+        sftp = ssh.open_sftp()
+        try:
+            remote_state = f"{REMOTE_BASE}/data/go2_vla_ec2_state.json"
+            _ssh_run(ssh, f"mkdir -p {REMOTE_BASE}/data")
+            sftp.put(str(state_path), remote_state)
+        finally:
+            sftp.close()
+        print(f"OK state EC2 su NX: {remote_state}")
+    # script già deployato con deploy_dashboard_to_nx.py
+    hint = (
+        f"echo 'export GO2_VLA_EC2_INSTANCE_ID='$(python3 -c \"import json;print(json.load(open('{REMOTE_BASE}/data/go2_vla_ec2_state.json'))['instance_id'])\") >> {SECRETS_SH} 2>/dev/null || true"
+    )
+    _ssh_run(ssh, hint)
+    print(
+        "Per start/stop dalla NX aggiungi in nx_secrets_dashboard.sh:\n"
+        "  export AWS_ACCESS_KEY_ID=...\n"
+        "  export AWS_SECRET_ACCESS_KEY=...\n"
+        "  export AWS_DEFAULT_REGION=eu-west-1\n"
+        "Poi: python3 scripts/aws_vla_ec2_control.py status|start|stop"
+    )
+
+
 def _verify_worker_direct(worker_url: str, token: str) -> None:
     url = worker_url.rstrip("/") + "/health"
     req = urllib.request.Request(url, headers={"Accept": "application/json", "X-Worker-Token": token})
     with urllib.request.urlopen(req, timeout=15) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     print("--- worker /health (direct) ---")
-    print(json.dumps(body, indent=2, ensure_ascii=False)[:3000])
+    print(json.dumps(body, indent=2, ensure_ascii=True)[:3000])
 
 
 def main() -> int:
@@ -142,6 +181,9 @@ def main() -> int:
     ap.add_argument("--no-cloud-mode", action="store_true", help="Non forzare GO2_GRASP_CLOUD_MODE=1")
     ap.add_argument("--verify", action="store_true", help="Dopo pair, curl grasp/health sulla NX")
     ap.add_argument("--skip-restart", action="store_true")
+    ap.add_argument("--install-pem", nargs="?", const="auto", metavar="PEM", help="Copia chiave PEM sulla NX (~/.ssh/LLM_14.pem)")
+    ap.add_argument("--install-ec2-control", action="store_true", help="Copia state EC2 sulla NX per start/stop")
+    ap.add_argument("--state-file", type=Path, default=Path("data/go2_vla_ec2_state.json"))
     args = ap.parse_args()
 
     worker_url = (args.worker_url or "").strip().rstrip("/")
@@ -180,6 +222,15 @@ def main() -> int:
     print(f"OK GO2_ANYGRASP_WORKER_URL={worker_url}")
     _write_secrets_token(ssh, token)
 
+    if args.install_pem:
+        pem = Path(args.install_pem)
+        if args.install_pem == "auto" or str(args.install_pem).lower() == "auto":
+            pem = Path(os.environ.get("GO2_AWS_PEM", os.path.expanduser("~/Documents/LLM_14.pem")))
+        _install_pem_on_nx(ssh, pem.expanduser().resolve())
+
+    if args.install_ec2_control:
+        _install_ec2_control_on_nx(ssh, args.state_file.expanduser().resolve())
+
     if not args.skip_restart:
         rc = _restart_dashboard(ssh)
         if rc != 0:
@@ -192,7 +243,7 @@ def main() -> int:
     ssh.close()
     print("")
     print("PAIR_NX_AWS_VLA_OK")
-    print(f"Dashboard: http://{nx_host()}:5052 → tab Presa → VLA AWS")
+    print(f"Dashboard: http://{nx_host()}:5052 -> tab Presa -> VLA AWS")
     return 0
 
 

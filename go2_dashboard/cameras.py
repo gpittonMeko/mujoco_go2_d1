@@ -14,6 +14,8 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
+from go2_dashboard import orbbec_lock
+
 CAMERA_DEVICES: dict[int, str] = {
     0: "Wrist RGB (Orbbec Gemini / Sonix UVC — auto-map USB)",
     6: "Intel RealSense D435i RGB stream",
@@ -379,30 +381,46 @@ def _probe_orbbec_rgb_v4l(indices: list[int], *, default_env: str, fallback_defa
                         pass
         return None
 
-    for spec in (
-        ("strict_sysfs_mjpeg", True, False, True, 18),
-        ("relaxed_edge_mjpeg", True, True, True, 18),
-        ("relaxed_edge_yuyv", True, True, False, 22),
-        ("exhaustive_noncolor_mjpeg", False, True, True, 16),
-        ("exhaustive_noncolor_yuyv", False, True, False, 20),
-    ):
-        pname, pnc, re, umj, nread = spec
-        found = try_pass(
-            pass_name=pname,
-            penalize_noncolor=pnc,
-            relaxed_edge=re,
-            use_mjpeg=umj,
-            reads=nread,
-        )
-        if found is not None:
+    # Il probe apre i nodi Orbbec 0-3 in lettura: serializza col lock per non rubare la
+    # camera a una presa SDK / a un altro processo. Se resta occupato, salta il probe.
+    try:
+        probe_timeout = float((os.environ.get("GO2_ORBBEC_PROBE_LOCK_TIMEOUT_S") or "6").strip())
+    except ValueError:
+        probe_timeout = 6.0
+    with orbbec_lock.orbbec_guard("orbbec_probe", blocking=True, timeout_s=probe_timeout) as _lk:
+        if not _lk.acquired:
             _ORBBEC_LOGICAL0_DEBUG = {
-                "ok": True,
-                "v4l_index": found,
-                "probe_pass": pname,
+                "ok": False,
+                "stage": "orbbec_busy_skip_probe",
+                "holder": _lk.holder,
                 "pref": pref,
                 "indices_pool": uniq,
             }
-            return found
+            return None
+        for spec in (
+            ("strict_sysfs_mjpeg", True, False, True, 18),
+            ("relaxed_edge_mjpeg", True, True, True, 18),
+            ("relaxed_edge_yuyv", True, True, False, 22),
+            ("exhaustive_noncolor_mjpeg", False, True, True, 16),
+            ("exhaustive_noncolor_yuyv", False, True, False, 20),
+        ):
+            pname, pnc, re, umj, nread = spec
+            found = try_pass(
+                pass_name=pname,
+                penalize_noncolor=pnc,
+                relaxed_edge=re,
+                use_mjpeg=umj,
+                reads=nread,
+            )
+            if found is not None:
+                _ORBBEC_LOGICAL0_DEBUG = {
+                    "ok": True,
+                    "v4l_index": found,
+                    "probe_pass": pname,
+                    "pref": pref,
+                    "indices_pool": uniq,
+                }
+                return found
     _ORBBEC_LOGICAL0_DEBUG = {
         "ok": False,
         "stage": "all_probe_passes_failed",
@@ -617,6 +635,36 @@ def usb_auto_v4l_mapping() -> dict[int, int]:
         return dict(_usb_auto_v4l_cache)
 
 
+def v4l_open_candidates_for_logical(logical: int) -> list[int]:
+    """Indici V4L da provare in ordine se il mapping primario non apre (env errato, USB riordinato)."""
+    seen: set[int] = set()
+    out: list[int] = []
+
+    def _add(idx: int) -> None:
+        i = int(idx)
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+
+    _add(_v4l_index_for_logical_camera(logical))
+    if int(logical) == 0:
+        try:
+            probe = orbbec_logical0_probe_debug()
+            if probe.get("v4l_index") is not None:
+                _add(int(probe["v4l_index"]))
+        except Exception:
+            pass
+    try:
+        auto = usb_auto_v4l_mapping()
+        if int(logical) in auto:
+            _add(int(auto[int(logical)]))
+    except Exception:
+        pass
+    for idx in v4l_candidates_for_logical_slot(int(logical)):
+        _add(int(idx))
+    return out
+
+
 def _v4l_index_for_logical_camera(logical: int) -> int:
     """
     Indice V4L2 reale (``/dev/videoN``).
@@ -652,6 +700,28 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
 
 def _v4l_path(v4l_index: int) -> str:
     return f"/dev/video{int(v4l_index)}"
+
+
+_ORBBEC_USB_VENDOR = "2bc5"
+
+
+def _v4l_is_orbbec(v4l_index: int) -> bool:
+    """Vero se il nodo ``/dev/videoN`` è un Orbbec (vendor 2bc5): va serializzato col lock."""
+    usb = _usb_vid_pid_for_video_index(int(v4l_index))
+    if not usb:
+        return False
+    return usb in _USB_IDS_LOGICAL_0_ORBBEC or usb[0] == _ORBBEC_USB_VENDOR
+
+
+def _logical_uses_orbbec(logical: int) -> bool:
+    """Vero se lo slot logico aprirebbe un device Orbbec (almeno un candidato V4L è Orbbec)."""
+    try:
+        for idx in v4l_open_candidates_for_logical(int(logical)):
+            if _v4l_is_orbbec(int(idx)):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _v4l_permission_hint(v4l_index: int) -> str | None:
@@ -698,6 +768,16 @@ def debug_v4l_snapshot_jpeg(v4l_index: int, *, jpeg_quality: int = 72) -> bytes 
     """Un singolo frame JPEG da ``/dev/videoN`` (debug: confrontare nodi RGB vs depth IR senza SDK)."""
     if cv2 is None or platform.system().lower() != "linux":
         return None
+    # Snapshot Orbbec: serializza col lock (non rubare la camera a una presa SDK / altro processo).
+    _snap_lease = None
+    if _v4l_is_orbbec(int(v4l_index)):
+        try:
+            _snap_to = float((os.environ.get("GO2_ORBBEC_SNAPSHOT_LOCK_TIMEOUT_S") or "4").strip())
+        except ValueError:
+            _snap_to = 4.0
+        _snap_lease = orbbec_lock.acquire("debug_snapshot", blocking=True, timeout_s=_snap_to)
+        if _snap_lease is None:
+            return None
     cap = None
     try:
         cap = _cv_videocapture(int(v4l_index))
@@ -736,6 +816,7 @@ def debug_v4l_snapshot_jpeg(v4l_index: int, *, jpeg_quality: int = 72) -> bytes 
                 cap.release()
             except Exception:
                 pass
+        orbbec_lock.release(_snap_lease)
 
 
 def v4l_index_in_usb_inventory(v4l_index: int) -> bool:
@@ -844,8 +925,32 @@ class CameraCache:
     def _loop(self, device: int) -> None:
         cap = None
         last_opened_v4l: int | None = None
+        orb_lease: orbbec_lock.OrbbecLease | None = None
+        is_orbbec_logical = _logical_uses_orbbec(device)
+
+        def _release_all() -> None:
+            nonlocal cap, last_opened_v4l, orb_lease
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            cap = None
+            last_opened_v4l = None
+            if orb_lease is not None:
+                orbbec_lock.release(orb_lease)
+                orb_lease = None
+
         while not self._stop.is_set():
             start = time.perf_counter()
+            # Prelazione cooperativa: se un altro consumatore (presa SDK / altro processo)
+            # ha chiesto l'Orbbec, cediamo subito la camera e attendiamo che finisca.
+            if is_orbbec_logical and cap is not None and orbbec_lock.preempt_requested():
+                _release_all()
+                with self._lock:
+                    self.errors[device] = "Orbbec ceduto a una presa/altro processo (prelazione)"
+                time.sleep(0.4)
+                continue
             target_v4l = _v4l_index_for_logical_camera(device)
             if (
                 cap is not None
@@ -853,21 +958,44 @@ class CameraCache:
                 and last_opened_v4l is not None
                 and int(target_v4l) != int(last_opened_v4l)
             ):
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-                cap = None
+                _release_all()
             if cap is None or not cap.isOpened():
                 if cap is not None:
+                    _release_all()
+                # Orbbec: prendi il lock cross-process PRIMA di aprire il device. Se è occupato
+                # (o c'è una prelazione in corso) non aprire: aspetta senza rubare la camera.
+                if is_orbbec_logical:
+                    if orbbec_lock.preempt_requested():
+                        with self._lock:
+                            self.errors[device] = "Orbbec in uso da una presa/altro processo (attendo)"
+                        time.sleep(0.5)
+                        continue
+                    orb_lease = orbbec_lock.acquire("camera_stream", blocking=True, timeout_s=1.0)
+                    if orb_lease is None:
+                        with self._lock:
+                            self.errors[device] = (
+                                "Orbbec occupato da altro processo"
+                                + (f" ({orbbec_lock.holder_info()})" if orbbec_lock.holder_info() else "")
+                                + " — stream in attesa"
+                            )
+                        time.sleep(0.6)
+                        continue
+                opened_v4l: int | None = None
+                for v4l_try in v4l_open_candidates_for_logical(device):
+                    cap_try = _cv_videocapture(int(v4l_try))
+                    if cap_try.isOpened():
+                        cap = cap_try
+                        opened_v4l = int(v4l_try)
+                        break
                     try:
-                        cap.release()
+                        cap_try.release()
                     except Exception:
                         pass
-                    cap = None
-                v4l_idx = int(target_v4l)
-                cap = _cv_videocapture(v4l_idx)
-                if cap.isOpened():
+                if cap is None and orb_lease is not None:
+                    orbbec_lock.release(orb_lease)
+                    orb_lease = None
+                if cap is not None and cap.isOpened() and opened_v4l is not None:
+                    v4l_idx = opened_v4l
                     last_opened_v4l = int(v4l_idx)
                     try:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -882,9 +1010,16 @@ class CameraCache:
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     cap.set(cv2.CAP_PROP_FPS, 15)
                 else:
+                    cap = None
                     last_opened_v4l = None
+                    tried = v4l_open_candidates_for_logical(device)
+                    v4l_idx = int(tried[0]) if tried else int(target_v4l)
                     hint = _v4l_permission_hint(v4l_idx)
-                    msg = f"open failed (V4L /dev/video{v4l_idx}, logical {device})"
+                    msg = (
+                        f"open failed (V4L candidati {tried}, logical {device})"
+                        if len(tried) > 1
+                        else f"open failed (V4L /dev/video{v4l_idx}, logical {device})"
+                    )
                     if hint:
                         msg = f"{msg} — {hint}"
                     with self._lock:
@@ -898,9 +1033,7 @@ class CameraCache:
             except Exception as exc:
                 with self._lock:
                     self.errors[device] = f"read failed: {exc!r}"
-                cap.release()
-                cap = None
-                last_opened_v4l = None
+                _release_all()
                 time.sleep(0.5)
                 continue
 
@@ -945,16 +1078,13 @@ class CameraCache:
             else:
                 with self._lock:
                     self.errors[device] = "read returned no frame"
-                cap.release()
-                cap = None
-                last_opened_v4l = None
+                _release_all()
                 time.sleep(0.5)
                 continue
             delay = self.period - (time.perf_counter() - start)
             if delay > 0:
                 time.sleep(delay)
-        if cap is not None:
-            cap.release()
+        _release_all()
 
     def get_jpeg(self, device: int, wait_s: float = 1.2) -> bytes | None:
         self.start(device)

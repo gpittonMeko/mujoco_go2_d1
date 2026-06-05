@@ -217,6 +217,17 @@ def _hermes_apply_intent(intent: dict[str, Any], *, dry_run: bool) -> dict[str, 
             if stop_on_err and _hermes_step_failed(step):
                 return {"ok": False, "dry_run": False, "steps": steps, "intent": intent}
 
+    gf = intent.get("grasp_full")
+    if isinstance(gf, dict):
+        from go2_dashboard.grasp_full_sequence import CONFIRM_TOKEN, run_full_grasp_sequence
+
+        instr = str(gf.get("instruction") or "").strip()
+        r = run_full_grasp_sequence(instruction=instr, confirm=CONFIRM_TOKEN)
+        step = {"kind": "grasp_full", "instruction": instr, "result": r}
+        steps.append(step)
+        if stop_on_err and _hermes_step_failed(step):
+            return {"ok": False, "dry_run": False, "steps": steps, "intent": intent}
+
     bm = intent.get("base_motion")
     if isinstance(bm, dict) and bm.get("mode"):
         body = dict(bm)
@@ -246,6 +257,17 @@ def _hermes_allow_arm_tool_target(caps: dict[str, Any]) -> bool:
     if caps.get("_legacy"):
         return True
     return bool(caps.get("allow_arm_tool_target"))
+
+
+def _hermes_allow_grasp_full(caps: dict[str, Any]) -> bool:
+    """Sequenza presa completa via voce: OFF di default (anche legacy). Opt-in esplicito.
+
+    Abilitata da ``GO2_HERMES_GRASP_FULL=1`` o dalla capability UI ``allow_openvla_plan``.
+    Conservativo perché muove il braccio (START + presa) senza ulteriore conferma manuale.
+    """
+    if os.environ.get("GO2_HERMES_GRASP_FULL", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return bool(caps.get("allow_openvla_plan"))
 
 
 def _hermes_sanitize_tool_target_xyz(raw: Any) -> list[float] | None:
@@ -291,6 +313,11 @@ _GO2_BASE_CROUCH_RE = re.compile(
 )
 _GO2_BASE_STOP_RE = re.compile(
     r"(?i)(\bferma(il)?\s+il\s+cane\b|\bferma\s+la\s+base\b|\bstop\b\s+(?:la\s+)?(?:base|sport(?:\s+mode)?)|\bferma\s+il\s+go2\b)"
+)
+
+# Verbi presa (IT/EN): «prendi/afferra/raccogli quell'oggetto», «pick up / grab / fetch».
+_GRASP_VERB_RE = re.compile(
+    r"(?i)\b(prendi(?:mi)?|afferra|raccogli|acchiappa|grab|pick\s+up|pick|fetch|grasp)\b"
 )
 
 _HERMES_DEFAULT_BASE_MOTION: dict[str, Any] = {
@@ -348,6 +375,39 @@ def hermes_apply_go2_base_lexicon_from_user_text(
         mode_pick, mode_pick
     )
     notes.append(f"Routing server: frase operatore interpretata come base quadrupede → `{label}`; campi braccio azzerati.")
+    return out, notes
+
+
+def hermes_apply_grasp_full_lexicon_from_user_text(
+    user_text: str, intent: dict[str, Any], caps: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Se l'operatore dice «prendi/afferra quell'oggetto» e la presa completa è abilitata,
+    instrada alla sequenza completa (frontale → START → pose estimation polso → presa a fasi).
+
+    Default OFF: serve ``GO2_HERMES_GRASP_FULL=1`` o capability ``allow_openvla_plan``.
+    """
+    notes: list[str] = []
+    if not _hermes_allow_grasp_full(caps):
+        return intent, notes
+    raw = (user_text or "").strip()
+    if not raw:
+        return intent, notes
+    if len(raw) > 400:
+        raw = raw[:400]
+    if not _GRASP_VERB_RE.search(raw):
+        return intent, notes
+    # Non sovrascrivere un jog/preset/IK già richiesto chiaramente in questo turno.
+    if _hermes_intent_has_arm_motion(intent):
+        return intent, notes
+    out = copy.deepcopy(intent)
+    out["arm_preset"] = None
+    out["arm_joint_delta"] = None
+    out["arm_tool_target"] = None
+    out["grasp_full"] = {"instruction": raw}
+    notes.append(
+        "Routing server: frase interpretata come PRESA COMPLETA → frontale, posa START, "
+        "pose estimation dal polso e presa a fasi sul D1."
+    )
     return out, notes
 
 
@@ -546,6 +606,22 @@ def _hermes_sanitize_intent(intent: dict[str, Any], caps: dict[str, Any]) -> tup
     if out.get("openvla") is not None:
         out["openvla"] = None
         warnings.append("Campo legacy `openvla` ignorato (stack vision → IK locale).")
+
+    gf = out.get("grasp_full")
+    if gf is not None:
+        if not _hermes_allow_grasp_full(caps):
+            out["grasp_full"] = None
+            warnings.append("Presa completa disabilitata (serve GO2_HERMES_GRASP_FULL=1 o allow_openvla_plan).")
+        elif isinstance(gf, dict):
+            instr = str(gf.get("instruction") or "").strip()[:300]
+            out["grasp_full"] = {"instruction": instr}
+            # La presa completa muove il braccio: ha precedenza e azzera gli altri campi braccio.
+            out["arm_preset"] = None
+            out["arm_joint_delta"] = None
+            out["arm_tool_target"] = None
+        else:
+            out["grasp_full"] = None
+            warnings.append("`grasp_full` deve essere object — scartato.")
 
     ap = out.get("arm_preset")
     if isinstance(ap, str) and ap.strip():
@@ -800,6 +876,10 @@ def hermes_summarize_intent_it(intent: dict[str, Any]) -> str:
                 )
             except (TypeError, ValueError):
                 parts.append("IK visione (coordinate non valide)")
+    gf = intent.get("grasp_full")
+    if isinstance(gf, dict):
+        instr = str(gf.get("instruction") or "").strip()
+        parts.append("Presa completa (START → polso → presa a fasi)" + (f": «{instr}»" if instr else ""))
     if not parts:
         return "Nessuna azione robot nel JSON (solo risposta testuale o campi null)."
     return " · ".join(parts)
@@ -836,6 +916,11 @@ def _hermes_compact_steps_for_memory(steps: Any) -> str:
             parts.append(f"openvla_plan http={s.get('http_status')} ok={pok}")
         elif kind == "openvla_execute":
             parts.append(f"openvla_exec ok={(s.get('result') or {}).get('ok')}")
+        elif kind == "grasp_full":
+            res = s.get("result")
+            fs = res.get("failed_step") if isinstance(res, dict) else None
+            ok = res.get("ok") if isinstance(res, dict) else None
+            parts.append(f"grasp_full ok={ok} failed={fs}")
         else:
             parts.append(kind)
     return "; ".join(parts)[:900]

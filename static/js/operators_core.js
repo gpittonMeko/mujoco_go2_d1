@@ -118,8 +118,13 @@
     if (name === "3d" && window.operatorsScene3dOnTabShown) {
       window.operatorsScene3dOnTabShown();
     }
-    if (name === "grasp" && window.operatorsGraspDockBumpPreviews) {
-      window.operatorsGraspDockBumpPreviews();
+    if (name === "grasp") {
+      if (window.operatorsGraspDockBumpPreviews) {
+        window.operatorsGraspDockBumpPreviews();
+      }
+      if (window.operatorsGraspRefreshStartPoseBadge) {
+        window.operatorsGraspRefreshStartPoseBadge();
+      }
     }
     if (name === "calib" && window.operatorsCalibrationOnTabShown) {
       window.operatorsCalibrationOnTabShown();

@@ -266,9 +266,11 @@
             <div class="card ut-arm-card">
               <h2 class="ut-arm-title">Braccio D1 · giunti</h2>
               <p class="ut-arm-lead">
-                All’apertura del tab <strong>Moto</strong> gli slider si allineano al feedback DDS. Con <strong>Live</strong> attivo, all’accensione si risincronizza e invia la posa corrente (evita comandi verso 0° mentre il braccio è altrove).
-                Ogni aggiornamento live applica prima una breve presa sulla posa letta da feedback (riduce il <strong>cedimento</strong> tra un comando e il successivo); sulla NX: <code>D1_LIVE_PREHOLD*</code>, <code>D1_LIVE_POSTHOLD_REPEATS</code>.
-                <strong>Smooth</strong> = traiettoria da posa reale → target cursore. Richiede <code>GO2_ENABLE_REAL_ARM=1</code>.
+                All’apertura del tab <strong>Moto</strong>: <strong>Sincronizza da robot</strong> allinea gli slider al feedback DDS (<code>d1_sdk_feedback</code> se compilato sulla NX).
+                Con <strong>Controllo live</strong> ON si apre una <strong>sessione DDS</strong> (coppia motori + publisher persistente, come la dashboard jog) — lo stato mostra <em>Live ON (SDK stream)</em> se tutto ok.
+                Muovi gli slider: ogni tick invia la posa sul canale live (senza riavviare il comando a ogni movimento). Spegni Live per chiudere la sessione.
+                <strong>Smooth (goto)</strong> = traiettoria interpolata verso i gradi dei cursori. Richiede <code>GO2_LOCAL=1</code> e <code>GO2_ENABLE_REAL_ARM=1</code>.
+                Verifica backend: <code>GET /api/health</code> → <code>d1_arm_motion_backend: d1_sdk</code>.
               </p>
               <div class="ut-live-bar">
                 <label class="ut-live-check"><input type="checkbox" id="opJointLiveEnabled" checked onchange="operatorsJointLiveToggleRefresh()" /> <strong>Controllo live</strong></label>
@@ -283,11 +285,18 @@
                 <div class="ut-joint-row"><span class="ut-joint-lab">J5</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(5,-1)">−</button><input type="range" id="opJointSlide5" min="-135" max="135" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(5)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(5,1)">+</button><span class="ut-joint-val" id="opJointSlideV5">0°</span></div>
                 <div class="ut-joint-row"><span class="ut-joint-lab">Gr</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(6,-1)">−</button><input type="range" id="opJointSlide6" min="0" max="90" step="0.25" value="50" oninput="operatorsJointSliderLiveInput(6)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(6,1)">+</button><span class="ut-joint-val" id="opJointSlideV6">50°</span></div>
               </div>
+              <label style="display:block;margin:8px 0 4px;font-size:0.82rem;">Preset START
+                <select id="opStartVariant" class="agent-select" style="margin-left:8px;" onchange="operatorsStartVariantChanged()">
+                  <option value="lateral" selected>laterale (default · J0 ~90°)</option>
+                  <option value="frontal">frontale (secondario)</option>
+                </select>
+              </label>
               <div class="ut-joint-actions">
                 <button type="button" id="opJointBtnSync" class="op-btn" onclick="operatorsJointEditorLoad()">Sincronizza da robot</button>
                 <button type="button" class="op-btn primary" onclick="operatorsJointEditorGoto()">Smooth (goto)</button>
                 <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveZero()">Salva ZERO</button>
                 <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveStart()">Salva START</button>
+                <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveStartLive()" title="Legge feedback motori e salva come START del preset scelto">Salva START da motori</button>
               </div>
               <div class="ut-joint-actions ut-joint-actions-danger">
                 <button type="button" class="op-btn danger" onclick="operatorsArmEmergencyHold()">E-stop hold</button>
@@ -305,58 +314,185 @@
       <section class="tab-panel" data-tab="grasp">
         <header class="op-module-hero op-module-hero--grasp op-module-hero--compact">
           <p class="op-module-kicker">Presa</p>
-          <h2 class="op-module-title">VLA AWS · Grasp Coach</h2>
+          <h2 class="op-module-title">Presa D1</h2>
         </header>
 
-        <div class="card">
-          <p class="muted small" style="margin:0 0 12px;line-height:1.5;">
-            <strong>VLA AWS</strong> — istruzione in italiano → cam polso + frontale → worker EC2 → braccio D1.
-            Configura con <code>python scripts/pair_nx_aws_vla.py</code> dal PC. Coach OpenAI resta sotto.
+        <div class="card op-grasp-flow-switch-card">
+          <div class="op-grasp-flow-switch op-grasp-flow-switch--3" role="tablist" aria-label="Modalità presa">
+            <button type="button" class="op-grasp-flow-btn is-active" id="graspFlowBtnGuided" data-grasp-flow="guided" role="tab" aria-selected="true">
+              <span class="op-grasp-flow-btn-t">Locale · sequenza completa</span>
+              <span class="op-grasp-flow-btn-s">Orbbec/GraspGen sulla NX · senza VLA</span>
+            </button>
+            <button type="button" class="op-grasp-flow-btn" id="graspFlowBtnVla" data-grasp-flow="vla" role="tab" aria-selected="false">
+              <span class="op-grasp-flow-btn-t">VLA AWS · passo-passo</span>
+              <span class="op-grasp-flow-btn-s">piano dal worker EC2 · esecuzione manuale</span>
+            </button>
+            <button type="button" class="op-grasp-flow-btn" id="graspFlowBtnTeach" data-grasp-flow="teach" role="tab" aria-selected="false">
+              <span class="op-grasp-flow-btn-t">Teaching · GPT-nano</span>
+              <span class="op-grasp-flow-btn-s">coach OpenAI vision · step + memoria</span>
+            </button>
+          </div>
+          <p id="graspFlowCaption" class="muted small op-grasp-flow-caption">
+            <strong>Locale:</strong> sequenza completa in un comando, piano dal polso sulla NX (Orbbec metrico / GraspGen). È il flusso del laboratorio, <strong>senza</strong> OpenVLA; ricade sul worker solo se il locale fallisce.
           </p>
         </div>
 
         <div class="card op-grasp-progress-card" id="graspProgressCard" aria-live="polite">
           <div class="op-grasp-progress-head">
-            <h2 class="op-grasp-progress-h">VLA AWS · avanzamento</h2>
+            <h2 class="op-grasp-progress-h">Avanzamento</h2>
             <button type="button" class="op-btn op-btn--ghost op-grasp-progress-reset">Azzera</button>
           </div>
-          <p id="graspProgressCaption" class="op-grasp-progress-caption">Pronto — health worker poi piano</p>
+          <p id="graspProgressCaption" class="op-grasp-progress-caption">Pronto — scegli un flusso e avvia</p>
           <div class="op-grasp-progress-track" id="graspProgressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="op-grasp-progress-fill" id="graspProgressFill"></div>
           </div>
+          <ul class="op-grasp-step-chips" aria-hidden="true">
+            <li class="op-grasp-step-chip" data-grasp-step="0">Worker</li>
+            <li class="op-grasp-step-chip" data-grasp-step="1">Piano</li>
+            <li class="op-grasp-step-chip" data-grasp-step="2">Anteprima</li>
+            <li class="op-grasp-step-chip" data-grasp-step="3">Esecuzione</li>
+            <li class="op-grasp-step-chip" data-grasp-step="4">Fatto</li>
+          </ul>
         </div>
 
-        <div class="card">
-          <h2>OpenVLA · AWS</h2>
-          <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
-            La NX invia <strong>JPEG inline</strong> (Orbbec log.0 + RealSense log.6) al worker cloud.
-            Richiede <code>GO2_ANYGRASP_WORKER_URL</code> + <code>GO2_WORKER_TOKEN</code> (vedi tab <strong>Sistema</strong> → mission console).
-          </p>
-          <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione (IT/EN)
-            <input type="text" id="operatorsOpenvlaInstruction" class="agent-select" style="width:100%;margin-top:4px;" value="afferra la scatola bianca davanti al braccio" spellcheck="true" />
-          </label>
-          <fieldset style="margin:10px 0;border:none;padding:0;font-size:0.82rem;">
-            <legend class="muted small">Camera primaria per il piano</legend>
-            <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="0" checked /> log.0 polso</label>
-            <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="6" /> log.6 frontale</label>
-          </fieldset>
-          <div class="btn-grid" style="margin-top:10px;">
-            <button type="button" class="op-btn" onclick="operatorsGraspHealth()">Health worker</button>
-            <button type="button" class="op-btn primary" onclick="operatorsGraspStartPresaPipeline()">Piano VLA (1 click)</button>
-            <button type="button" class="op-btn" onclick="operatorsGraspPlan()">Solo POST plan</button>
-            <button type="button" class="op-btn ok" onclick="operatorsExecuteLastPlanIkArm()">Muovi IK</button>
-            <button type="button" class="op-btn ok" onclick="operatorsOpenvlaExecuteD1Arm()">Muovi FK D1</button>
+        <!-- ===================== FLUSSO GUIDATO (sequenza completa) ===================== -->
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="guided">
+          <div class="card op-grasp-full-card" id="graspFullCard">
+            <h2>Prendi l'oggetto · sequenza completa</h2>
+            <p class="muted small" style="margin:0 0 10px;line-height:1.5;">
+              Un comando: <strong>frontale vede l'oggetto</strong> → <strong>braccio a START</strong> →
+              <strong>pose estimation dal polso</strong> → <strong>presa a fasi</strong>. Movimento sullo stesso
+              stack del tab <strong>Braccio D1 · giunti</strong> (coppia + sessione live + smooth).
+            </p>
+            <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione (IT/EN)
+              <input type="text" id="graspFullInstruction" class="agent-select" style="width:100%;margin-top:4px;" value="prendi la scatola bianca davanti al braccio" spellcheck="true" />
+            </label>
+            <p class="muted small" style="margin:6px 0;line-height:1.45;"><span class="op-grasp-front-badge is-idle" id="graspStartPoseBadge">START: verifica…</span>
+              · Il piano dal polso parte <strong>solo</strong> da START salvata. La sequenza reale fa fold+START prima della presa.</p>
+            <label class="op-check" style="display:block;margin:8px 0;"><input type="checkbox" id="graspFullDryRun" /> Solo anteprima (dry-run · <strong>non</strong> va a START né prende)</label>
+            <div class="op-grasp-go-row" style="margin-top:10px;">
+              <button type="button" class="op-btn primary op-grasp-go-btn" id="graspFullRunBtn" onclick="operatorsGraspRunFull()">▸ Prendi oggetto (sequenza completa)</button>
+              <button type="button" class="op-btn" onclick="operatorsGraspRunFull(true)">Anteprima (dry-run)</button>
+            </div>
+
+            <ol class="op-grasp-storyboard" id="graspFullSteps" aria-live="polite">
+              <li class="op-grasp-story-step is-idle" data-step="front_detect"><span class="op-grasp-story-ico">1</span><span class="op-grasp-story-txt">Frontale vede l'oggetto</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="goto_start"><span class="op-grasp-story-ico">2</span><span class="op-grasp-story-txt">Fold + braccio alla posa START</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="start_pose_check"><span class="op-grasp-story-ico">2b</span><span class="op-grasp-story-txt">Verifica feedback su START</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="wrist_plan"><span class="op-grasp-story-ico">3</span><span class="op-grasp-story-txt">Pose estimation dal polso</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="execute_phased"><span class="op-grasp-story-ico">4</span><span class="op-grasp-story-txt">Presa a fasi (pre_grasp → grasp → lift)</span></li>
+            </ol>
+            <p id="graspFullSummary" class="muted small" style="margin:8px 0 0;line-height:1.45;">Premi «Prendi oggetto» per avviare l'intera sequenza.</p>
+            <p class="muted small op-grasp-hint-live" style="margin:8px 0 0;line-height:1.4;">
+              ℹ️ <code>run_full</code> è una sola chiamata: lo storyboard si completa <strong>a fine sequenza</strong>. Per i micro-passi vai su <strong>VLA AWS · passo-passo</strong>.
+            </p>
+
+            <div class="op-grasp-front" id="graspFrontPanel">
+              <div class="op-grasp-front-head">
+                <span class="op-grasp-front-title">Camera frontale · detection</span>
+                <span class="op-grasp-front-badge is-idle" id="graspFrontBadge">in attesa…</span>
+              </div>
+              <div class="op-grasp-front-stage">
+                <img id="graspFrontImg" alt="camera frontale del cane" />
+                <canvas id="graspFrontCanvas"></canvas>
+              </div>
+              <div class="btn-grid" style="margin-top:8px;">
+                <button type="button" class="op-btn small" id="graspFrontDetectBtn" onclick="operatorsGraspFrontDetect()">Rileva oggetto sulla frontale</button>
+              </div>
+              <p id="graspFront3d" class="muted small" style="margin:8px 0 0;line-height:1.45;">Punti 3D presa: nessun piano ancora. Lancia l'anteprima per vedere i marker nella tab <strong>3D</strong>.</p>
+            </div>
           </div>
-          <p id="graspVlaInputLabel" class="muted small" style="margin:8px 0 0;">—</p>
-          <textarea id="graspPlanJson" class="grasp-json-ta" rows="4" spellcheck="false" style="margin-top:8px;width:100%;">{}</textarea>
-          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Anteprima polso + overlay</h3>
-          <div class="grasp-preview-stack">
-            <img id="graspWristImg" alt="polso rgb" src="{{ script_root|default('') }}/api/robot/camera/0.jpg" />
-            <canvas id="graspOverlayCanvas" class="grasp-overlay-canvas" width="640" height="480"></canvas>
-          </div>
-          <p id="graspOverlayDbg" class="muted small" style="margin:6px 0 0;">—</p>
-          <pre id="graspPhase" class="status-dump grasp-phase" style="margin-top:10px;max-height:240px;">In attesa…</pre>
         </div>
+
+        <!-- ===================== FLUSSO VLA AWS (passo-passo) ===================== -->
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="vla" hidden>
+          <div class="card">
+            <h2>OpenVLA · AWS</h2>
+            <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
+              La NX invia <strong>JPEG inline</strong> (Orbbec log.0 + RealSense log.6) al worker cloud.
+              Richiede <code>GO2_ANYGRASP_WORKER_URL</code> + <code>GO2_WORKER_TOKEN</code>. Configura con
+              <code>python scripts/pair_nx_aws_vla.py</code> dal PC.
+            </p>
+
+            <ol class="op-grasp-vla-steps">
+              <li><strong>1.</strong> <em>Health</em> worker (e <em>Avvia EC2</em> se spento)</li>
+              <li><strong>2.</strong> <em>Piano VLA</em> → controlla la <strong>Validazione</strong> sotto</li>
+              <li><strong>3.</strong> Esegui: <em>Sequenza fasi</em> (consigliato), <em>IK</em> o <em>FK</em></li>
+            </ol>
+
+            <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione (IT/EN)
+              <input type="text" id="operatorsOpenvlaInstruction" class="agent-select" style="width:100%;margin-top:4px;" value="afferra la scatola bianca davanti al braccio" spellcheck="true" />
+            </label>
+            <fieldset style="margin:10px 0;border:none;padding:0;font-size:0.82rem;">
+              <legend class="muted small">Camera primaria per il piano</legend>
+              <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="0" checked /> log.0 polso</label>
+              <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="6" /> log.6 frontale</label>
+            </fieldset>
+
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Worker</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn" onclick="operatorsGraspHealth()">Health worker</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspEc2Start()">Avvia EC2</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspEc2Stop()">Stop EC2</button>
+              </div>
+            </div>
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Piano</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn primary" onclick="operatorsGraspStartPresaPipeline()">Piano VLA (1 click)</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspPlan()">Solo POST plan</button>
+              </div>
+            </div>
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Esecuzione braccio</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn ok" id="graspBtnExecutePhased" onclick="operatorsGraspExecutePhased()" disabled>Sequenza presa (fasi)</button>
+                <button type="button" class="op-btn ok" id="graspBtnExecuteIk" onclick="operatorsExecuteLastPlanIkArm()" disabled>Muovi IK</button>
+                <button type="button" class="op-btn ok" id="graspBtnExecuteFk" onclick="operatorsOpenvlaExecuteD1Arm()" disabled>Muovi FK D1</button>
+              </div>
+              <p class="muted small" style="margin:6px 0 0;">I pulsanti verdi si sbloccano solo con la riga «Esecuzione braccio consentita» verde nella Validazione.</p>
+            </div>
+
+            <p id="graspVlaInputLabel" class="muted small" style="margin:8px 0 0;">—</p>
+            <details class="op-grasp-details" style="margin-top:8px;">
+              <summary>JSON piano (avanzato)</summary>
+              <div class="op-grasp-details-body">
+                <textarea id="graspPlanJson" class="grasp-json-ta" rows="4" spellcheck="false" style="width:100%;">{}</textarea>
+              </div>
+            </details>
+            <h3 style="margin:14px 0 6px;font-size:0.95rem;">Anteprima polso + overlay</h3>
+            <div class="grasp-preview-stack">
+              <img id="graspWristImg" alt="polso rgb" src="{{ script_root|default('') }}/api/robot/camera/0.jpg" />
+              <canvas id="graspOverlayCanvas" class="grasp-overlay-canvas" width="640" height="480"></canvas>
+            </div>
+            <p id="graspOverlayDbg" class="muted small" style="margin:6px 0 0;">—</p>
+          </div>
+        </div>
+
+        <!-- ===================== COMUNE: validazione + log + camere ===================== -->
+        <div class="card op-grasp-validation-card" id="graspValidationPanel" aria-live="polite">
+          <h2 class="op-grasp-validation-h">Validazione presa (obbligatoria)</h2>
+          <p id="graspValidationBanner" class="op-grasp-validation-banner op-grasp-validation-banner--idle">
+            Lancia un piano (guidato o VLA): qui appare la checklist. Nessuno stub: solo planner reale.
+          </p>
+          <table class="op-grasp-validation-table" id="graspValidationTable">
+            <thead><tr><th>Controllo</th><th>Stato</th><th>Dettaglio</th></tr></thead>
+            <tbody id="graspValidationBody">
+              <tr><td colspan="3" class="muted small">In attesa…</td></tr>
+            </tbody>
+          </table>
+          <p class="muted small" style="margin:10px 0 0;line-height:1.45;">
+            <strong>Dove guardare l’oggetto:</strong> anteprima/overlay sopra · stream MJPEG sotto · marker in tab <strong>3D</strong>.
+          </p>
+        </div>
+
+        <details class="op-grasp-details" id="graspLogDetails">
+          <summary>Log risposta server (debug)</summary>
+          <div class="op-grasp-details-body">
+            <pre id="graspPhase" class="status-dump grasp-phase" style="margin-top:6px;max-height:240px;">In attesa…</pre>
+          </div>
+        </details>
 
         <div class="card">
           <h2>Camere · 3D</h2>
@@ -389,21 +525,72 @@
           </div>
         </div>
 
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="teach" hidden>
         <div class="card">
-          <h2>Grasp Coach (trial)</h2>
+          <h2>Grasp Teaching · presa laterale (camera polso)</h2>
           <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
-            OpenAI <code>/v1/chat/completions</code> + vision (JSON). Default model <code>gpt-5-nano</code> (override <code>GO2_GRASP_COACH_MODEL</code>).
-            Depth: policy <code>alternate</code> = RGB ogni step, depth ogni due (<code>GO2_GRASP_COACH_DEPTH_POLICY</code>).
-            Memoria rolling: <code>data/grasp_coach_memory.jsonl</code> sulla NX. Dopo ogni risposta puoi inviare <strong>feedback</strong> (testo + eventuale richiesta su codice/prompt): finisce nel prompt dello step successivo. Richiede <code>GO2_ENABLE_GRASP_COACH=1</code>.
-            Con <strong>Esegui mossa D1</strong>: IK parziale → <code>d1_arm_command</code> → servo reali se <code>GO2_LOCAL=1</code>, <code>GO2_ENABLE_REAL_ARM=1</code> e uno tra <code>GO2_ENABLE_ARM_PLAN_EXECUTE</code> (default deploy) o <code>GO2_ENABLE_GRASP_IK_EXECUTE</code>. Il cane: opzionale pre-step <code>balance_hold</code> se imposti <code>GO2_GRASP_COACH_BALANCE_HOLD_FIRST=1</code> e <code>GO2_ENABLE_BASE_MOTION=1</code>.
+            Flusso principale: <strong>START laterale</strong> → <strong>camera log.0 (polso Orbbec)</strong> →
+            <strong>acquisizione metrica</strong> (depth + bbox + asse presa) → step coach. In modalità laterale
+            <strong>nessuna NO-GO zone</strong> testa/camera. Stack braccio = tab <strong>Braccio D1 · giunti</strong>.
           </p>
-          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachExecute" /> Esegui mossa D1</label>
-          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachDepth" checked /> Includi depth preview</label>
-          <label style="display:block;margin:8px 0;font-size:0.82rem;">Camera RGB
-            <select id="graspCoachCam" class="agent-select" style="margin-left:8px;">
-              <option value="0" selected>log.0 wrist</option>
-              <option value="6">log.6 head</option>
+          <label style="display:block;margin:0 0 8px;font-size:0.82rem;">Preset START
+            <select id="graspCoachStartVariant" class="agent-select" style="margin-left:8px;" onchange="operatorsStartVariantChanged()">
+              <option value="lateral" selected>laterale (default · NO-GO off)</option>
+              <option value="frontal">frontale (vincoli testa/camera)</option>
             </select>
+          </label>
+          <div class="op-teach-acquire-box" style="margin:0 0 10px;padding:10px;border:2px solid rgba(80,200,120,0.35);border-radius:8px;background:rgba(40,120,80,0.08);">
+            <div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Camera polso · log.0 (Orbbec)</div>
+            <p class="muted small" style="margin:0 0 8px;line-height:1.45;">
+              Cattura RGB+depth dal polso, stima distanza (<code>depth_m</code>), target 3D, asse di presa e traiettoria IK.
+              <strong>Non muove il braccio.</strong>
+            </p>
+            <div class="btn-grid" style="margin-bottom:8px;">
+              <button type="button" class="op-btn primary" id="graspCoachAcquireBtn" onclick="operatorsGraspCoachAcquire()" title="Orbbec polso: detection + depth metrica + viz">Acquisizione e stima</button>
+              <button type="button" class="op-btn" id="graspCoachStartBtn" onclick="operatorsGraspCoachGotoStart()" title="Porta il braccio in START laterale">Vai in START</button>
+              <button type="button" class="op-btn ok" id="graspCoachGraspBtn" onclick="operatorsGraspCoachGrasp()" title="Uno step coach verso l'oggetto">Esegui presa (step)</button>
+            </div>
+            <div id="graspCoachMetricPanel" class="op-teach-metric-panel" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:0.78rem;margin-bottom:8px;">
+              <div><span class="muted">Oggetto:</span> <strong id="graspCoachMetObj">—</strong></div>
+              <div><span class="muted">Confidenza:</span> <strong id="graspCoachMetConf">—</strong></div>
+              <div><span class="muted">Distanza depth:</span> <strong id="graspCoachMetDepth">—</strong></div>
+              <div><span class="muted">Reach braccio:</span> <strong id="graspCoachMetReach">—</strong></div>
+              <div style="grid-column:1/-1;"><span class="muted">Target base_link:</span> <strong id="graspCoachMetTarget">—</strong></div>
+              <div style="grid-column:1/-1;"><span class="muted">Stato:</span> <strong id="graspCoachMetStatus">Premi «Acquisizione e stima»</strong></div>
+            </div>
+            <div id="graspCoachVizWrap">
+              <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Feedback grafico presa (polso)</div>
+              <div id="graspCoachVizStatus" style="font-size:0.8rem;margin-bottom:4px;color:var(--muted);">In attesa acquisizione…</div>
+              <canvas id="graspCoachViz" width="480" height="360" style="width:100%;max-width:520px;border:1px solid var(--border,#333);border-radius:6px;background:#111;"></canvas>
+              <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">Blu = scatola · giallo = asse presa · verde = centro · sotto = stadi IK.</div>
+              <div id="graspCoachStages" style="margin-top:6px;"></div>
+            </div>
+          </div>
+          <div class="op-teach-flow-box" style="margin:0 0 10px;padding:8px;border:1px solid var(--border,#333);border-radius:6px;">
+            <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Coach (opzionale dopo acquisizione OK)</div>
+            <p class="muted small" style="margin:0 0 8px;line-height:1.4;">Step coach GPT-nano con target ancorato alla depth Orbbec quando l'acquisizione ha successo.</p>
+            <div class="btn-grid">
+              <button type="button" class="op-btn" id="graspCoachPreviewBtn" onclick="operatorsGraspCoachAcquire()" title="Alias di Acquisizione e stima" hidden>Anteprima</button>
+              <button type="button" class="op-btn" id="graspCoachStepBtn" onclick="operatorsGraspCoachStep()">Step coach</button>
+            </div>
+          </div>
+          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachExecute" checked /> Esegui mossa D1 (stack Giunti / DDS live)</label>
+          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachDepth" checked /> Includi depth preview</label>
+          <input type="hidden" id="graspCoachCam" value="0" />
+          <p class="muted small" style="margin:4px 0 8px;">Camera fissa: <strong>log.0 polso Orbbec</strong> (acquisizione metrica).</p>
+          <label style="display:block;margin:10px 0 4px;font-size:0.82rem;">
+            Ampiezza passo (avvicinamento per step):
+            <strong id="graspCoachBlendVal" style="color:var(--accent,#5cf);">20%</strong>
+            <input type="range" id="graspCoachBlend" min="5" max="60" step="5" value="20"
+                   style="width:100%;margin-top:4px;" oninput="operatorsGraspCoachBlendLabel()" />
+            <span class="muted small">basso = micro-correzioni sicure · alto = ti avvicini prima (sovrascrive il modello)</span>
+          </label>
+          <label style="display:block;margin:10px 0 4px;font-size:0.82rem;">
+            Step automatici per click:
+            <strong id="graspCoachChainVal" style="color:var(--accent,#5cf);">1</strong>
+            <input type="range" id="graspCoachChain" min="1" max="6" step="1" value="1"
+                   style="width:100%;margin-top:4px;" oninput="operatorsGraspCoachChainLabel()" />
+            <span class="muted small">>1 = il coach ripete da solo (foto→piano→mossa) usando istruzione + memoria. Si ferma se chiude la pinza o target nullo.</span>
           </label>
           <label style="display:block;margin:8px 0;font-size:0.82rem;color:var(--muted);">Session note (contesto che resta nel prompt)
             <textarea id="graspCoachSession" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. scatola davanti, presa laterale, zona fragile…"></textarea>
@@ -411,8 +598,21 @@
           <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione per questo step (comando al coach)
             <textarea id="graspCoachInstruction" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. avvicinati del 20% al centro oggetto; non chiudere pinza."></textarea>
           </label>
-          <div class="btn-grid" style="margin-top:10px;">
-            <button type="button" class="op-btn primary" id="graspCoachStepBtn" onclick="operatorsGraspCoachStep()">Step coach</button>
+          <div class="op-side-setup-box" style="margin:6px 0 10px;padding:8px;border:1px solid var(--border,#333);border-radius:6px;background:rgba(80,160,255,0.06);">
+            <div style="font-size:0.82rem;font-weight:600;margin-bottom:2px;">2 · Presa di lato (frontale vede l'oggetto)</div>
+            <p class="muted small" style="margin:0 0 6px;line-height:1.4;">
+              Frontale vede l'oggetto → (mi alzo se accovacciato · 2 passi avanti se in piedi) → giro il cane 90° a destra → braccio a <strong>START laterale</strong> (preset standard). Così la testa non è tra pinza e scatole. <strong>Muove cane + braccio.</strong>
+            </p>
+            <label style="display:block;font-size:0.8rem;margin-bottom:6px;">Postura attuale
+              <select id="graspSidePosture" class="agent-select" style="margin-left:6px;">
+                <option value="auto" selected>auto</option>
+                <option value="crouch">accovacciato</option>
+                <option value="standing">in piedi</option>
+              </select>
+            </label>
+            <button type="button" class="op-btn warn" id="graspSideSetupBtn" onclick="operatorsGraspSideSetup()" title="Esegue il setup completo (cane + braccio)">Esegui setup presa di lato</button>
+          </div>
+          <div class="btn-grid" style="margin-top:6px;">
             <button type="button" class="op-btn" id="graspCoachStatusBtn" onclick="operatorsGraspCoachStatus()">Status API</button>
           </div>
           <div id="graspCoachProgressWrap" class="op-progress-wrap" hidden>
@@ -427,6 +627,7 @@
           </label>
           <button type="button" class="op-btn ok" id="graspCoachFeedbackBtn" onclick="operatorsGraspCoachFeedback()" style="margin-top:6px;">Salva feedback in memoria</button>
           <pre id="graspCoachPre" class="status-dump" style="max-height:280px;margin-top:10px;">—</pre>
+        </div>
         </div>
 
       </section>
