@@ -4,17 +4,19 @@ set -e
 cd /home/unitree/go2_visual_dashboard || exit 1
 # shellcheck disable=SC1091
 source "$PWD/scripts/nx_d1_jog_env.sh"
-# La dashboard operator (5052) tiene /dev/video4 — blocca pyrealsense2. Con D1_JOG_RGB_EXCLUSIVE=1 la fermiamo.
-if [ "${D1_JOG_RGB_EXCLUSIVE:-1}" = "1" ] && [ "${GO2_REALSENSE_COLOR_BACKEND:-}" = "pyrs" ]; then
-  echo "D1 vision RGB: stop dashboard operator (5052) + supervise per liberare RealSense"
-  pkill -f serve_dashboard_modular.py 2>/dev/null || true
-  pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
+# Esponi tutti i nodi Orbbec (video6 = RGB color) dopo reboot USB.
+if [ "${D1_ORBBEC_RELOAD_UVC:-1}" = "1" ]; then
+  echo "${GO2_NX_PASSWORD:-123}" | sudo -S sh -c 'modprobe -r uvcvideo 2>/dev/null; modprobe uvcvideo' 2>/dev/null || true
   sleep 2
+fi
+# Solo dashboard D1 (5053): la 5052 operator non deve restare attiva (libera Orbbec + RealSense).
+if [ "${D1_JOG_STOP_OPERATOR_DASH:-1}" = "1" ]; then
+  bash scripts/nx_stop_operator_dashboard.sh || true
 fi
 pkill -f nx_d1_jog_supervise.sh 2>/dev/null || true
 pkill -f serve_d1_jog_dashboard.py 2>/dev/null || true
 pkill -f serve_vision_dashboard.py 2>/dev/null || true
-fuser -k /dev/video4 /dev/video2 /dev/video0 2>/dev/null || true
+fuser -k /dev/video0 /dev/video1 /dev/video2 /dev/video3 /dev/video4 /dev/video5 /dev/video6 /dev/video7 /dev/video12 2>/dev/null || true
 sleep 2
 nohup bash scripts/nx_d1_jog_supervise.sh >> d1_jog_supervise.log 2>&1 &
 echo $! > d1_jog.pid

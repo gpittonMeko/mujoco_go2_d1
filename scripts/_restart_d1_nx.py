@@ -12,6 +12,7 @@ ssh.connect(
     timeout=30,
 )
 _, o, _ = ssh.exec_command(
+    "bash /home/unitree/go2_visual_dashboard/scripts/nx_stop_operator_dashboard.sh; "
     "bash /home/unitree/go2_visual_dashboard/scripts/nx_start_d1_jog.sh",
     timeout=90,
 )

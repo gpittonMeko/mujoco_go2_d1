@@ -1,0 +1,12 @@
+# Hermes sulla NX (:5054)
+flask>=3.0
+gTTS>=2.5
+piper-tts>=1.2.0
+onnxruntime>=1.16.0
+pydub>=0.25
+
+# Già sulla Jetson di solito:
+# unitree-webrtc-connect  (audio Go2)
+
+# Agente migliore (opzionale, in nx_hermes_env.sh):
+# HERMES_OPENAI_API_KEY=sk-...

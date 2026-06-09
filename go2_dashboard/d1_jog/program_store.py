@@ -156,8 +156,30 @@ def find_waypoint_by_name_substr(
     return None
 
 
-def find_scan_waypoint() -> tuple[str, dict[str, Any]] | None:
-    """Posa scansione dal programma salvato (env opzionale per programma / sottostringa nome)."""
+def _scan_name_matches(name: str, *, j90: bool) -> bool:
+    n = (name or "").strip().lower()
+    if "scansion" not in n:
+        return False
+    has90 = "90" in n
+    return has90 if j90 else not has90
+
+
+def find_scan_waypoint(*, variant: str | None = None) -> tuple[str, dict[str, Any]] | None:
+    """Waypoint scansione dal programma: ``base`` | ``j90`` (due punti distinti salvati)."""
+    if variant is None:
+        variant = (os.environ.get("D1_PICK_SCAN_REFERENCE") or "j90").strip().lower()
+    want_j90 = variant in ("j90", "90", "+90")
     pid = (os.environ.get("D1_SCAN_PROGRAM_ID") or "").strip() or None
+    if pid:
+        progs = [(pid, load_program(pid))]
+    else:
+        progs = [(m["id"], load_program(m["id"])) for m in list_programs()]
+    for program_id, prog in progs:
+        if prog is None:
+            continue
+        for w in prog.get("waypoints") or []:
+            if _scan_name_matches(str(w.get("name", "")), j90=want_j90):
+                return program_id, w
+    # Fallback legacy: un solo waypoint «scansione»
     substr = (os.environ.get("D1_SCAN_WAYPOINT_SUBSTR") or "scansione").strip()
     return find_waypoint_by_name_substr(substr, program_id=pid)

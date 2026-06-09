@@ -1,0 +1,110 @@
+:root {
+  --bg: #0c0a14;
+  --panel: #15121f;
+  --border: #2e2640;
+  --text: #ede9fe;
+  --muted: #a78bfa;
+  --accent: #8b5cf6;
+  --user: #4c1d95;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.hermes-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.hermes-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.hermes-top h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.hermes-port {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.hermes-status {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.hermes-log {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hermes-msg {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  max-width: 92%;
+}
+
+.hermes-msg-user {
+  align-self: flex-end;
+  background: var(--user);
+}
+
+.hermes-msg-bot {
+  align-self: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.hermes-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.hermes-form input {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.hermes-form button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #1e1b4b;
+  font-weight: 700;
+  cursor: pointer;
+}

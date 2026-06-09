@@ -37,6 +37,7 @@ PUSH_FILES = [
     "go2_dashboard/d1_jog/cartesian.py",
     "go2_dashboard/d1_jog/orbbec_capture.py",
     "go2_dashboard/d1_jog/pick_preset.py",
+    "go2_dashboard/d1_jog/pick_teach_model.py",
     "go2_dashboard/d1_jog/pick_vision.py",
     "go2_dashboard/d1_jog/pick_vision_crop.py",
     "scripts/box_object_detector.py",
@@ -46,6 +47,8 @@ PUSH_FILES = [
     "scripts/nx_d1_jog_env.sh",
     "scripts/nx_d1_jog_supervise.sh",
     "scripts/nx_start_d1_jog.sh",
+    "scripts/nx_stop_operator_dashboard.sh",
+    "scripts/orbbec_reset_camera.sh",
     "templates/d1_jog_dashboard.html",
     "templates/d1_joint_jog_modal.html",
     "templates/d1_program_editor.html",
@@ -97,7 +100,12 @@ def _put_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
     parent = remote.rsplit("/", 1)[0]
     if parent:
         _ensure_remote_dir(sftp, parent)
-    sftp.put(str(local), remote)
+    data = local.read_bytes()
+    if remote.endswith(".sh") or local.suffix == ".sh":
+        data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    from io import BytesIO
+
+    sftp.putfo(BytesIO(data), remote)
 
 
 def _remote_build_d1_sdk(ssh: paramiko.SSHClient) -> int:
@@ -186,6 +194,8 @@ def main() -> None:
         "scripts/nx_d1_jog_env.sh",
         "scripts/nx_d1_jog_supervise.sh",
         "scripts/nx_start_d1_jog.sh",
+        "scripts/nx_stop_operator_dashboard.sh",
+    "scripts/orbbec_reset_camera.sh",
         "scripts/build_d1_sdk.sh",
     ):
         try:
@@ -195,7 +205,8 @@ def main() -> None:
 
     strip_cmd = (
         f"bash -lc \"sed -i 's/\\\\r$//' {REMOTE_BASE}/scripts/nx_d1_jog*.sh "
-        f"{REMOTE_BASE}/scripts/nx_start_d1_jog.sh {REMOTE_BASE}/scripts/build_d1_sdk.sh 2>/dev/null || true\""
+        f"{REMOTE_BASE}/scripts/nx_start_d1_jog.sh {REMOTE_BASE}/scripts/nx_stop_operator_dashboard.sh "
+        f"{REMOTE_BASE}/scripts/build_d1_sdk.sh 2>/dev/null || true\""
     )
     _, so, _ = ssh.exec_command(strip_cmd)
     so.channel.recv_exit_status()

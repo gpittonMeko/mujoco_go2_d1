@@ -68,9 +68,22 @@ def _move_deg_per_s() -> float:
     return max(3.0, float(os.environ.get("D1_PROG_MOVE_DEG_PER_S", "12")))
 
 
+def _shortest_servo_delta_deg(from_deg: float, to_deg: float) -> float:
+    d = float(to_deg) - float(from_deg)
+    while d > 180.0:
+        d -= 360.0
+    while d < -180.0:
+        d += 360.0
+    return d
+
+
+def _lerp_servo_deg(from_deg: float, to_deg: float, alpha: float) -> float:
+    return round(float(from_deg) + float(alpha) * _shortest_servo_delta_deg(from_deg, to_deg), 3)
+
+
 def _joint_errors(current: list[float], target: list[float]) -> list[float]:
     n = min(7, len(current), len(target))
-    return [round(abs(float(current[i]) - float(target[i])), 2) for i in range(n)]
+    return [round(abs(_shortest_servo_delta_deg(current[i], target[i])), 2) for i in range(n)]
 
 
 def _within_target_range(current: list[float], target: list[float]) -> tuple[bool, float, list[float]]:
@@ -91,7 +104,7 @@ def _within_target_range(current: list[float], target: list[float]) -> tuple[boo
 
 
 def _estimate_move_duration_s(from_sd: list[float], to_sd: list[float]) -> float:
-    max_d = max(abs(float(to_sd[i]) - float(from_sd[i])) for i in range(7))
+    max_d = max(abs(_shortest_servo_delta_deg(from_sd[i], to_sd[i])) for i in range(7))
     return max(_settle_s(), max_d / _move_deg_per_s())
 
 
@@ -179,18 +192,28 @@ def wait_until_at_target(
 
 
 def plan_joint_waypoints(
-    from_sd: list[float], to_sd: list[float], *, max_step_deg: float | None = None
+    from_sd: list[float],
+    to_sd: list[float],
+    *,
+    max_step_deg: float | None = None,
+    pin_joints: dict[int, float] | None = None,
 ) -> list[list[float]]:
+    """Interpola J0–J6; con pin_joints il giunto resta fisso (es. J6 aperto in avvicinamento)."""
     step = max_step_deg if max_step_deg is not None else _max_joint_step_deg()
-    diffs = [abs(float(to_sd[i]) - float(from_sd[i])) for i in range(7)]
-    n = max(2, int(math.ceil(max(diffs + [0.01]) / step)))
+    pinned = {int(k): float(v) for k, v in (pin_joints or {}).items()}
+    arm_diffs = [
+        abs(_shortest_servo_delta_deg(from_sd[i], to_sd[i]))
+        for i in range(7)
+        if i not in pinned
+    ]
+    n = max(2, int(math.ceil(max(arm_diffs + [0.01]) / step)))
     out: list[list[float]] = []
     for k in range(1, n + 1):
         alpha = float(k) / float(n)
-        wp = [
-            round(float(from_sd[i]) + alpha * (float(to_sd[i]) - float(from_sd[i])), 3)
-            for i in range(7)
-        ]
+        wp = [_lerp_servo_deg(from_sd[i], to_sd[i], alpha) for i in range(7)]
+        for idx, val in pinned.items():
+            if 0 <= idx < 7:
+                wp[idx] = round(val, 3)
         out.append(service.clamp_servo_deg(wp))
     return out
 
@@ -200,6 +223,7 @@ def move_to_servo_deg_smooth(
     *,
     keep_lock: bool = False,
     stop_check: Callable[[], bool] | None = None,
+    pin_joints: dict[int, float] | None = None,
 ) -> dict[str, Any]:
     """Interpola in spazio giunti con funcode 2 mode 1."""
     if not keep_lock:
@@ -213,7 +237,7 @@ def move_to_servo_deg_smooth(
             return {"ok": False, "reason": fb.get("reason", "no_feedback")}
         cur = fb["servo_deg"]
         target = service.clamp_servo_deg(target_servo_deg)
-        waypoints = plan_joint_waypoints(cur, target)
+        waypoints = plan_joint_waypoints(cur, target, pin_joints=pin_joints)
         delay_ms = motion_profile.stream_delay_ms()
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}

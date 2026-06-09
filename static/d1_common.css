@@ -104,6 +104,61 @@ button.snap {
   font-size: 0.78rem;
   color: var(--muted, #8b9cb3);
 }
+.crop-panel {
+  margin-top: 12px;
+  border-top: 1px solid var(--border, #2d3548);
+  padding-top: 10px;
+}
+.crop-panel summary {
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #8b9cb3);
+  user-select: none;
+}
+.crop-hint {
+  margin: 8px 0 10px;
+  font-size: 0.76rem;
+  color: var(--muted, #8b9cb3);
+  line-height: 1.35;
+}
+.crop-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.crop-row {
+  display: grid;
+  grid-template-columns: 4.2rem 1fr 2.5rem;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text, #e8edf5);
+}
+.crop-row input[type="range"] {
+  width: 100%;
+  accent-color: #38bdf8;
+}
+.crop-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, #8b9cb3);
+  font-size: 0.75rem;
+}
+.crop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.crop-actions button {
+  flex: 1 1 30%;
+  min-width: 7rem;
+  font-size: 0.78rem;
+  padding: 9px 8px;
+}
 .orbbec-empty {
   padding: 48px 16px;
   text-align: center;

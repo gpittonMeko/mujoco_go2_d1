@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from go2_dashboard.d1_jog import orbbec_capture, pick_vision_crop
+from go2_dashboard.d1_jog import orbbec_capture, pick_preset, pick_vision_crop
 from go2_dashboard.paths import PROJECT_ROOT
 
 _OVERLAY_NAME = "scene.jpg"
@@ -34,6 +34,7 @@ def _read_bgr_from_jpeg(path: Path) -> Any:
 
 def _draw_detection(frame: Any, det: dict[str, Any]) -> Any:
     import cv2
+    import numpy as np
 
     out = frame.copy()
     if not det.get("ok"):
@@ -48,14 +49,20 @@ def _draw_detection(frame: Any, det: dict[str, Any]) -> Any:
             cv2.LINE_AA,
         )
         return out
-    xyxy = det.get("bbox_xyxy") or []
-    if len(xyxy) >= 4:
-        x1, y1, x2, y2 = [int(v) for v in xyxy]
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 80), 2)
+    obox = det.get("orient_box_px")
+    if isinstance(obox, list) and len(obox) >= 4:
+        pts = np.array([[int(p[0]), int(p[1])] for p in obox[:4]], dtype=np.int32)
+        cv2.polylines(out, [pts], isClosed=True, color=(0, 220, 255), thickness=2)
+    else:
+        xyxy = det.get("bbox_xyxy") or []
+        if len(xyxy) >= 4:
+            x1, y1, x2, y2 = [int(v) for v in xyxy]
+            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 80), 2)
     gcx, gcy = det.get("grip_center_px") or det.get("bbox_center_px") or [0, 0]
     cv2.circle(out, (int(gcx), int(gcy)), 8, (255, 180, 0), -1)
     cv2.circle(out, (int(gcx), int(gcy)), 10, (255, 255, 255), 2)
-    label = f"{det.get('label', 'obj')} {float(det.get('confidence', 0)):.2f}"
+    backend = det.get("backend") or "?"
+    label = f"{det.get('label', 'obj')} {float(det.get('confidence', 0)):.2f} [{backend}]"
     cv2.putText(
         out,
         label,
@@ -76,6 +83,67 @@ def _draw_detection(frame: Any, det: dict[str, Any]) -> Any:
         1,
         cv2.LINE_AA,
     )
+    orient = det.get("orientation_deg")
+    short_deg = det.get("grip_align_deg")
+    axis = det.get("orient_axis_px")
+    if orient is not None:
+        cv2.putText(
+            out,
+            f"lato lungo {float(orient):+.1f}°"
+            + (f" · corto {float(short_deg):+.1f}°" if short_deg is not None else ""),
+            (12, 76),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 120, 220),
+            1,
+            cv2.LINE_AA,
+        )
+    if isinstance(axis, list) and len(axis) >= 2:
+        p0 = axis[0]
+        p1 = axis[1]
+        if isinstance(p0, (list, tuple)) and isinstance(p1, (list, tuple)) and len(p0) >= 2 and len(p1) >= 2:
+            cv2.arrowedLine(
+                out,
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                (255, 80, 255),
+                3,
+                tipLength=0.22,
+                line_type=cv2.LINE_AA,
+            )
+            cv2.putText(
+                out,
+                "lungo",
+                (int(p1[0]) + 6, int(p1[1]) - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 80, 255),
+                1,
+                cv2.LINE_AA,
+            )
+    grip_axis = det.get("grip_align_axis_px")
+    if isinstance(grip_axis, list) and len(grip_axis) >= 2:
+        g0, g1 = grip_axis[0], grip_axis[1]
+        if isinstance(g0, (list, tuple)) and isinstance(g1, (list, tuple)) and len(g0) >= 2 and len(g1) >= 2:
+            cv2.arrowedLine(
+                out,
+                (int(g0[0]), int(g0[1])),
+                (int(g1[0]), int(g1[1])),
+                (0, 220, 255),
+                3,
+                tipLength=0.22,
+                line_type=cv2.LINE_AA,
+            )
+            cv2.putText(
+                out,
+                "corto · pinza",
+                (int(g1[0]) + 6, int(g1[1]) - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 220, 255),
+                1,
+                cv2.LINE_AA,
+            )
     return out
 
 
@@ -96,6 +164,7 @@ def _detect_on_frame(frame: Any, *, snapshot_name: str) -> dict[str, Any]:
         crop_hw=(int(crop.shape[1]), int(crop.shape[0])),
         full_hw=(fw, fh),
     )
+    det = pick_preset.stabilize_detection_orientation(det)
     det["detector_status"] = detector_status()
     base_overlay = pick_vision_crop.draw_crop_roi_outline(frame, roi)
     overlay = _draw_detection(base_overlay, det)
@@ -111,17 +180,25 @@ def _detect_on_frame(frame: Any, *, snapshot_name: str) -> dict[str, Any]:
     orbbec_capture._SNAP_DIR.mkdir(parents=True, exist_ok=True)
     _overlay_path().write_bytes(buf.tobytes())
 
-    last_detection: dict[str, Any] = {
-        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "snapshot": snapshot_name,
-        "backend": det.get("backend"),
-        "label": det.get("label"),
-        "confidence": det.get("confidence"),
-        "grip_center_px": det.get("grip_center_px"),
-        "bbox_xyxy": det.get("bbox_xyxy"),
-        "norm": det.get("norm"),
-        "detected": bool(det.get("ok")),
-    }
+    last_detection: dict[str, Any] = pick_preset.stabilize_detection_orientation(
+        {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "snapshot": snapshot_name,
+            "backend": det.get("backend"),
+            "label": det.get("label"),
+            "confidence": det.get("confidence"),
+            "grip_center_px": det.get("grip_center_px"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "norm": det.get("norm"),
+            "orientation_deg": det.get("orientation_deg"),
+            "orient_axis_px": det.get("orient_axis_px"),
+            "orient_box_px": det.get("orient_box_px"),
+            "grip_align_deg": det.get("grip_align_deg"),
+            "grip_align_axis_px": det.get("grip_align_axis_px"),
+            "detect_method": det.get("detect_method"),
+            "detected": bool(det.get("ok")),
+        }
+    )
     ts = int(time.time())
     return {
         "ok": True,
@@ -130,9 +207,13 @@ def _detect_on_frame(frame: Any, *, snapshot_name: str) -> dict[str, Any]:
         "last_detection": last_detection,
         "preview_url": f"/api/pick/scene.jpg?t={ts}",
         "hint_it": (
-            "Oggetto in ROI (senza pinza) — presa con offset calibrazione; se sposti il pezzo rifai foto."
-            if det.get("ok")
-            else "Nessun oggetto nella ROI — regola crop o offset manuale."
+            "Scatoletta blu in ROI — centro e rotazione da maschera colore; rifai foto se sposti il pezzo."
+            if det.get("ok") and det.get("backend") == "color_blue_box"
+            else (
+                "Oggetto in ROI (senza pinza) — presa con offset calibrazione; se sposti il pezzo rifai foto."
+                if det.get("ok")
+                else "Nessun blu in ROI — regola crop, luce, o D1_COLOR_BOX_H_MIN/MAX in env."
+            )
         ),
     }
 

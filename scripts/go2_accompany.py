@@ -424,6 +424,144 @@ def accompany_rc_mode(
     )
 
 
+def _sport_client_ready(
+    project_root: Path,
+    domain: int,
+    iface: str | None,
+) -> tuple[Any | None, dict[str, Any]]:
+    """Inizializza SportClient (singleton processo) — ritorna (client, err_dict)."""
+    global _sport_client
+    _ensure_sdk_path(project_root)
+    try:
+        from unitree_sdk2py.go2.sport.sport_client import SportClient
+    except Exception as exc:
+        return None, {"ok": False, "reason": f"sdk_import_failed: {exc!r}"}
+    with _lock:
+        try:
+            _ensure_cyclone_factory(domain, iface)
+            if _sport_client is None:
+                _sport_client = SportClient()
+                _sport_client.SetTimeout(10.0)
+                _sport_client.Init()
+            return _sport_client, {}
+        except Exception as exc:
+            return None, {"ok": False, "reason": repr(exc)}
+
+
+def sport_move(
+    *,
+    project_root: Path,
+    domain: int,
+    iface: str | None,
+    vx: float,
+    vy: float,
+    vyaw: float,
+    duration_s: float,
+    stand_first: bool = True,
+) -> dict[str, Any]:
+    """Move(vx,vy,vyaw) per ``duration_s`` secondi, poi StopMove + BalanceStand."""
+    import time as _time
+
+    sc, err = _sport_client_ready(project_root, domain, iface)
+    if sc is None:
+        return err
+
+    duration_s = max(0.05, float(duration_s))
+    steps: dict[str, Any] = {}
+    with _lock:
+        try:
+            if stand_first:
+                code = sc.BalanceStand()
+                steps["balance_stand"] = {"code": code}
+            code = sc.Move(float(vx), float(vy), float(vyaw))
+            steps["move"] = {"code": code, "vx": vx, "vy": vy, "vyaw": vyaw, "duration_s": duration_s}
+            _time.sleep(duration_s)
+            code = sc.StopMove()
+            steps["stop_move"] = {"code": code}
+            code = sc.BalanceStand()
+            steps["balance_after"] = {"code": code}
+            steps = _steps_with_meanings(steps)
+            ok = _sport_steps_all_ok(steps)
+            return {
+                "ok": ok,
+                "mode": "move",
+                "robot": "go2_quadrupede",
+                "steps": steps,
+                "vx": vx,
+                "vy": vy,
+                "vyaw": vyaw,
+                "duration_s": duration_s,
+                "hint": (
+                    f"Move {duration_s:.2f}s vx={vx} vy={vy} vyaw={vyaw} — poi StopMove."
+                    if ok
+                    else "Move/StopMove non riuscito (vedi meaning su ogni step)."
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "mode": "move", "reason": repr(exc)}
+
+
+def sport_simple_action(
+    *,
+    project_root: Path,
+    domain: int,
+    iface: str | None,
+    action: str,
+) -> dict[str, Any]:
+    """Azioni Sport one-shot: stop, hello, stretch, sit, recovery, balance."""
+    sc, err = _sport_client_ready(project_root, domain, iface)
+    if sc is None:
+        return err
+
+    action = (action or "").strip().lower()
+    handlers: dict[str, str] = {
+        "stop": "stop",
+        "stop_move": "stop",
+        "hello": "hello",
+        "stretch": "stretch",
+        "sit": "sit",
+        "recovery": "recovery",
+        "balance": "balance",
+    }
+    if action not in handlers:
+        return {"ok": False, "reason": f"unknown_action_{action!r}"}
+
+    steps: dict[str, Any] = {}
+    with _lock:
+        try:
+            if action in {"stop", "stop_move"}:
+                code = sc.StopMove()
+                steps["stop_move"] = {"code": code}
+                code = sc.BalanceStand()
+                steps["balance_stand"] = {"code": code}
+            elif action == "hello":
+                code, _ = sc.Hello()
+                steps["hello"] = {"code": code}
+            elif action == "stretch":
+                code, _ = sc.Stretch()
+                steps["stretch"] = {"code": code}
+            elif action == "sit":
+                code, _ = sc.Sit()
+                steps["sit"] = {"code": code}
+            elif action == "recovery":
+                code, _ = sc.RecoveryStand()
+                steps["recovery_stand"] = {"code": code}
+            elif action == "balance":
+                code, _ = sc.BalanceStand()
+                steps["balance_stand"] = {"code": code}
+            steps = _steps_with_meanings(steps)
+            ok = _sport_steps_all_ok(steps)
+            return {
+                "ok": ok,
+                "mode": action,
+                "robot": "go2_quadrupede",
+                "steps": steps,
+                "hint": f"Sport {action} eseguito." if ok else f"Sport {action} fallito.",
+            }
+        except Exception as exc:
+            return {"ok": False, "mode": action, "reason": repr(exc)}
+
+
 if __name__ == "__main__":
     import argparse
     import json
