@@ -189,6 +189,146 @@ def _nogo_guard_enabled(*, lateral: bool) -> bool:
     return os.environ.get("GO2_GRASP_COACH_NOGO_GUARD", "1").lower() in {"1", "true", "yes", "on"}
 
 
+def _lateral_metric_only_enabled() -> bool:
+    """Presa laterale teaching: step coach senza OpenAI — solo Orbbec metrico + IK."""
+    return os.environ.get("GO2_GRASP_COACH_LATERAL_METRIC_ONLY", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _default_coach_blend(body: dict[str, Any]) -> tuple[float, str]:
+    blend = _clamp_blend(None)
+    blend_source = "metric_default"
+    op_blend_raw = body.get("approach_blend_override", body.get("operator_blend"))
+    if op_blend_raw is not None:
+        try:
+            ob = float(op_blend_raw)
+        except (TypeError, ValueError):
+            ob = 0.0
+        if ob > 0:
+            try:
+                op_mx = float(os.environ.get("GO2_GRASP_COACH_OPERATOR_MAX_BLEND", "0.6") or "0.6")
+            except ValueError:
+                op_mx = 0.6
+            op_mx = max(0.1, min(op_mx, 0.9))
+            blend = max(0.04, min(op_mx, ob))
+            blend_source = "operator"
+    return blend, blend_source
+
+
+def _metric_grounding_for_step(
+    *,
+    instruction: str,
+    lateral: bool,
+    cur_tip: list[float] | None,
+) -> dict[str, Any]:
+    """Cattura Orbbec + detection + IK metrica (una sola volta per step)."""
+    empty: dict[str, Any] = {
+        "metric_info": None,
+        "metric_coach_stage": None,
+        "metric_grasp_final": None,
+        "metric_gripper_plan": None,
+        "target_source": "model",
+        "tgt": None,
+        "object_pixel": None,
+        "object_visible": False,
+    }
+    metric_on = os.environ.get("GO2_GRASP_COACH_METRIC_GROUNDING", "1").lower() in {"1", "true", "yes", "on"}
+    if not metric_on or not go2_local():
+        return empty
+    try:
+        from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
+        from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
+
+        servo_now, _sdiag = read_servo_deg_with_diag(PROJECT_ROOT)
+        if servo_now is None or len(servo_now) < 6:
+            return {**empty, "metric_info": {"ok": False, "reason": "no_servo_feedback"}}
+        mp = plan_wrist_grasp_metric([float(x) for x in servo_now[:7]], instruction=instruction)
+        det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
+        stages_dbg: list[dict[str, Any]] = []
+        preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
+        for st in (preview.get("plan") or []):
+            if not isinstance(st, dict):
+                continue
+            s_tgt = st.get("target_xyz_m")
+            s_nogo = (
+                None
+                if lateral
+                else (
+                    _nogo_zone_reason([float(v) for v in s_tgt])
+                    if isinstance(s_tgt, (list, tuple)) and len(s_tgt) >= 3
+                    else None
+                )
+            )
+            stages_dbg.append({
+                "stage": st.get("stage"),
+                "target_xyz_m": s_tgt,
+                "ik_ok": bool(st.get("ik_ok")),
+                "collision_dog": s_nogo,
+                "safe": bool(st.get("ik_ok") and s_nogo is None),
+            })
+        metric_info: dict[str, Any] = {
+            "ok": bool(mp.get("ok")),
+            "reason": mp.get("reason"),
+            "grasp_display_base_link_m": mp.get("grasp_display_base_link_m"),
+            "label": det.get("label"),
+            "confidence": det.get("confidence"),
+            "backend": det.get("backend"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "bbox_center_px": det.get("bbox_center_px"),
+            "grip_axis_px": det.get("orient_axis_px") or det.get("grip_axis_px"),
+            "orientation_deg": det.get("orientation_deg"),
+            "frame_size_px": det.get("frame_size_px"),
+            "depth_m": mp.get("depth_m"),
+            "reach_m": mp.get("reach_m"),
+            "reachable": mp.get("reachable"),
+            "ik_stages": stages_dbg,
+        }
+        snap = mp.get("debug_snapshot") if isinstance(mp.get("debug_snapshot"), dict) else {}
+        if snap.get("image_url"):
+            metric_info["viz_image_url"] = str(snap["image_url"])
+        result = {
+            **empty,
+            "metric_info": metric_info,
+            "target_source": "model",
+            "tgt": None,
+            "object_pixel": None,
+            "object_visible": False,
+            "metric_coach_stage": None,
+            "metric_grasp_final": None,
+            "metric_gripper_plan": None,
+        }
+        if mp.get("ok"):
+            mtgt, mstage = _coach_target_from_metric_plan(mp, cur_tip, lateral=lateral)
+            if mtgt is not None:
+                result["tgt"] = mtgt
+                result["metric_coach_stage"] = mstage
+                result["metric_grasp_final"] = mp.get("grasp_display_base_link_m")
+                result["metric_gripper_plan"] = (
+                    mp.get("preview", {}).get("gripper") if isinstance(mp.get("preview"), dict) else None
+                )
+                metric_info["coach_target_base_link_m"] = mtgt
+                metric_info["coach_stage"] = mstage
+                metric_info["grasp_final_base_link_m"] = result["metric_grasp_final"]
+                result["target_source"] = "metric_orbbec"
+                result["object_visible"] = True
+                ctr = det.get("bbox_center_px")
+                fsz = det.get("frame_size_px")
+                if (
+                    isinstance(ctr, (list, tuple))
+                    and len(ctr) >= 2
+                    and isinstance(fsz, (list, tuple))
+                    and len(fsz) >= 2
+                    and float(fsz[0]) > 0
+                    and float(fsz[1]) > 0
+                ):
+                    result["object_pixel"] = [
+                        max(0.0, min(1.0, float(ctr[0]) / float(fsz[0]))),
+                        max(0.0, min(1.0, float(ctr[1]) / float(fsz[1]))),
+                    ]
+        return result
+    except Exception as exc:
+        return {**empty, "metric_info": {"ok": False, "reason": "metric_grounding_error", "detail": repr(exc)}}
+
+
 def _coach_system_prompt(*, lateral: bool) -> str:
     return _COACH_SYSTEM_LATERAL.strip() if lateral else _COACH_SYSTEM.strip()
 
@@ -439,9 +579,6 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
         out["reason"] = "GO2_ENABLE_GRASP_COACH_off"
         out["hint_it"] = "Imposta GO2_ENABLE_GRASP_COACH=1 sulla NX e riavvia la dashboard."
         return out
-    if not openai_api_key():
-        out["reason"] = "missing_OPENAI_API_KEY"
-        return out
 
     instruction = str(body.get("instruction") or body.get("text") or "").strip()
     session_note = str(body.get("session_note") or "").strip()
@@ -450,8 +587,13 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
         return out
 
     lateral = _lateral_grasp_mode(body)
+    skip_openai = bool(lateral and _lateral_metric_only_enabled())
     out["start_variant"] = normalize_start_variant(body.get("start_variant"))
     out["lateral_grasp_mode"] = lateral
+    out["coach_mode"] = "lateral_metric_only" if skip_openai else "llm_vision"
+    if not skip_openai and not openai_api_key():
+        out["reason"] = "missing_OPENAI_API_KEY"
+        return out
 
     try:
         logical_rgb = int(body.get("logical_camera_rgb", body.get("logical_camera", 0)))
@@ -488,56 +630,9 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
     mem_max_chars = max(1200, min(mem_max_chars, 12000))
 
     timings_ms: dict[str, float] = {}
+    rgb_small: bytes | None = None
 
-    if go2_local():
-        CAMERA_CACHE.start()
-        try:
-            rgb_raw = CAMERA_CACHE.get_jpeg(logical_rgb, wait_s=2.0)
-        except Exception:
-            rgb_raw = None
-        if not rgb_raw:
-            rgb_raw = CAMERA_CACHE.peek_jpeg(logical_rgb)
-
-    if not rgb_raw:
-        out["reason"] = "no_rgb_frame"
-        out["hint_it"] = "Serve GO2_LOCAL=1 e cache camera attiva (tab Presa / Scene)."
-        return out
-
-    t_cmp0 = time.perf_counter()
-    rgb_small = _shrink_jpeg_bytes(rgb_raw, max_side=max(224, min(max_side, 640)), jpeg_quality=max(26, min(jpeg_q, 85)))
-    timings_ms["compress_rgb"] = (time.perf_counter() - t_cmp0) * 1000.0
-
-    attach_depth = False
-    if include_depth_req and policy != "rgb_only":
-        if policy == "always":
-            attach_depth = True
-        else:
-            attach_depth = step_idx % 2 == 0
-
-    t_dep0 = time.perf_counter()
-    if attach_depth and go2_local():
-        didx = _depth_v4l_index_for_logical(logical_rgb)
-        if didx is not None and v4l_index_in_usb_inventory(didx):
-            depth_raw = debug_v4l_snapshot_jpeg(didx, jpeg_quality=max(26, min(depth_q, 90)))
-            if depth_raw:
-                depth_small = _shrink_jpeg_bytes(
-                    depth_raw,
-                    max_side=max(160, min(depth_max_side, 420)),
-                    jpeg_quality=max(26, min(depth_q, 85)),
-                )
-    timings_ms["depth_capture_compress_ms"] = (time.perf_counter() - t_dep0) * 1000.0
-
-    recent = read_recent_grasp_coach_events(mem_lines)
-    mem_txt = format_memory_for_prompt(recent, max_chars=mem_max_chars)
-
-    rgb_label = (
-        "Robot wrist camera (logical 0)"
-        if logical_rgb == 0
-        else "Robot head camera (logical 6)"
-    )
-
-    # Posizione CORRENTE della punta utensile (FK) in base_link: senza questo il modello propone
-    # target alla cieca e fa RITRARRE il braccio (es. braccio a x≈0.71, target proposto x≈0.4).
+    # Posizione CORRENTE della punta utensile (FK) in base_link.
     cur_tip: list[float] | None = None
     if go2_local():
         try:
@@ -548,230 +643,245 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
             cur_tip = None
     out["tool_tip_base_link_m_now"] = cur_tip
 
-    ctx_block = (
-        "--- Rolling memory (recent grasp-coach steps) ---\n"
-        + mem_txt
-        + "\n--- End memory ---\n"
+    metric_result = _metric_grounding_for_step(
+        instruction=instruction,
+        lateral=lateral,
+        cur_tip=cur_tip,
     )
-    if session_note:
-        ctx_block += f"\nOperator session note (persistent intent):\n{session_note}\n"
+    metric_info: dict[str, Any] | None = metric_result.get("metric_info")
+    metric_coach_stage: str | None = metric_result.get("metric_coach_stage")
+    metric_grasp_final: Any = metric_result.get("metric_grasp_final")
+    metric_gripper_plan: Any = metric_result.get("metric_gripper_plan")
+    target_source: str = str(metric_result.get("target_source") or "model")
+    tgt: list[float] | None = metric_result.get("tgt")
+    object_visible = bool(metric_result.get("object_visible"))
+    object_pixel: list[float] | None = metric_result.get("object_pixel")
+    blend_source = "metric_default"
+    blend, blend_source = _default_coach_blend(body)
+    grip = "hold"
+    llm: dict[str, Any] = {}
 
-    if cur_tip is not None:
-        if lateral:
-            state_block = (
-                f"\n--- ARM STATE NOW (base_link, meters) — LATERAL START ---\n"
-                f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
-                "WRIST camera (logical 0). Side approach: move directly toward the metric target / object in frame. "
-                "NO head/camera NO-GO zones in this mode.\n"
-                "--- End arm state ---\n"
+    if skip_openai:
+        out["metric_grounding"] = metric_info
+        if metric_info and metric_info.get("viz_image_url"):
+            out["metric_viz_url"] = str(metric_info["viz_image_url"])
+        if not (metric_info and metric_info.get("ok") and tgt is not None):
+            out["reason"] = (metric_info or {}).get("reason") or "no_detection"
+            out["object_visible"] = False
+            out["hint_it"] = (
+                "Orbbec non ha visto la scatola nel frame polso — premi «Acquisizione e stima» "
+                "o ricalibra il colore; lo step laterale non usa OpenAI."
             )
+            return out
+        stage = metric_coach_stage or "pre_grasp"
+        out["ok"] = True
+        out["step_index"] = step_idx
+        out["object_visible"] = True
+        out["object_pixel_norm"] = object_pixel
+        out["assistant_reply_it"] = (
+            f"Step metrico laterale: avvicino verso {stage} "
+            f"(target x={tgt[0]:.2f} y={tgt[1]:.2f} z={tgt[2]:.2f}) — depth Orbbec, senza LLM."
+        )
+        out["coach_json"] = {
+            "source": "lateral_metric_only",
+            "coach_stage": stage,
+            "target_xyz_base_link_m": tgt,
+            "approach_blend": blend,
+            "gripper_command": grip,
+        }
+        out["depth_policy"] = "metric_orbbec"
+        out["depth_attached"] = True
+        out["timings_ms"] = timings_ms
+    else:
+        if go2_local():
+            CAMERA_CACHE.start()
+            try:
+                rgb_raw = CAMERA_CACHE.get_jpeg(logical_rgb, wait_s=2.0)
+            except Exception:
+                rgb_raw = None
+            if not rgb_raw:
+                rgb_raw = CAMERA_CACHE.peek_jpeg(logical_rgb)
+
+        if not rgb_raw:
+            out["reason"] = "no_rgb_frame"
+            out["hint_it"] = "Serve GO2_LOCAL=1 e cache camera attiva (tab Presa / Scene)."
+            return out
+
+        t_cmp0 = time.perf_counter()
+        rgb_small = _shrink_jpeg_bytes(
+            rgb_raw, max_side=max(224, min(max_side, 640)), jpeg_quality=max(26, min(jpeg_q, 85))
+        )
+        timings_ms["compress_rgb"] = (time.perf_counter() - t_cmp0) * 1000.0
+
+        attach_depth = False
+        if include_depth_req and policy != "rgb_only":
+            if policy == "always":
+                attach_depth = True
+            else:
+                attach_depth = step_idx % 2 == 0
+
+        t_dep0 = time.perf_counter()
+        if attach_depth and go2_local():
+            didx = _depth_v4l_index_for_logical(logical_rgb)
+            if didx is not None and v4l_index_in_usb_inventory(didx):
+                depth_raw = debug_v4l_snapshot_jpeg(didx, jpeg_quality=max(26, min(depth_q, 90)))
+                if depth_raw:
+                    depth_small = _shrink_jpeg_bytes(
+                        depth_raw,
+                        max_side=max(160, min(depth_max_side, 420)),
+                        jpeg_quality=max(26, min(depth_q, 85)),
+                    )
+        timings_ms["depth_capture_compress_ms"] = (time.perf_counter() - t_dep0) * 1000.0
+
+        recent = read_recent_grasp_coach_events(mem_lines)
+        mem_txt = format_memory_for_prompt(recent, max_chars=mem_max_chars)
+
+        rgb_label = (
+            "Robot wrist camera (logical 0)"
+            if logical_rgb == 0
+            else "Robot head camera (logical 6)"
+        )
+
+        ctx_block = (
+            "--- Rolling memory (recent grasp-coach steps) ---\n"
+            + mem_txt
+            + "\n--- End memory ---\n"
+        )
+        if session_note:
+            ctx_block += f"\nOperator session note (persistent intent):\n{session_note}\n"
+
+        if cur_tip is not None:
+            if lateral:
+                state_block = (
+                    f"\n--- ARM STATE NOW (base_link, meters) — LATERAL START ---\n"
+                    f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
+                    "WRIST camera (logical 0). Side approach: move directly toward the metric target / object in frame. "
+                    "NO head/camera NO-GO zones in this mode.\n"
+                    "--- End arm state ---\n"
+                )
+            else:
+                state_block = (
+                    f"\n--- ARM STATE NOW (base_link, meters) ---\n"
+                    f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
+                    "The RGB image is from the WRIST camera mounted near the gripper, so it shows roughly what the tool tip is pointing at.\n"
+                    "To REACH the object you must move the tip TOWARD it. If the object is not yet grasped, your target x is almost always "
+                    "**>= current x** (extend further forward) — do NOT propose an x smaller than current x (that retracts the arm away from the object). "
+                    "Move toward where the object appears in the frame: object on the right of the frame → decrease y; on the left → increase y; "
+                    "lower in the frame / closer → only lower z once x is already large (past the head).\n"
+                    "--- End arm state ---\n"
+                )
         else:
             state_block = (
-                f"\n--- ARM STATE NOW (base_link, meters) ---\n"
-                f"current_tool_tip = [x={cur_tip[0]:.3f}, y={cur_tip[1]:.3f}, z={cur_tip[2]:.3f}]\n"
-                "The RGB image is from the WRIST camera mounted near the gripper, so it shows roughly what the tool tip is pointing at.\n"
-                "To REACH the object you must move the tip TOWARD it. If the object is not yet grasped, your target x is almost always "
-                "**>= current x** (extend further forward) — do NOT propose an x smaller than current x (that retracts the arm away from the object). "
-                "Move toward where the object appears in the frame: object on the right of the frame → decrease y; on the left → increase y; "
-                "lower in the frame / closer → only lower z once x is already large (past the head).\n"
-                "--- End arm state ---\n"
+                "\n--- ARM STATE NOW ---\ncurrent_tool_tip unavailable this step; be conservative.\n--- End arm state ---\n"
             )
-    else:
-        state_block = (
-            "\n--- ARM STATE NOW ---\ncurrent_tool_tip unavailable this step; be conservative.\n--- End arm state ---\n"
+
+        user_blob = (
+            ctx_block
+            + state_block
+            + "\nOperator instruction (this step):\n"
+            + instruction
+            + f"\n\nLoop meta: step_index={step_idx}, depth_policy={policy}, depth_attached={bool(depth_small)}, lateral_mode={lateral}.\n"
+            "Respond with JSON only — propose cautious partial motion if appropriate."
         )
 
-    user_blob = (
-        ctx_block
-        + state_block
-        + "\nOperator instruction (this step):\n"
-        + instruction
-        + f"\n\nLoop meta: step_index={step_idx}, depth_policy={policy}, depth_attached={bool(depth_small)}, lateral_mode={lateral}.\n"
-        "Respond with JSON only — propose cautious partial motion if appropriate."
-    )
-
-    try:
-        llm, openai_ms = _openai_coach_call(
-            user_text=user_blob,
-            rgb_jpeg=rgb_small,
-            system_prompt=_coach_system_prompt(lateral=lateral),
-            depth_jpeg=depth_small,
-            rgb_label=rgb_label,
-        )
-        timings_ms["openai_http_ms"] = openai_ms
-    except Exception as exc:
-        out["reason"] = "openai_failed"
-        out["detail"] = repr(exc)
-        append_grasp_coach_event(
-            {
-                "operator_instruction": instruction,
-                "assistant_reply_it": "",
-                "executed": False,
-                "motion_ok": None,
-                "error": repr(exc),
-                "step_index": step_idx,
-                "depth_policy": policy,
-                "coach_model": grasp_coach_model(),
-            }
-        )
-        return out
-
-    out["coach_json"] = llm
-    out["assistant_reply_it"] = str(llm.get("assistant_reply_it") or "").strip()
-    out["memory_summary_line"] = str(llm.get("memory_summary_line") or "").strip()
-    object_visible = bool(llm.get("object_visible", True))
-    object_pixel = None
-    _opx = llm.get("object_pixel_norm")
-    if isinstance(_opx, (list, tuple)) and len(_opx) >= 2:
         try:
-            u, v = float(_opx[0]), float(_opx[1])
-            if math.isfinite(u) and math.isfinite(v):
-                object_pixel = [max(0.0, min(1.0, u)), max(0.0, min(1.0, v))]
-        except (TypeError, ValueError):
-            object_pixel = None
-    out["object_visible"] = object_visible
-    out["object_pixel_norm"] = object_pixel
-    out["ok"] = True
-    out["step_index"] = step_idx
-    out["depth_policy"] = policy
-    out["depth_attached"] = bool(depth_small)
-    out["payload_sizes"] = {
-        "rgb_jpeg_bytes": len(rgb_small),
-        "depth_jpeg_bytes": len(depth_small) if depth_small else 0,
-    }
-    # Anteprima RGB (lo stesso frame analizzato) per overlay UI del marker oggetto.
-    if os.environ.get("GO2_GRASP_COACH_RETURN_PREVIEW", "1").lower() in {"1", "true", "yes", "on"}:
-        try:
-            out["rgb_preview_b64"] = base64.b64encode(rgb_small).decode("ascii")
-        except Exception:
-            out["rgb_preview_b64"] = None
-    out["timings_ms"] = timings_ms
-    try:
-        timings_ms["pre_openai_total_ms"] = float(timings_ms.get("compress_rgb", 0)) + float(
-            timings_ms.get("depth_capture_compress_ms", 0)
-        )
-    except (TypeError, ValueError):
-        timings_ms["pre_openai_total_ms"] = 0.0
-
-    tgt = _sanitize_xyz(llm.get("target_xyz_base_link_m"))
-    blend = _clamp_blend(llm.get("approach_blend"))
-    blend_source = "model"
-    # Slider operatore: sovrascrive il blend del modello con un tetto più alto (passi più decisi se richiesto).
-    op_blend_raw = body.get("approach_blend_override", body.get("operator_blend"))
-    if op_blend_raw is not None:
-        try:
-            ob = float(op_blend_raw)
-        except (TypeError, ValueError):
-            ob = 0.0
-        if ob > 0:
-            try:
-                op_mx = float(os.environ.get("GO2_GRASP_COACH_OPERATOR_MAX_BLEND", "0.6") or "0.6")
-            except ValueError:
-                op_mx = 0.6
-            op_mx = max(0.1, min(op_mx, 0.9))
-            blend = max(0.04, min(op_mx, ob))
-            blend_source = "operator"
-    grip = str(llm.get("gripper_command") or "hold").strip().lower()
-    if grip not in {"hold", "open", "close"}:
-        grip = "hold"
-
-    # GROUNDING METRICO: se la camera Orbbec del polso vede l'oggetto, le coordinate del target
-    # vengono dalla DEPTH REALE (pinhole + FK → base_link), non più indovinate dall'LLM. Stesso
-    # frame di goto_tool_target_base_link_m. Disattivabile con GO2_GRASP_COACH_METRIC_GROUNDING=0.
-    target_source = "model"
-    metric_info: dict[str, Any] | None = None
-    metric_coach_stage: str | None = None
-    metric_grasp_final: Any = None
-    metric_gripper_plan: Any = None
-    metric_on = os.environ.get("GO2_GRASP_COACH_METRIC_GROUNDING", "1").lower() in {"1", "true", "yes", "on"}
-    if metric_on and go2_local():
-        try:
-            from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
-            from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
-
-            servo_now, _sdiag = read_servo_deg_with_diag(PROJECT_ROOT)
-            if servo_now is not None and len(servo_now) >= 6:
-                mp = plan_wrist_grasp_metric([float(x) for x in servo_now[:7]], instruction=instruction)
-                det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
-                # Check collisione col cane su OGNI stadio della traiettoria IK pianificata.
-                stages_dbg: list[dict[str, Any]] = []
-                preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
-                for st in (preview.get("plan") or []):
-                    if not isinstance(st, dict):
-                        continue
-                    s_tgt = st.get("target_xyz_m")
-                    s_nogo = (
-                        None
-                        if lateral
-                        else (
-                            _nogo_zone_reason([float(v) for v in s_tgt])
-                            if isinstance(s_tgt, (list, tuple)) and len(s_tgt) >= 3
-                            else None
-                        )
-                    )
-                    stages_dbg.append({
-                        "stage": st.get("stage"),
-                        "target_xyz_m": s_tgt,
-                        "ik_ok": bool(st.get("ik_ok")),
-                        "collision_dog": s_nogo,
-                        "safe": bool(st.get("ik_ok") and s_nogo is None),
-                    })
-                metric_info = {
-                    "ok": bool(mp.get("ok")),
-                    "reason": mp.get("reason"),
-                    "grasp_display_base_link_m": mp.get("grasp_display_base_link_m"),
-                    "label": det.get("label"),
-                    "confidence": det.get("confidence"),
-                    "backend": det.get("backend"),
-                    "bbox_xyxy": det.get("bbox_xyxy"),
-                    "bbox_center_px": det.get("bbox_center_px"),
-                    # Asse di presa = asse REALE del pezzo (minAreaRect) se disponibile,
-                    # altrimenti il fallback orizzontale est-ovest.
-                    "grip_axis_px": det.get("orient_axis_px") or det.get("grip_axis_px"),
-                    "orientation_deg": det.get("orientation_deg"),
-                    "frame_size_px": det.get("frame_size_px"),
-                    "depth_m": mp.get("depth_m"),
-                    "reach_m": mp.get("reach_m"),
-                    "reachable": mp.get("reachable"),
-                    "ik_stages": stages_dbg,
-                }
-                snap = mp.get("debug_snapshot") if isinstance(mp.get("debug_snapshot"), dict) else {}
-                if snap.get("image_url"):
-                    metric_info["viz_image_url"] = str(snap["image_url"])
-                if mp.get("ok"):
-                    mtgt, mstage = _coach_target_from_metric_plan(mp, cur_tip, lateral=lateral)
-                    if mtgt is not None:
-                        tgt = mtgt
-                        metric_coach_stage = mstage
-                        metric_grasp_final = mp.get("grasp_display_base_link_m")
-                        metric_gripper_plan = (
-                            mp.get("preview", {}).get("gripper")
-                            if isinstance(mp.get("preview"), dict)
-                            else None
-                        )
-                        metric_info["coach_target_base_link_m"] = mtgt
-                        metric_info["coach_stage"] = mstage
-                        metric_info["grasp_final_base_link_m"] = metric_grasp_final
-                        target_source = "metric_orbbec"
-                        object_visible = True
-                        # pixel oggetto dalla detection metrica (più affidabile del guess LLM)
-                        ctr = det.get("bbox_center_px")
-                        fsz = det.get("frame_size_px")
-                        if (
-                            isinstance(ctr, (list, tuple))
-                            and len(ctr) >= 2
-                            and isinstance(fsz, (list, tuple))
-                            and len(fsz) >= 2
-                            and float(fsz[0]) > 0
-                            and float(fsz[1]) > 0
-                        ):
-                            object_pixel = [
-                                max(0.0, min(1.0, float(ctr[0]) / float(fsz[0]))),
-                                max(0.0, min(1.0, float(ctr[1]) / float(fsz[1]))),
-                            ]
-                            out["object_pixel_norm"] = object_pixel
+            llm, openai_ms = _openai_coach_call(
+                user_text=user_blob,
+                rgb_jpeg=rgb_small,
+                system_prompt=_coach_system_prompt(lateral=lateral),
+                depth_jpeg=depth_small,
+                rgb_label=rgb_label,
+            )
+            timings_ms["openai_http_ms"] = openai_ms
         except Exception as exc:
-            metric_info = {"ok": False, "reason": "metric_grounding_error", "detail": repr(exc)}
+            out["reason"] = "openai_failed"
+            out["detail"] = repr(exc)
+            out["metric_grounding"] = metric_info
+            if metric_info and metric_info.get("viz_image_url"):
+                out["metric_viz_url"] = str(metric_info["viz_image_url"])
+            append_grasp_coach_event(
+                {
+                    "operator_instruction": instruction,
+                    "assistant_reply_it": "",
+                    "executed": False,
+                    "motion_ok": None,
+                    "error": repr(exc),
+                    "step_index": step_idx,
+                    "depth_policy": policy,
+                    "coach_model": grasp_coach_model(),
+                }
+            )
+            return out
+
+        out["coach_json"] = llm
+        out["assistant_reply_it"] = str(llm.get("assistant_reply_it") or "").strip()
+        out["memory_summary_line"] = str(llm.get("memory_summary_line") or "").strip()
+        object_visible = bool(llm.get("object_visible", True))
+        object_pixel = None
+        _opx = llm.get("object_pixel_norm")
+        if isinstance(_opx, (list, tuple)) and len(_opx) >= 2:
+            try:
+                u, v = float(_opx[0]), float(_opx[1])
+                if math.isfinite(u) and math.isfinite(v):
+                    object_pixel = [max(0.0, min(1.0, u)), max(0.0, min(1.0, v))]
+            except (TypeError, ValueError):
+                object_pixel = None
+        out["object_visible"] = object_visible
+        out["object_pixel_norm"] = object_pixel
+        out["ok"] = True
+        out["step_index"] = step_idx
+        out["depth_policy"] = policy
+        out["depth_attached"] = bool(depth_small)
+        out["payload_sizes"] = {
+            "rgb_jpeg_bytes": len(rgb_small),
+            "depth_jpeg_bytes": len(depth_small) if depth_small else 0,
+        }
+        if os.environ.get("GO2_GRASP_COACH_RETURN_PREVIEW", "1").lower() in {"1", "true", "yes", "on"}:
+            try:
+                out["rgb_preview_b64"] = base64.b64encode(rgb_small).decode("ascii")
+            except Exception:
+                out["rgb_preview_b64"] = None
+        out["timings_ms"] = timings_ms
+        try:
+            timings_ms["pre_openai_total_ms"] = float(timings_ms.get("compress_rgb", 0)) + float(
+                timings_ms.get("depth_capture_compress_ms", 0)
+            )
+        except (TypeError, ValueError):
+            timings_ms["pre_openai_total_ms"] = 0.0
+
+        tgt = _sanitize_xyz(llm.get("target_xyz_base_link_m"))
+        blend = _clamp_blend(llm.get("approach_blend"))
+        blend_source = "model"
+        op_blend_raw = body.get("approach_blend_override", body.get("operator_blend"))
+        if op_blend_raw is not None:
+            try:
+                ob = float(op_blend_raw)
+            except (TypeError, ValueError):
+                ob = 0.0
+            if ob > 0:
+                try:
+                    op_mx = float(os.environ.get("GO2_GRASP_COACH_OPERATOR_MAX_BLEND", "0.6") or "0.6")
+                except ValueError:
+                    op_mx = 0.6
+                op_mx = max(0.1, min(op_mx, 0.9))
+                blend = max(0.04, min(op_mx, ob))
+                blend_source = "operator"
+        grip = str(llm.get("gripper_command") or "hold").strip().lower()
+        if grip not in {"hold", "open", "close"}:
+            grip = "hold"
+
+        # Metrica già calcolata sopra: se Orbbec vede l'oggetto, sovrascrive il target LLM.
+        if metric_info and metric_info.get("ok") and metric_result.get("tgt") is not None:
+            tgt = metric_result["tgt"]
+            metric_coach_stage = metric_result.get("metric_coach_stage")
+            metric_grasp_final = metric_result.get("metric_grasp_final")
+            metric_gripper_plan = metric_result.get("metric_gripper_plan")
+            target_source = "metric_orbbec"
+            object_visible = True
+            object_pixel = metric_result.get("object_pixel")
+            out["object_visible"] = True
+            out["object_pixel_norm"] = object_pixel
+
     out["target_source"] = target_source
     out["metric_grounding"] = metric_info
     if metric_info and metric_info.get("viz_image_url"):
@@ -1073,10 +1183,21 @@ def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | No
             "reach_m": mp.get("reach_m"),
             "reachable": mp.get("reachable"),
             "ik_stages": stages_dbg,
+            "teach_calib_applied": bool(mp.get("teach_calib_applied")),
+            "teach_calib_sample_id": mp.get("teach_calib_sample_id"),
+            "teach_calib_delta_servo_deg": mp.get("teach_calib_delta_servo_deg"),
         }
         snap = mp.get("debug_snapshot") if isinstance(mp.get("debug_snapshot"), dict) else {}
         if snap.get("image_url"):
             metric_info["viz_image_url"] = str(snap["image_url"])
+        elif mp.get("metric_viz_url"):
+            metric_info["viz_image_url"] = str(mp["metric_viz_url"])
+        if mp.get("hint_it"):
+            metric_info["hint_it"] = str(mp["hint_it"])
+        if mp.get("partial_rgb_ok") and det.get("ok"):
+            metric_info["partial_rgb_ok"] = True
+            metric_info["ok"] = False
+            metric_info["reason"] = mp.get("reason")
         coach_tgt = None
         if mp.get("ok"):
             coach_tgt, _coach_stage = _coach_target_from_metric_plan(mp, cur_tip, lateral=lateral)
@@ -1095,14 +1216,17 @@ def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | No
                 max(0.0, min(1.0, float(ctr[0]) / float(fsz[0]))),
                 max(0.0, min(1.0, float(ctr[1]) / float(fsz[1]))),
             ]
+        partial_rgb = bool(mp.get("partial_rgb_ok")) and bool(det.get("ok"))
         out["ok"] = bool(mp.get("ok"))
         out["reason"] = mp.get("reason") if not mp.get("ok") else ""
-        out["object_visible"] = bool(mp.get("ok"))
+        out["object_visible"] = bool(mp.get("ok")) or partial_rgb
         out["object_pixel_norm"] = object_pixel
         out["metric_grounding"] = metric_info
         out["target_source"] = "metric_orbbec" if mp.get("ok") else None
         if metric_info.get("viz_image_url"):
             out["metric_viz_url"] = metric_info["viz_image_url"]
+        elif mp.get("metric_viz_url"):
+            out["metric_viz_url"] = str(mp["metric_viz_url"])
         out["interpreted"] = {
             "target_xyz_base_link_m": coach_tgt,
             "object_visible": out["object_visible"],
@@ -1111,11 +1235,16 @@ def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | No
             "target_source": out["target_source"],
             "nogo_blocked": False,
         }
-        out["label_it"] = (
-            "Anteprima OK: oggetto visto dal polso, traiettoria IK calcolata."
-            if mp.get("ok")
-            else f"Anteprima: nessun oggetto metrico ({mp.get('reason') or 'unknown'})."
-        )
+        if mp.get("ok"):
+            out["label_it"] = "Anteprima OK: oggetto visto dal polso, traiettoria IK calcolata."
+        elif partial_rgb:
+            out["label_it"] = (
+                "RGB Orbbec OK, depth insufficiente ("
+                + str(mp.get("reason") or "depth")
+                + ") — riprova o avvicina la scatola."
+            )
+        else:
+            out["label_it"] = f"Anteprima: nessun oggetto metrico ({mp.get('reason') or 'unknown'})."
     except Exception as exc:  # noqa: BLE001
         out["reason"] = "preview_error"
         out["detail"] = repr(exc)

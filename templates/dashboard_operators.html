@@ -498,7 +498,8 @@
           <h2>Camere · 3D</h2>
           <div class="op-dock-grid">
             <div class="op-dock-cell">
-              <div class="op-dock-label">log.0</div>
+              <div class="op-dock-label">log.0 · live UVC (non SDK)</div>
+              <div id="graspDockCam0Badge" class="cam-live-badge" style="margin:0 0 4px;font-size:0.72rem;line-height:1.3;color:#94a3b8;">Stato stream…</div>
               <div class="op-dock-frame op-cam-mjpeg-wrap">
                 <div id="graspDockCam0Loading" class="op-cam-mjpeg-loading op-cam-mjpeg-loading--dock">
                   <div class="op-cam-mjpeg-loading-track"><div class="op-cam-mjpeg-loading-fill"></div></div>
@@ -550,6 +551,20 @@
               <button type="button" class="op-btn" id="graspCoachStartBtn" onclick="operatorsGraspCoachGotoStart()" title="Porta il braccio in START laterale">Vai in START</button>
               <button type="button" class="op-btn ok" id="graspCoachGraspBtn" onclick="operatorsGraspCoachGrasp()" title="Uno step coach verso l'oggetto">Esegui presa (step)</button>
             </div>
+            <div class="op-teach-calib-box" style="margin:0 0 10px;padding:8px;border:1px dashed rgba(120,180,255,0.45);border-radius:6px;background:rgba(40,80,140,0.06);">
+              <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Calibrazione presa manuale (teach)</div>
+              <p class="muted small" style="margin:0 0 8px;line-height:1.45;">
+                Con <strong>oggetto rilevato</strong>: attendi <strong>4 s</strong> (coppia attiva) → i giunti si <strong>rilasciano</strong> →
+                hai <strong>15 s</strong> per portare il braccio nella posa di presa corretta → la dashboard <strong>memorizza l’offset</strong>
+                (Δ giunti/TCP vs IK) e lo somma al target <strong>dinamico</strong> dove vede l’oggetto — non fissa la posa insegnata.
+              </p>
+              <div class="btn-grid" style="margin-bottom:6px;">
+                <button type="button" class="op-btn warn" id="graspTeachCalibBtn" onclick="operatorsGraspTeachCalibStart()" title="Rilascio giunti temporaneo — posa manuale">Calibra posa presa</button>
+                <button type="button" class="op-btn" id="graspTeachCalibCancelBtn" onclick="operatorsGraspTeachCalibCancel()" disabled>Annulla teach</button>
+                <button type="button" class="op-btn" id="graspTeachCalibListBtn" onclick="operatorsGraspTeachCalibRefresh()">Campioni salvati</button>
+              </div>
+              <div id="graspTeachCalibStatus" class="muted small" style="line-height:1.4;min-height:2.2em;">Pronto — esegui acquisizione con oggetto visibile, poi «Calibra posa presa».</div>
+            </div>
             <div id="graspCoachMetricPanel" class="op-teach-metric-panel" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:0.78rem;margin-bottom:8px;">
               <div><span class="muted">Oggetto:</span> <strong id="graspCoachMetObj">—</strong></div>
               <div><span class="muted">Confidenza:</span> <strong id="graspCoachMetConf">—</strong></div>
@@ -560,9 +575,15 @@
             </div>
             <div id="graspCoachVizWrap">
               <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Feedback grafico presa (polso)</div>
+              <p class="muted small" style="margin:0 0 6px;line-height:1.4;">
+                <strong>Acquisizione</strong> = frame RGB+depth Orbbec SDK (sotto). <strong>Live tab Scene</strong> = stream UVC MJPEG
+                (<code>log.0</code>): se vedi puntini IR/depth, in tab <strong>Scene</strong> usa le frecce sotto l’anteprima fino a
+                <span style="color:#86efac;">RGB OK</span> su <code>/dev/video2</code> (o nodo RGB dalla badge).
+              </p>
+              <div id="graspCoachLiveBadge" class="cam-live-badge" style="margin:0 0 6px;font-size:0.76rem;line-height:1.35;color:#94a3b8;">Stato stream log.0…</div>
               <div id="graspCoachVizStatus" style="font-size:0.8rem;margin-bottom:4px;color:var(--muted);">In attesa acquisizione…</div>
               <canvas id="graspCoachViz" width="480" height="360" style="width:100%;max-width:520px;border:1px solid var(--border,#333);border-radius:6px;background:#111;"></canvas>
-              <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">Blu = scatola · giallo = asse presa · verde = centro · sotto = stadi IK.</div>
+              <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">SDK acquisizione: blu = scatola · giallo = asse presa · verde = centro · sotto = stadi IK.</div>
               <div id="graspCoachStages" style="margin-top:6px;"></div>
             </div>
           </div>

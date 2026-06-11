@@ -562,11 +562,53 @@ def enable_all(*, mode: int = 1, with_power: bool = False) -> dict[str, Any]:
     return _publish_messages(msgs, delay_ms=100)
 
 
+def _prepare_for_admin_release() -> dict[str, Any]:
+    """Chiude sessione giunti/live e azzera motion_guard prima di release/zero admin."""
+    prep: dict[str, Any] = {"action": "prepare_admin_release"}
+    try:
+        from go2_dashboard import d1_arm_motion
+
+        prep["live_session_end"] = d1_arm_motion.end_live_session()
+    except Exception as exc:
+        prep["live_session_end"] = {"ok": False, "detail": repr(exc)}
+    try:
+        _halt_cartesian_stream(wait_idle=True)
+    except Exception:
+        pass
+    try:
+        prep["joint_end"] = joint_control_end()
+    except Exception as exc:
+        prep["joint_end"] = {"ok": False, "detail": repr(exc)}
+    motion_force_idle()
+    prep["guard_after"] = motion_guard_status()
+    prep["ok"] = True
+    return prep
+
+
 def motor_release() -> dict[str, Any]:
     """funcode 5 mode 0 — SOLO su richiesta esplicita utente (mai automatico)."""
+    prep = _prepare_for_admin_release()
     ok, busy = motion_try_acquire("admin")
     if not ok:
-        return {"ok": False, "reason": busy, "action": "motor_release"}
+        guard = motion_guard_status()
+        hint = (
+            "Piano motion ancora occupato"
+            + (f" ({busy})" if busy else "")
+            + ": attendi la fine di una mossa braccio o riprova tra 2s."
+        )
+        if str(busy or "").startswith("plane_busy:joint"):
+            hint = (
+                "Sessione giunti ancora attiva sulla dashboard — di solito basta riprovare; "
+                "se persiste, tab Grasp Teaching: annulla teach e ripeti «Calibra posa presa»."
+            )
+        return {
+            "ok": False,
+            "reason": busy,
+            "action": "motor_release",
+            "hint_it": hint,
+            "prepare": prep,
+            "guard": guard,
+        }
     try:
         _halt_cartesian_stream(wait_idle=True)
         stop_command_daemon()

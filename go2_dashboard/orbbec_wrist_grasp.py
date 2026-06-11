@@ -57,12 +57,41 @@ def _filter_wrist_detection(det: dict[str, Any], intr: dict[str, Any]) -> dict[s
             "reason": "bbox_above_horizon",
             "hint_it": "Detection troppo in alto nel frame polso — abbassa il braccio o avvicina la scatola.",
         }
-    if float(det.get("confidence") or 0) < _env_float("GO2_WRIST_DETECT_MIN_CONF", 0.38):
+    # color_blue_box usa confidenza euristica (non YOLO): soglia piu' bassa per non scartare
+    # detection valide con conf ~0.28-0.35 su scatole piccole nel frame polso.
+    min_conf = _env_float("GO2_WRIST_DETECT_MIN_CONF", 0.25)
+    if det.get("backend") == "color_blue_box":
+        min_conf = _env_float("GO2_WRIST_DETECT_MIN_CONF_COLOR", min_conf)
+    if float(det.get("confidence") or 0) < min_conf:
         return {**det, "ok": False, "reason": "confidence_too_low"}
     if len(bbox) >= 4:
         area = max(0.0, float(bbox[2]) - float(bbox[0])) * max(0.0, float(bbox[3]) - float(bbox[1]))
-        if area / max(w * h, 1.0) < _env_float("GO2_WRIST_DETECT_MIN_AREA_RATIO", 0.008):
+        area_ratio = area / max(w * h, 1.0)
+        if area_ratio < _env_float("GO2_WRIST_DETECT_MIN_AREA_RATIO", 0.003):
             return {**det, "ok": False, "reason": "bbox_too_small"}
+        if area_ratio > _env_float("GO2_WRIST_DETECT_MAX_AREA_RATIO", 0.12):
+            return {
+                **det,
+                "ok": False,
+                "reason": "bbox_too_large",
+                "hint_it": "Blob troppo grande (pavimento/riflessi): ricalibra colore o stringi HSV.",
+            }
+        bh_ratio = max(0.0, float(bbox[3]) - float(bbox[1])) / max(h, 1.0)
+        if bh_ratio > _env_float("GO2_WRIST_DETECT_MAX_BBOX_HEIGHT_RATIO", 0.36):
+            return {
+                **det,
+                "ok": False,
+                "reason": "bbox_too_tall",
+                "hint_it": "Riquadro troppo alto (probabilmente include le chele): alza il crop o avvicina la scatola.",
+            }
+        max_bottom_ratio = _env_float("GO2_WRIST_DETECT_MAX_BOTTOM_Y_RATIO", 0.72)
+        if bottom_y > h * max_bottom_ratio:
+            return {
+                **det,
+                "ok": False,
+                "reason": "bbox_too_low",
+                "hint_it": "Detection troppo in basso (zona pinza/chele): alza il braccio o stringi il crop.",
+            }
     return det
 
 
@@ -77,7 +106,7 @@ def available() -> bool:
         return False
 
 
-def capture_aligned(*, timeout_ms: int = 1500, max_frames: int = 40) -> dict[str, Any]:
+def capture_aligned(*, timeout_ms: int | None = None, max_frames: int | None = None) -> dict[str, Any]:
     """Cattura una coppia (color BGR, depth uint16) allineata depth→color dall'Orbbec.
 
     Apre la pipeline on-demand (color 640x480 MJPG + depth Y16 640x480) e la chiude subito:
@@ -92,6 +121,16 @@ def capture_aligned(*, timeout_ms: int = 1500, max_frames: int = 40) -> dict[str
 
     from go2_dashboard import orbbec_lock
 
+    if timeout_ms is None:
+        try:
+            timeout_ms = int(float(os.environ.get("GO2_ORBBEC_CAPTURE_TIMEOUT_MS", "2200")))
+        except ValueError:
+            timeout_ms = 2200
+    if max_frames is None:
+        try:
+            max_frames = int(float(os.environ.get("GO2_ORBBEC_CAPTURE_MAX_FRAMES", "55")))
+        except ValueError:
+            max_frames = 55
     with _PIPE_LOCK, orbbec_lock.orbbec_guard("grasp_capture", preempt=True) as _lk:
         if not _lk.acquired:
             return {
@@ -107,6 +146,8 @@ def capture_aligned(*, timeout_ms: int = 1500, max_frames: int = 40) -> dict[str
             }
         pipe = None
         try:
+            # Dai tempo allo stream V4L di cedere dopo la prelazione (evita EBUSY / frame vuoti).
+            time.sleep(max(0.0, _env_float("GO2_ORBBEC_CAPTURE_SETTLE_S", 0.45)))
             pipe = ob.Pipeline()
             cfg = ob.Config()
             # color 640x480 (preferisci MJPG; fallback al default)
@@ -212,10 +253,9 @@ def _camera_basis_base_link(q_rad: list[float]):
     return np.asarray(cam_center, dtype=float), right, up, fwd
 
 
-def _depth_median_m(depth_u16: np.ndarray, scale_mm: float, bbox_xyxy, *, shrink: float = 0.25) -> dict[str, Any]:
+def _depth_roi_stats(depth_u16: np.ndarray, scale_mm: float, bbox_xyxy, *, shrink: float) -> dict[str, Any]:
     h, w = depth_u16.shape[:2]
     x0, y0, x1, y1 = [float(v) for v in bbox_xyxy]
-    # restringe il bbox verso il centro per evitare bordi/pavimento
     bw, bh = (x1 - x0), (y1 - y0)
     x0s = int(round(x0 + bw * shrink))
     x1s = int(round(x1 - bw * shrink))
@@ -227,16 +267,48 @@ def _depth_median_m(depth_u16: np.ndarray, scale_mm: float, bbox_xyxy, *, shrink
         x0s, y0s, x1s, y1s = int(max(0, x0)), int(max(0, y0)), int(min(w, x1)), int(min(h, y1))
     roi = depth_u16[y0s:y1s, x0s:x1s]
     nz = roi[roi > 0]
-    if nz.size < 12:
-        return {"ok": False, "reason": "no_depth_support", "support": int(nz.size)}
+    try:
+        min_support = int(float(os.environ.get("GO2_ORBBEC_DEPTH_MIN_SUPPORT", "6")))
+    except ValueError:
+        min_support = 6
+    if nz.size < min_support:
+        return {"ok": False, "reason": "no_depth_support", "support": int(nz.size), "roi_px": [x0s, y0s, x1s, y1s], "shrink": shrink}
     med_mm = float(np.median(nz))
     return {
         "ok": True,
         "depth_m": med_mm * scale_mm / 1000.0,
         "support": int(nz.size),
         "roi_px": [x0s, y0s, x1s, y1s],
+        "shrink": shrink,
         "iqr_m": float(np.subtract(*np.percentile(nz, [75, 25]))) * scale_mm / 1000.0,
     }
+
+
+def _depth_median_m(depth_u16: np.ndarray, scale_mm: float, bbox_xyxy, *, shrink: float | None = None) -> dict[str, Any]:
+    """Mediana depth nel bbox. Fallback a ROI più larga se il nucleo è vuoto (logo/centro riflettente)."""
+    if shrink is None:
+        try:
+            shrink = float(os.environ.get("GO2_ORBBEC_DEPTH_ROI_SHRINK", "0.12"))
+        except ValueError:
+            shrink = 0.12
+    tries = [float(shrink)]
+    for extra in (0.08, 0.0, -0.08):
+        if extra not in tries:
+            tries.append(extra)
+    last: dict[str, Any] = {"ok": False, "reason": "no_depth_support", "support": 0}
+    for sh in tries:
+        sh = max(-0.12, min(0.45, float(sh)))
+        out = _depth_roi_stats(depth_u16, scale_mm, bbox_xyxy, shrink=sh)
+        if out.get("ok"):
+            if sh != float(shrink):
+                out["depth_fallback_shrink"] = sh
+            return out
+        last = out
+    last["hint_it"] = (
+        "Depth Orbbec assente nel riquadro oggetto (centro spesso a 0 su superfici lucide). "
+        "Avvicina la scatola, inclina leggermente, o verifica proiettore IR."
+    )
+    return last
 
 
 def _build_metric_pointcloud(
@@ -562,7 +634,33 @@ def plan_wrist_grasp_metric(servo_deg7: list[float], *, instruction: str | None 
     cx, cy = det["bbox_center_px"]
     dm = _depth_median_m(depth, scale_mm, det["bbox_xyxy"])
     if not dm.get("ok"):
-        return {"ok": False, "reason": dm.get("reason", "depth_failed"), "detection": det, "depth_diag": dm}
+        retries = max(0, int(_env_float("GO2_ORBBEC_DEPTH_CAPTURE_RETRIES", 1)))
+        for _ in range(retries):
+            cap2 = capture_aligned()
+            if not cap2.get("ok"):
+                break
+            depth = cap2["depth_u16"]
+            scale_mm = cap2["depth_scale_mm"]
+            dm = _depth_median_m(depth, cap2.get("depth_scale_mm", scale_mm), det["bbox_xyxy"])
+            if dm.get("ok"):
+                color = cap2.get("color_bgr") or color
+                intr = cap2.get("intrinsics") or intr
+                break
+    if not dm.get("ok"):
+        out_fail: dict[str, Any] = {
+            "ok": False,
+            "reason": dm.get("reason", "depth_failed"),
+            "detection": det,
+            "depth_diag": dm,
+            "debug_snapshot": debug_snap,
+            "hint_it": dm.get("hint_it")
+            or "Oggetto visto in RGB ma depth Orbbec insufficiente nel bbox — riprova o avvicina la scatola.",
+            "object_detection": det,
+            "partial_rgb_ok": True,
+        }
+        if debug_snap.get("image_url"):
+            out_fail["metric_viz_url"] = str(debug_snap["image_url"])
+        return out_fail
     Z = float(dm["depth_m"])
 
     # back-projection pinhole (OpenCV optical: +X destra, +Y giù, +Z avanti)
@@ -649,7 +747,7 @@ def plan_wrist_grasp_metric(servo_deg7: list[float], *, instruction: str | None 
          "detail_it": f"{sum(1 for p in preview_plan if p.get('ik_ok'))}/4 stadi"},
     ]
 
-    return {
+    out = {
         "ok": True,
         "backend": "orbbec_metric_wrist",
         "debug_snapshot": debug_snap,
@@ -712,3 +810,10 @@ def plan_wrist_grasp_metric(servo_deg7: list[float], *, instruction: str | None 
         },
         "latency_ms": round((time.time() - t0) * 1000.0, 1),
     }
+    try:
+        from go2_dashboard.grasp_teach_calib import apply_teach_to_metric_plan
+
+        out = apply_teach_to_metric_plan(out)
+    except Exception:
+        pass
+    return out

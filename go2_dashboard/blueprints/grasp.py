@@ -150,6 +150,69 @@ def grasp_detection_debug_jpg(tag: str) -> Any:
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+@bp.route("/calibrate_color", methods=["POST"])
+def grasp_calibrate_color() -> Any:
+    """Auto-calibrazione del colore scatola dal polso (Orbbec).
+
+    Cattura un frame **attraverso il lock Orbbec** (``capture_aligned`` → prelazione cooperativa,
+    nessuna seconda pipeline), campiona l'HSV della scatola e fissa le soglie
+    ``D1_COLOR_BOX_*`` (in-process + ``data/color_box_calib.json``). Body opzionale:
+    ``{"bbox_norm":[x0,y0,x1,y1]}`` o ``{"point_norm":[u,v],"radius_frac":0.06}``;
+    se assente usa l'auto-detect del blob piu' saturo. Non muove il braccio.
+    """
+    body = request.get_json(silent=True) or {}
+    import sys as _sys
+
+    try:
+        from go2_dashboard.orbbec_wrist_grasp import capture_aligned
+
+        s = str(PROJECT_ROOT / "scripts")
+        if s not in _sys.path:
+            _sys.path.insert(0, s)
+        from box_object_detector import calibrate_color_from_frame, detect_box_object
+    except Exception as exc:
+        return jsonify({"ok": False, "reason": "import_failed", "detail": repr(exc)}), 500
+
+    cap = capture_aligned()
+    if not cap.get("ok"):
+        return jsonify({
+            "ok": False,
+            "reason": cap.get("reason", "capture_failed"),
+            "detail": cap.get("detail"),
+            "holder": cap.get("holder"),
+            "hint_it": cap.get("hint_it"),
+        }), 200
+
+    frame = cap["color_bgr"]
+    out = calibrate_color_from_frame(
+        frame,
+        bbox_norm=body.get("bbox_norm"),
+        point_norm=body.get("point_norm"),
+        radius_frac=float(body.get("radius_frac") or 0.06),
+    )
+    if out.get("ok"):
+        det = detect_box_object(frame)
+        out["verify_detection"] = {
+            "ok": bool(det.get("ok")),
+            "backend": det.get("backend"),
+            "confidence": det.get("confidence"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "orientation_deg": det.get("orientation_deg"),
+            "reason": det.get("reason"),
+        }
+        try:
+            from go2_dashboard.grasp_detect_debug import save_detection_snapshot
+
+            snap = save_detection_snapshot(
+                frame, det if isinstance(det, dict) else None,
+                tag="wrist_orbbec", logical_camera=0, step="color_calibration",
+            )
+            out["debug_image_url"] = snap.get("image_url")
+        except Exception:
+            pass
+    return jsonify(out), 200
+
+
 @bp.route("/rgbd_snapshot", methods=["GET"])
 def grasp_rgbd_snapshot() -> Any:
     """RGB da cache dashboard + anteprima depth V4L (non metrica) per worker cloud."""

@@ -10,6 +10,7 @@ clearly so it is not confused with a trained detector.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -20,6 +21,69 @@ import numpy as np
 
 _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_META_CACHE: dict[str, dict[str, Any]] = {}
+
+# Calibrazione colore persistita (data/color_box_calib.json): le soglie HSV della scatola
+# si risolvono con priorita' env > file di calibrazione > default. Permette di tarare il
+# colore dal vivo (auto-calibrazione dal polso) senza riavviare la dashboard.
+_COLOR_CALIB_CACHE: dict[str, Any] = {"mtime": -1.0, "data": {}}
+# Se True, _color_int/_color_float ignorano data/color_box_calib.json (fallback detection).
+_IGNORE_COLOR_CALIB = False
+
+
+def _calib_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "data" / "color_box_calib.json"
+
+
+def _load_color_calib() -> dict[str, Any]:
+    if _IGNORE_COLOR_CALIB:
+        return {}
+    p = _calib_path()
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _COLOR_CALIB_CACHE["mtime"]:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        _COLOR_CALIB_CACHE["data"] = data if isinstance(data, dict) else {}
+        _COLOR_CALIB_CACHE["mtime"] = mtime
+    return _COLOR_CALIB_CACHE["data"]
+
+
+def _color_int(name: str, default: int) -> int:
+    """Soglia colore intera: env > file calibrazione > default."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+    val = _load_color_calib().get(name)
+    if val is not None:
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _color_float(name: str, default: float) -> float:
+    """Soglia colore float: env > file calibrazione > default."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    val = _load_color_calib().get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+    return default
 
 
 def _infer_model_family(model_path: str | None) -> str | None:
@@ -116,10 +180,11 @@ def detector_status() -> dict[str, Any]:
         "classic_fallback_enabled": os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower()
         in {"1", "true", "yes"},
         "color_hsv": {
-            "h_min": _parse_int_env("D1_COLOR_BOX_H_MIN", 95),
-            "h_max": _parse_int_env("D1_COLOR_BOX_H_MAX", 130),
-            "s_min": _parse_int_env("D1_COLOR_BOX_S_MIN", 45),
-            "v_min": _parse_int_env("D1_COLOR_BOX_V_MIN", 35),
+            "h_min": _color_int("D1_COLOR_BOX_H_MIN", 95),
+            "h_max": _color_int("D1_COLOR_BOX_H_MAX", 130),
+            "s_min": _color_int("D1_COLOR_BOX_S_MIN", 45),
+            "v_min": _color_int("D1_COLOR_BOX_V_MIN", 35),
+            "calibrated": bool(_load_color_calib()),
         },
         "recommended_models": ["YOLO-World small TensorRT FP16", "YOLO11n TensorRT FP16"],
         **meta,
@@ -246,17 +311,39 @@ def _orient_axis_from_center(cx: float, cy: float, orient_deg: float, length: fl
     ]
 
 
+def _apply_gripper_exclude_crop(mask: np.ndarray) -> np.ndarray:
+    """Azzera la fascia basso-centrale dove compaiono le chele/pinza nel frame polso.
+
+    Le chele non sono blu ma il minAreaRect di blob vicini puo' inglobarle; escludendo
+    fisicamente quella ROI dalla maschera si evita che contorni o bbox scendano sulla pinza.
+    """
+    h, w = int(mask.shape[0]), int(mask.shape[1])
+    bottom_frac = min(max(_parse_float_env("D1_PICK_GRIPPER_EXCLUDE_BOTTOM_FRAC", 0.20), 0.0), 0.45)
+    width_frac = min(max(_parse_float_env("D1_PICK_GRIPPER_EXCLUDE_WIDTH_FRAC", 0.62), 0.2), 1.0)
+    if bottom_frac <= 0.0:
+        return mask
+    y0 = int(round(h * (1.0 - bottom_frac)))
+    if y0 < 0 or y0 >= h:
+        return mask
+    x_margin = int(round(w * (1.0 - width_frac) / 2.0))
+    x0 = max(0, x_margin)
+    x1 = min(w, w - x_margin)
+    if x1 > x0:
+        mask[y0:, x0:x1] = 0
+    return mask
+
+
 def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
     """Azzera le fasce alta/bassa della maschera per escludere zone non-oggetto.
 
     Sul polso (Orbbec) la **fascia bassa** dell'inquadratura e' occupata dal corpo del
-    cane: senza questo crop il detector lo prende come blob "blu" grande e lo preferisce
-    alla scatola. Tunable:
-      * ``D1_PICK_BOTTOM_CROP_FRAC`` (default 0.22) — frazione bassa azzerata (corpo cane);
-      * ``D1_PICK_TOP_CROP_FRAC``    (default 0.0)  — frazione alta azzerata (orizzonte).
+    cane e dalle chele: senza questo crop il detector li preferisce alla scatola. Tunable:
+      * ``D1_PICK_BOTTOM_CROP_FRAC`` (default 0.30) — frazione bassa azzerata (cane+chele);
+      * ``D1_PICK_TOP_CROP_FRAC``    (default 0.0)  — frazione alta azzerata (orizzonte);
+      * ``D1_PICK_GRIPPER_EXCLUDE_*`` — ulteriore ROI centrale pinza sopra il crop globale.
     """
     h = int(mask.shape[0])
-    bottom_frac = min(max(_parse_float_env("D1_PICK_BOTTOM_CROP_FRAC", 0.22), 0.0), 0.6)
+    bottom_frac = min(max(_parse_float_env("D1_PICK_BOTTOM_CROP_FRAC", 0.30), 0.0), 0.6)
     top_frac = min(max(_parse_float_env("D1_PICK_TOP_CROP_FRAC", 0.0), 0.0), 0.6)
     if bottom_frac > 0.0:
         y0 = int(round(h * (1.0 - bottom_frac)))
@@ -266,16 +353,16 @@ def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
         y1 = int(round(h * top_frac))
         if 0 < y1 <= h:
             mask[:y1, :] = 0
-    return mask
+    return _apply_gripper_exclude_crop(mask)
 
 
 def _color_box_hsv_mask(frame: np.ndarray) -> np.ndarray:
     """Maschera HSV per scatoletta blu (tunable via env)."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h_min = _parse_int_env("D1_COLOR_BOX_H_MIN", 95)
-    h_max = _parse_int_env("D1_COLOR_BOX_H_MAX", 130)
-    s_min = _parse_int_env("D1_COLOR_BOX_S_MIN", 45)
-    v_min = _parse_int_env("D1_COLOR_BOX_V_MIN", 35)
+    h_min = _color_int("D1_COLOR_BOX_H_MIN", 95)
+    h_max = _color_int("D1_COLOR_BOX_H_MAX", 130)
+    s_min = _color_int("D1_COLOR_BOX_S_MIN", 45)
+    v_min = _color_int("D1_COLOR_BOX_V_MIN", 35)
     lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
     upper = np.array([min(179, h_max), 255, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
@@ -312,31 +399,75 @@ def _score_color_candidate(
     return area_ratio - 0.18 * x_pen - y_pen_w * y_pen - aspect_pen
 
 
+def _detection_confidence(
+    *,
+    cnt_area: float,
+    bbox_area: float,
+    solidity: float,
+    frame_area: float,
+    area_ratio: float,
+) -> float:
+    """Confidenza euristica per color_blue_box: compattezza + dimensione da oggetto."""
+    extent = cnt_area / max(bbox_area, 1.0)
+    target = _parse_float_env("D1_COLOR_BOX_TARGET_AREA_RATIO", 0.018)
+    if area_ratio <= target:
+        size_fit = max(0.35, area_ratio / max(target, 1e-6))
+    else:
+        size_fit = max(0.25, target / area_ratio)
+    # Penalizza blob enormi (pavimento/riflessi) che prima passavano con conf alta ma bbox gigante.
+    if area_ratio > _parse_float_env("D1_COLOR_BOX_MAX_AREA_RATIO", 0.10):
+        size_fit *= 0.35
+    raw = 0.30 * min(1.0, solidity) + 0.28 * min(1.0, extent) + 0.42 * min(1.0, size_fit)
+    return round(max(0.15, min(0.95, raw)), 4)
+
+
 def _detection_from_color_contour(
     frame: np.ndarray,
     cnt: np.ndarray,
     *,
     score: float,
     elapsed_s: float,
+    solidity: float = 0.0,
 ) -> dict[str, Any]:
     h, w = int(frame.shape[0]), int(frame.shape[1])
+    cnt_area = float(cv2.contourArea(cnt))
     (cx, cy), (rw, rh), angle = cv2.minAreaRect(cnt)
     cx_f, cy_f = float(cx), float(cy)
     rw_f, rh_f = float(rw), float(rh)
     orient = _angle_from_min_area_rect(rw_f, rh_f, angle)
     box_pts = cv2.boxPoints(((cx, cy), (rw, rh), angle))
-    x1 = float(np.min(box_pts[:, 0]))
-    y1 = float(np.min(box_pts[:, 1]))
-    x2 = float(np.max(box_pts[:, 0]))
-    y2 = float(np.max(box_pts[:, 1]))
+    mar_x1 = float(np.min(box_pts[:, 0]))
+    mar_y1 = float(np.min(box_pts[:, 1]))
+    mar_x2 = float(np.max(box_pts[:, 0]))
+    mar_y2 = float(np.max(box_pts[:, 1]))
+    # Bbox metrica: preferisci il rettangolo stretto del contorno (evita che minAreaRect
+    # allarghi verso le chele quando il blob e' inclinato o rumoroso).
+    bx, by, bw, bh = cv2.boundingRect(cnt)
+    x1, y1, x2, y2 = float(bx), float(by), float(bx + bw), float(by + bh)
+    mar_area = max(1.0, (mar_x2 - mar_x1) * (mar_y2 - mar_y1))
+    tight_area = max(1.0, bw * bh)
+    if mar_area < tight_area * 1.8:
+        x1, y1, x2, y2 = mar_x1, mar_y1, mar_x2, mar_y2
     bw = max(1.0, x2 - x1)
     bh = max(1.0, y2 - y1)
+    bbox_area = bw * bh
+    area_ratio = bbox_area / max(w * h, 1)
+    if solidity <= 0.0 and cnt_area > 0:
+        hull = cv2.convexHull(cnt)
+        solidity = cnt_area / max(float(cv2.contourArea(hull)), 1.0)
+    conf = _detection_confidence(
+        cnt_area=cnt_area,
+        bbox_area=bbox_area,
+        solidity=float(solidity),
+        frame_area=float(w * h),
+        area_ratio=float(area_ratio),
+    )
     long_side = max(rw_f, rh_f)
     base = {
         "ok": True,
         "backend": "color_blue_box",
         "label": "blue_box",
-        "confidence": round(max(0.05, min(0.99, score + 0.35)), 4),
+        "confidence": conf,
         "bbox_xyxy": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
         "bbox_center_px": [round(cx_f, 1), round(cy_f, 1)],
         "bbox_size_px": [round(bw, 1), round(bh, 1)],
@@ -347,22 +478,22 @@ def _detection_from_color_contour(
             round((cy_f - h / 2.0) / max(h / 2.0, 1.0), 4),
         ],
         "grip_center_px": [round(cx_f, 1), round(cy_f, 1)],
-        "grip_axis_px": [
-            [round(x1, 1), round(cy_f, 1)],
-            [round(x2, 1), round(cy_f, 1)],
-        ],
+        "grip_axis_px": _orient_axis_from_center(cx_f, cy_f, orient, long_side * 0.45),
         "gripper_model": "color_box_center",
         "latency_ms": round(elapsed_s * 1000.0, 2),
         "all_count": 1,
         "orientation_deg": orient,
         "orient_axis_px": _orient_axis_from_center(cx_f, cy_f, orient, long_side * 0.45),
         "orient_box_px": [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in box_pts],
+        "contour_area_px": round(cnt_area, 1),
+        "solidity": round(float(solidity), 3),
+        "extent": round(cnt_area / max(bbox_area, 1.0), 3),
         "detect_method": "hsv_blue_contour",
     }
     return base
 
 
-def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+def _detect_color_box_core(frame: np.ndarray) -> dict[str, Any]:
     """Rileva scatoletta blu per maschera HSV + minAreaRect (posizione e rotazione reali)."""
     t0 = time.perf_counter()
     h, w = frame.shape[:2]
@@ -375,13 +506,17 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
             "reason": "no_blue_contour",
             "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
-    min_area = _parse_float_env("D1_COLOR_BOX_MIN_AREA_FRAC", 0.012) * float(w * h)
-    min_solidity = _parse_float_env("D1_COLOR_BOX_MIN_SOLIDITY", 0.55)
+    min_area = _color_float("D1_COLOR_BOX_MIN_AREA_FRAC", 0.004) * float(w * h)
+    max_area = _color_float("D1_COLOR_BOX_MAX_AREA_FRAC", 0.10) * float(w * h)
+    min_solidity = _color_float("D1_COLOR_BOX_MIN_SOLIDITY", 0.55)
     best_cnt = None
     best_score = -1.0
+    best_solidity = 0.0
+    max_cy_frac = _parse_float_env("D1_COLOR_BOX_MAX_CY_FRAC", 0.68)
+    max_bbox_h_frac = _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.34)
     for cnt in cnts:
         area = float(cv2.contourArea(cnt))
-        if area < min_area:
+        if area < min_area or area > max_area:
             continue
         hull = cv2.convexHull(cnt)
         hull_area = float(cv2.contourArea(hull))
@@ -390,8 +525,15 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
         solidity = area / hull_area
         if solidity < min_solidity:
             continue
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+        if bh > h * max_bbox_h_frac:
+            continue
+        if (by + bh) > h * _parse_float_env("D1_COLOR_BOX_MAX_BOTTOM_Y_FRAC", 0.72):
+            continue
         (cx, cy), (rw, rh), _angle = cv2.minAreaRect(cnt)
-        if min(rw, rh) < 12.0:
+        if min(rw, rh) < 8.0:
+            continue
+        if float(cy) > h * max_cy_frac:
             continue
         sc = _score_color_candidate(
             area=area,
@@ -404,6 +546,7 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
         if sc > best_score:
             best_score = sc
             best_cnt = cnt
+            best_solidity = solidity
     if best_cnt is None:
         return {
             "ok": False,
@@ -416,7 +559,166 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
         best_cnt,
         score=best_score,
         elapsed_s=time.perf_counter() - t0,
+        solidity=best_solidity,
     )
+
+
+def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+    """Detection HSV con fallback se la calibrazione salvata è troppo stretta per la luce attuale."""
+    det = _detect_color_box_core(frame)
+    if det.get("ok"):
+        return det
+    cal = _load_color_calib()
+    if not cal:
+        return det
+    reason = str(det.get("reason") or "")
+    if reason not in ("no_blue_contour", "blue_contour_filtered"):
+        return det
+    try:
+        s_cal = int(float(cal.get("D1_COLOR_BOX_S_MIN", 0)))
+    except (TypeError, ValueError):
+        s_cal = 0
+    if s_cal < 80:
+        return det
+    global _IGNORE_COLOR_CALIB
+    _IGNORE_COLOR_CALIB = True
+    try:
+        fb = _detect_color_box_core(frame)
+    finally:
+        _IGNORE_COLOR_CALIB = False
+    if not fb.get("ok"):
+        return det
+    out = dict(fb)
+    out["calib_fallback"] = True
+    out["reason_prev"] = reason
+    out["hint_it"] = (
+        "Calibrazione colore troppo stretta per questa luce — usate soglie default. "
+        "Ricalibra dal vivo (Calibra colore) con la scatola inquadrata."
+    )
+    return out
+
+
+def calibrate_color_from_frame(
+    frame: np.ndarray,
+    *,
+    bbox_norm: list[float] | None = None,
+    point_norm: list[float] | None = None,
+    radius_frac: float = 0.06,
+    margin_h: int = 12,
+    margin_sv: int = 35,
+) -> dict[str, Any]:
+    """Campiona l'HSV della scatola e salva le soglie in ``data/color_box_calib.json``.
+
+    Regione campionata (in ordine di priorita'):
+      * ``bbox_norm`` = [x0,y0,x1,y1] normalizzati 0..1;
+      * ``point_norm`` = [u,v] normalizzati 0..1 (+ ``radius_frac``);
+      * **auto**: blob piu' saturo/compatto nella zona non-cropped (esclude la fascia bassa = cane).
+
+    Applica le nuove soglie **subito** in-process (``os.environ``) e le **persiste** su file,
+    cosi' valgono anche dopo un riavvio e per gli altri processi (jog 5053).
+    """
+    if frame is None or not getattr(frame, "size", 0):
+        return {"ok": False, "reason": "no_frame"}
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    region_kind = "auto"
+    if bbox_norm and len(bbox_norm) >= 4:
+        x0 = int(max(0, min(w - 1, round(float(bbox_norm[0]) * w))))
+        y0 = int(max(0, min(h - 1, round(float(bbox_norm[1]) * h))))
+        x1 = int(max(x0 + 1, min(w, round(float(bbox_norm[2]) * w))))
+        y1 = int(max(y0 + 1, min(h, round(float(bbox_norm[3]) * h))))
+        region_kind = "bbox"
+        roi = hsv[y0:y1, x0:x1].reshape(-1, 3)
+    elif point_norm and len(point_norm) >= 2:
+        cx = int(max(0, min(w - 1, round(float(point_norm[0]) * w))))
+        cy = int(max(0, min(h - 1, round(float(point_norm[1]) * h))))
+        r = max(4, int(round(float(radius_frac) * min(w, h))))
+        x0, y0, x1, y1 = max(0, cx - r), max(0, cy - r), min(w, cx + r), min(h, cy + r)
+        region_kind = "point"
+        roi = hsv[y0:y1, x0:x1].reshape(-1, 3)
+    else:
+        # AUTO robusto: localizza la scatola con una maschera blu PERMISSIVA (unico oggetto
+        # blu in scena; il cane e' gia' fuori dal crop), poi campiona SOLO i pixel del blob
+        # (dentro il contorno) — niente pavimento → tinta pulita ovunque sia la scatola.
+        boot_lo = np.array([_color_int("D1_COLOR_BOOT_H_MIN", 90),
+                            _color_int("D1_COLOR_BOOT_S_MIN", 40),
+                            _color_int("D1_COLOR_BOOT_V_MIN", 40)], dtype=np.uint8)
+        boot_hi = np.array([_color_int("D1_COLOR_BOOT_H_MAX", 135), 255, 255], dtype=np.uint8)
+        boot = cv2.inRange(hsv, boot_lo, boot_hi)
+        boot = _apply_detect_roi_crop(boot)
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        boot = cv2.morphologyEx(boot, cv2.MORPH_OPEN, k, iterations=1)
+        boot = cv2.morphologyEx(boot, cv2.MORPH_CLOSE, k, iterations=2)
+        cnts, _ = cv2.findContours(boot, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return {"ok": False, "reason": "no_blue_object",
+                    "hint_it": "Scatola blu non trovata nel frame del polso: portala in vista, "
+                               "oppure indica point_norm/bbox_norm."}
+        big = max(cnts, key=cv2.contourArea)
+        if float(cv2.contourArea(big)) < 0.0012 * float(w * h):
+            return {"ok": False, "reason": "blue_object_too_small",
+                    "hint_it": "Oggetto blu troppo piccolo/lontano: avvicina la scatola o indica point_norm."}
+        mblob = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mblob, [big], -1, 255, -1)
+        ys, xs = np.where(mblob > 0)
+        roi = hsv[ys, xs]
+        x0, y0, bw, bh = cv2.boundingRect(big)
+        x1, y1 = x0 + bw, y0 + bh
+        region_kind = "auto_blue"
+
+    if roi.shape[0] < 30:
+        return {"ok": False, "reason": "roi_too_small", "region_px": [x0, y0, x1, y1]}
+
+    # Scarta i pixel a bassa saturazione (bordi/ombre) prima di stimare la tinta.
+    s_all = roi[:, 1]
+    keep = roi[s_all >= max(20, int(np.percentile(s_all, 30)))]
+    if keep.shape[0] < 30:
+        keep = roi
+    Hh = keep[:, 0].astype(np.int32)
+    Ss = keep[:, 1].astype(np.int32)
+    Vv = keep[:, 2].astype(np.int32)
+    h_lo, h_hi = int(np.percentile(Hh, 5)), int(np.percentile(Hh, 95))
+    s_lo, v_lo = int(np.percentile(Ss, 5)), int(np.percentile(Vv, 5))
+    # Guard: una tinta troppo larga = la regione campionata NON e' un colore singolo
+    # (probabile pavimento/sfondo dentro la ROI) → calibrazione inaffidabile, meglio rifiutare.
+    if (h_hi - h_lo) > 45:
+        return {
+            "ok": False,
+            "reason": "hue_too_broad",
+            "hue_p5_p95": [h_lo, h_hi],
+            "region_px": [x0, y0, x1, y1],
+            "hint_it": "Regione non a tinta unica (pavimento incluso): indica un punto sul "
+                       "colore pieno della scatola (point_norm) o un riquadro piu' stretto.",
+        }
+    bounds = {
+        "D1_COLOR_BOX_H_MIN": int(max(0, h_lo - margin_h)),
+        "D1_COLOR_BOX_H_MAX": int(min(179, h_hi + margin_h)),
+        # Saturazione: non copiare s_p5 quasi verbatim — sotto luce diversa la scatola
+        # desatura e la detection fallisce (no_blue_contour). Margine ampio su S, V permissivo.
+        "D1_COLOR_BOX_S_MIN": int(max(40, min(s_lo - 10, s_lo - 70, int(s_lo * 0.58)))),
+        "D1_COLOR_BOX_V_MIN": int(max(25, min(v_lo - 45, v_lo - 25))),
+    }
+    for kk, vv in bounds.items():
+        os.environ[kk] = str(vv)
+    payload = {
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "region_kind": region_kind,
+        "region_px": [x0, y0, x1, y1],
+        "hue_p5_p95": [h_lo, h_hi],
+        "s_p5": s_lo,
+        "v_p5": v_lo,
+        "samples": int(keep.shape[0]),
+        **bounds,
+    }
+    try:
+        p = _calib_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _COLOR_CALIB_CACHE["mtime"] = -1.0  # forza rilettura
+    except OSError as exc:
+        return {"ok": False, "reason": "calib_write_failed", "detail": repr(exc), **payload}
+    return {"ok": True, "calibration": payload, "applied": bounds, "frame": [w, h]}
 
 
 def _orientation_deg_from_bbox_roi(frame: np.ndarray, xyxy: list[float]) -> float:

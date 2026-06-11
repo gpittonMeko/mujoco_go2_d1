@@ -47,6 +47,7 @@ def save_detection_snapshot(
 
     try:
         import cv2
+        import numpy as np
     except Exception as exc:
         meta["reason"] = f"cv2_unavailable:{exc!r}"
         return meta
@@ -57,9 +58,24 @@ def save_detection_snapshot(
     bbox = det.get("bbox_xyxy") or []
     ok = bool(det.get("ok"))
     color = (0, 220, 0) if ok else (0, 80, 255)
-    if len(bbox) >= 4:
+    # Contorno preciso: minAreaRect (orient_box_px) se disponibile, altrimenti bbox axis-aligned.
+    orient_box = det.get("orient_box_px") or []
+    drew_box = False
+    if isinstance(orient_box, list) and len(orient_box) >= 4:
+        try:
+            pts = np.array(
+                [[int(round(float(p[0]))), int(round(float(p[1])))] for p in orient_box[:4]],
+                dtype=np.int32,
+            )
+            cv2.polylines(out_img, [pts], True, color, 2, cv2.LINE_AA)
+            drew_box = True
+        except (TypeError, IndexError, ValueError):
+            drew_box = False
+    if not drew_box and len(bbox) >= 4:
         x1, y1, x2, y2 = [int(round(float(v))) for v in bbox[:4]]
         cv2.rectangle(out_img, (x1, y1), (x2, y2), color, 2)
+    if len(bbox) >= 4 or drew_box:
+        x1, y1, x2, y2 = [int(round(float(v))) for v in bbox[:4]] if len(bbox) >= 4 else (0, 0, w, h)
         cx = det.get("bbox_center_px") or [(x1 + x2) / 2, (y1 + y2) / 2]
         if isinstance(cx, (list, tuple)) and len(cx) >= 2:
             cv2.drawMarker(
@@ -79,14 +95,22 @@ def save_detection_snapshot(
             cv2.line(out_img, p0, p1, (0, 215, 255), 2, cv2.LINE_AA)
         except (TypeError, IndexError, ValueError):
             pass
-    # Fascia bassa esclusa (corpo del cane): linea di taglio indicativa.
+    # Fascia bassa esclusa (cane + chele): linee di taglio indicative.
     try:
-        bottom_frac = float(os.environ.get("D1_PICK_BOTTOM_CROP_FRAC", "0.22") or "0.22")
+        bottom_frac = float(os.environ.get("D1_PICK_BOTTOM_CROP_FRAC", "0.30") or "0.30")
         if 0.0 < bottom_frac < 0.6:
             yb = int(round(h * (1.0 - bottom_frac)))
             cv2.line(out_img, (0, yb), (w, yb), (80, 80, 80), 1, cv2.LINE_AA)
-            cv2.putText(out_img, "crop cane", (8, min(h - 6, yb + 16)),
+            cv2.putText(out_img, "crop basso", (8, min(h - 6, yb + 16)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 120), 1, cv2.LINE_AA)
+        grip_frac = float(os.environ.get("D1_PICK_GRIPPER_EXCLUDE_BOTTOM_FRAC", "0.20") or "0.20")
+        grip_w = float(os.environ.get("D1_PICK_GRIPPER_EXCLUDE_WIDTH_FRAC", "0.62") or "0.62")
+        if 0.0 < grip_frac < 0.45:
+            yg = int(round(h * (1.0 - grip_frac)))
+            xm = int(round(w * (1.0 - grip_w) / 2.0))
+            cv2.rectangle(out_img, (xm, yg), (w - xm, h - 1), (60, 60, 90), 1, cv2.LINE_AA)
+            cv2.putText(out_img, "no chele", (xm + 4, min(h - 6, yg + 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 100, 130), 1, cv2.LINE_AA)
     except (TypeError, ValueError):
         pass
     odeg = det.get("orientation_deg")

@@ -100,6 +100,7 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/grasp_phased_execute.py",
     "go2_dashboard/grasp_close_verify.py",
     "go2_dashboard/grasp_detect_debug.py",
+    "go2_dashboard/grasp_teach_calib.py",
     "go2_dashboard/grasp_full_sequence.py",
     "go2_dashboard/grasp_side_approach.py",
     "go2_dashboard/orbbec_wrist_grasp.py",
@@ -314,6 +315,7 @@ export GO2_HERMES_PERSONALITY=bender_meeting
 # Tono VIP sarcastico trattenuto (override dalla UI Agent). Voce OpenAI default per questo preset: onyx (codice).
 # Grasp Coach trial: OpenAI Chat Completions + vision, IK parziale D1; depth V4L se GO2_DEPTH_VIDEO_INDEX_* .
 export GO2_ENABLE_GRASP_COACH=1
+export GO2_GRASP_COACH_LATERAL_METRIC_ONLY=1
 export GO2_GRASP_COACH_PRIMARY=0
 export GO2_GRASP_EMBED_RGBD=1
 export GO2_GRASP_REQUIRE_VALIDATED_EXECUTE=1
@@ -341,17 +343,19 @@ export GO2_GRASP_COACH_TCP_TOL_M=0.03
 # export GO2_DASHBOARD_RESTART_DELAY_S=15
 export GO2_VIS_GEOMETRY_DEFAULT_PRESET=2
 export GO2_CAMERA_AUTO_USB_MAP=1
-# Orbbec Gemini 335Lg: lo stream **RGB a colori** del polso è su /dev/video6 quando l'enumerazione USB
-# è completa (video0..13). I nodi video0..3 sono sempre presenti ma mostrano depth/IR (puntini), non il
-# colore. Il deploy fa un trigger udev che ripristina l'enumerazione completa, così video6 c'è.
-# NB: se l'enumerazione torna parziale (video4..7 assenti) video6 può sparire → in quel caso ritoccare
-# l'indice (0..3) da GET /api/cameras/status > v4l_nodes_detail per evitare crash dell'open obsensor.
-export GO2_VIDEO_INDEX_0=6
+# Orbbec Gemini 335Lg: con enumerazione parziale (solo video0..3) il **RGB** è su video1 o video2;
+# video0/video3 = IR/depth (puntini). video6 esiste solo con enumerazione USB completa — se assente,
+# il codice ignora GO2_VIDEO_INDEX_0 e fa probe/auto-map. Verifica: GET /api/cameras/status stream_kind=rgb.
+export GO2_VIDEO_INDEX_0=2
 # GO2_DEPTH_VIDEO_INDEX_0 disabilitato: nodo V4L inesistente faceva fallire l'open; depth via SDK Orbbec.
 export GO2_REALSENSE_V4L_DEFAULT=6
 export GO2_REALSENSE_VIDEO_PROBE=1
 export GO2_ORBBEC_PREFER_MJPEG=1
 export GO2_ORBBEC_VIDEO_PROBE=1
+export GO2_ORBBEC_DEPTH_ROI_SHRINK=0.12
+export GO2_ORBBEC_CAPTURE_SETTLE_S=0.45
+export GO2_ORBBEC_CAPTURE_TIMEOUT_MS=2200
+export GO2_ORBBEC_LOCK_TIMEOUT_S=18
 # Probe RGB Orbbec: più passaggi (MJPEG/YUYV, soglia bordi default 0.26). IR puntini → alza GO2_ORBBEC_MAX_EDGE_DENSITY o GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED
 # export GO2_ORBBEC_MAX_EDGE_DENSITY=0.32
 # export GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED=0.48
@@ -418,8 +422,19 @@ export D1_GRASP_JOINT_STEP_DEG=1.5
 export D1_PROG_POSITION_TOL_DEG=5.0
 export D1_PROG_SOFT_TOL_DEG=8.0
 export GO2_WRIST_DETECT_MIN_CY_RATIO=0.30
-export GO2_WRIST_DETECT_MIN_CONF=0.40
-export GO2_WRIST_DETECT_MIN_AREA_RATIO=0.010
+# color_blue_box: confidenza euristica (non YOLO) — 0.40 scartava detection valide ~0.35
+export GO2_WRIST_DETECT_MIN_CONF=0.22
+export GO2_WRIST_DETECT_MIN_CONF_COLOR=0.22
+export GO2_WRIST_DETECT_MIN_AREA_RATIO=0.003
+export GO2_WRIST_DETECT_MAX_AREA_RATIO=0.12
+export GO2_WRIST_DETECT_MAX_BBOX_HEIGHT_RATIO=0.36
+export GO2_WRIST_DETECT_MAX_BOTTOM_Y_RATIO=0.72
+export D1_PICK_BOTTOM_CROP_FRAC=0.30
+export D1_PICK_GRIPPER_EXCLUDE_BOTTOM_FRAC=0.20
+export D1_PICK_GRIPPER_EXCLUDE_WIDTH_FRAC=0.62
+export D1_COLOR_BOX_MAX_CY_FRAC=0.68
+export D1_COLOR_BOX_MAX_BBOX_H_FRAC=0.34
+export D1_COLOR_BOX_MAX_BOTTOM_Y_FRAC=0.72
 export GO2_GRASP_FOLD_SETTLE_MS=500
 export GO2_GRASP_START_SETTLE_MS=900
 export GO2_GRASP_START_ALIGN_RETRY=1

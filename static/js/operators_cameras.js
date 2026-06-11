@@ -200,6 +200,8 @@
     var sum = j && j.camera_summary;
     setBadge("cam0LiveBadge", sum, 0);
     setBadge("cam6LiveBadge", sum, 6);
+    setBadge("graspDockCam0Badge", sum, 0);
+    setBadge("graspCoachLiveBadge", sum, 0);
     if (j && j.openvla_jpeg_urls) {
       window.__operatorsOpenvlaJpegUrls = j.openvla_jpeg_urls;
     }

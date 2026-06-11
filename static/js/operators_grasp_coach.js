@@ -179,7 +179,9 @@
     if (!elSt) {
       return;
     }
-    if (j && j.ok && mg.ok !== false) {
+    var metricOk = Boolean((j && j.ok && mg.ok !== false) || (mg && mg.ok === true));
+    var partialRgb = Boolean(mg && mg.partial_rgb_ok);
+    if (metricOk) {
       if (elObj) {
         elObj.textContent = (mg.label || "oggetto") + (mg.backend ? " (" + mg.backend + ")" : "");
         elObj.style.color = "#30d070";
@@ -210,8 +212,35 @@
             ? "x=" + Number(tgt[0]).toFixed(3) + " y=" + Number(tgt[1]).toFixed(3) + " z=" + Number(tgt[2]).toFixed(3)
             : "—";
       }
-      elSt.textContent = j.label_it || "Acquisizione OK — target metrico pronto";
+      elSt.textContent =
+        (j.label_it || "Acquisizione OK — target metrico pronto") +
+        (mg.teach_calib_applied
+          ? " · offset calib #" +
+            (mg.teach_calib_sample_id || "?") +
+            (mg.teach_calib_delta_servo_deg
+              ? " Δ[" + mg.teach_calib_delta_servo_deg.slice(0, 6).map(function (x) { return Number(x).toFixed(1); }).join("° ") + "°]"
+              : "")
+          : "");
       elSt.style.color = "#30d070";
+    } else if (partialRgb || j.object_visible === true) {
+      if (elObj) {
+        elObj.textContent = (mg.label || "oggetto") + " (RGB sì, depth no)";
+        elObj.style.color = "#e0a040";
+      }
+      if (elConf) {
+        elConf.textContent = mg.confidence != null ? Number(mg.confidence).toFixed(2) : "—";
+      }
+      if (elDepth) {
+        elDepth.textContent = "depth insufficiente";
+      }
+      if (elReach) {
+        elReach.textContent = "—";
+      }
+      if (elTgt) {
+        elTgt.textContent = "—";
+      }
+      elSt.textContent = j.label_it || "RGB OK — depth Orbbec da rifare";
+      elSt.style.color = "#e0a040";
     } else {
       if (elObj) {
         elObj.textContent = "non rilevato";
@@ -231,7 +260,26 @@
         elTgt.textContent = "—";
       }
       var why = mg.reason || j.reason || "nessun oggetto nel frame polso";
-      var hint = mg.hint_it || "";
+      if (why === "no_depth_support" || why === "depth_failed") {
+        why = "depth assente nel bbox (centro oggetto spesso a 0) — riprova";
+      } else if (why === "orbbec_busy") {
+        why = "Orbbec occupato — attendi 3s e riprova acquisizione";
+      } else if (why === "no_aligned_frame" || why === "capture_failed") {
+        why = "cattura SDK Orbbec fallita — attendi 5s e riprova";
+      }
+      if (mg.hint_it || j.hint_it) {
+        why = mg.hint_it || j.hint_it;
+      }
+      if (mg.calib_fallback || (mg.detection && mg.detection.calib_fallback)) {
+        why = "calib colore stretta — fallback default (" + (mg.reason || "ok") + ")";
+      }
+      if (j && j.reason === "openai_failed") {
+        why = "coach LLM non raggiungibile (in laterale usa solo Orbbec — riprova)";
+      }
+      if (j && j.preview_only && j.reason === "preview_error") {
+        why = "errore cattura Orbbec — attendi 10s e riprova";
+      }
+      var hint = mg.hint_it || j.hint_it || "";
       elSt.textContent = "Acquisizione fallita: " + why + (hint ? " — " + hint : "");
       elSt.style.color = "#d0a000";
     }
@@ -253,7 +301,14 @@
     wrap.hidden = false;
     if (statusEl) {
       var parts = [];
-      parts.push(visible === false ? "Oggetto: NON visto" : "Oggetto: visto");
+      if (mg && mg.ok === true) {
+        visible = true;
+      } else if (mg && mg.ok === false) {
+        visible = false;
+      }
+      parts.push(
+        visible === true ? "Oggetto: visto" : visible === false ? "Oggetto: NON visto" : "Oggetto: —"
+      );
       if (px) {
         parts.push("pos frame u=" + px[0].toFixed(2) + " v=" + px[1].toFixed(2));
       }
@@ -344,7 +399,7 @@
       imgA.onload = function () {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(imgA, 0, 0, canvas.width, canvas.height);
-        drawMarker();
+        drawOverlays();
       };
       imgA.onerror = function () {
         // se l'immagine annotata non c'è, ripiega sull'anteprima b64
@@ -571,7 +626,8 @@
       }
     });
     if (pre) {
-      pre.textContent = "POST /api/grasp_coach/preview … Orbbec polso log.0 (RGB+depth, nessun movimento)";
+      pre.textContent =
+        "POST /api/grasp_coach/preview … Orbbec SDK (RGB+depth, ~3–8s, nessun movimento)";
     }
     var body = { instruction: _graspCoachInstructionText() };
     if (typeof window.operatorsStartVariantPayload === "function") {
@@ -840,4 +896,136 @@
         }
       });
   };
+
+  var __graspTeachCalibPoll = null;
+
+  function _graspTeachCalibSetUi(active) {
+    var startBtn = document.getElementById("graspTeachCalibBtn");
+    var cancelBtn = document.getElementById("graspTeachCalibCancelBtn");
+    if (startBtn) {
+      startBtn.disabled = !!active;
+    }
+    if (cancelBtn) {
+      cancelBtn.disabled = !active;
+    }
+  }
+
+  function _graspTeachCalibRenderStatus(st) {
+    var el = document.getElementById("graspTeachCalibStatus");
+    if (!el || !st) {
+      return;
+    }
+    var parts = [];
+    if (st.phase && st.phase !== "idle") {
+      parts.push(st.phase_label_it || st.phase);
+      if (st.remaining_s > 0) {
+        parts.push(Math.ceil(st.remaining_s) + "s");
+      }
+    } else if (st.samples_count != null) {
+      parts.push("Campioni teach salvati: " + st.samples_count);
+    }
+    if (st.error) {
+      parts.push("ERRORE: " + st.error);
+    }
+    if (st.phase_label_it && (st.phase === "error" || st.error)) {
+      parts.push(st.phase_label_it);
+    }
+    if (st.last_sample && st.phase === "done") {
+      var d = st.last_sample.delta && st.last_sample.delta.servo_deg;
+      if (d && d.length) {
+        parts.push("Δ giunti grasp: " + d.slice(0, 6).map(function (x) { return Number(x).toFixed(1); }).join("° "));
+      }
+    }
+    el.textContent = parts.length ? parts.join(" · ") : "Pronto.";
+    el.style.color = st.error ? "#d05050" : st.active ? "#e0c040" : st.phase === "done" ? "#30d070" : "var(--muted)";
+  }
+
+  function _graspTeachCalibPollOnce() {
+    fetch(window.operatorsApi("/api/grasp_coach/teach_calib/status?_=" + Date.now()), { cache: "no-store" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (st) {
+        _graspTeachCalibRenderStatus(st);
+        _graspTeachCalibSetUi(!!st.active);
+        if (!st.active) {
+          if (__graspTeachCalibPoll) {
+            clearInterval(__graspTeachCalibPoll);
+            __graspTeachCalibPoll = null;
+          }
+          if (st.phase === "done") {
+            operatorsGraspCoachAcquire();
+          }
+        }
+      })
+      .catch(function () {});
+  }
+
+  window.operatorsGraspTeachCalibRefresh = function () {
+    fetch(window.operatorsApi("/api/grasp_coach/teach_calib/samples"))
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        var pre = document.getElementById("graspCoachPre");
+        if (pre) {
+          pre.textContent = JSON.stringify(j, null, 2);
+        }
+        _graspTeachCalibRenderStatus({ samples_count: j.count, phase: "idle" });
+      });
+  };
+
+  window.operatorsGraspTeachCalibCancel = function () {
+    fetch(window.operatorsApi("/api/grasp_coach/teach_calib/cancel"), { method: "POST" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        _graspTeachCalibRenderStatus(j.status || j);
+        _graspTeachCalibSetUi(false);
+      });
+  };
+
+  window.operatorsGraspTeachCalibStart = function () {
+    var pre = document.getElementById("graspCoachPre");
+    if (pre) {
+      pre.textContent = "POST /api/grasp_coach/teach_calib/start …";
+    }
+    _graspTeachCalibSetUi(true);
+    fetch(window.operatorsApi("/api/grasp_coach/teach_calib/start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ require_detection: true }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { j: j, r: r };
+        });
+      })
+      .then(function (pack) {
+        if (pre) {
+          pre.textContent = JSON.stringify(pack.j, null, 2);
+        }
+        if (!pack.j || !pack.j.ok) {
+          _graspTeachCalibSetUi(false);
+          _graspTeachCalibRenderStatus({
+            phase: "error",
+            error: (pack.j && (pack.j.reason || pack.j.hint_it)) || "start_failed",
+          });
+          return;
+        }
+        if (!__graspTeachCalibPoll) {
+          __graspTeachCalibPoll = setInterval(_graspTeachCalibPollOnce, 450);
+        }
+        _graspTeachCalibPollOnce();
+      })
+      .catch(function (e) {
+        _graspTeachCalibSetUi(false);
+        if (pre) {
+          pre.textContent = String(e);
+        }
+      });
+  };
+
+  _graspTeachCalibPollOnce();
 })();

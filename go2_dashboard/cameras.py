@@ -682,7 +682,16 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
     key = f"GO2_VIDEO_INDEX_{logical}"
     if key in os.environ:
         try:
-            return int(str(os.environ[key]).strip())
+            env_idx = int(str(os.environ[key]).strip())
+            if _v4l_sysfs_node_exists(env_idx):
+                return env_idx
+            # Env puntava a /dev/videoN inesistente (es. video6 dopo enumerazione USB parziale).
+            _ORBBEC_LOGICAL0_DEBUG.update(
+                {
+                    "env_override_missing": env_idx,
+                    "hint_it": f"{key}={env_idx} assente — fallback auto-map/probe",
+                }
+            )
         except ValueError:
             pass
     with _runtime_v4l_lock:
@@ -700,6 +709,16 @@ def _v4l_index_for_logical_camera(logical: int) -> int:
 
 def _v4l_path(v4l_index: int) -> str:
     return f"/dev/video{int(v4l_index)}"
+
+
+def _v4l_sysfs_node_exists(v4l_index: int) -> bool:
+    """Vero se il nodo sysfs ``videoN`` esiste (evita env obsoleti tipo GO2_VIDEO_INDEX_0=6 assente)."""
+    if platform.system().lower() != "linux":
+        return True
+    try:
+        return os.path.isdir(f"/sys/class/video4linux/video{int(v4l_index)}")
+    except (TypeError, ValueError, OSError):
+        return False
 
 
 _ORBBEC_USB_VENDOR = "2bc5"
@@ -970,7 +989,7 @@ class CameraCache:
                             self.errors[device] = "Orbbec in uso da una presa/altro processo (attendo)"
                         time.sleep(0.5)
                         continue
-                    orb_lease = orbbec_lock.acquire("camera_stream", blocking=True, timeout_s=1.0)
+                    orb_lease = orbbec_lock.acquire("camera_stream", blocking=True, timeout_s=2.5)
                     if orb_lease is None:
                         with self._lock:
                             self.errors[device] = (

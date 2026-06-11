@@ -24,6 +24,13 @@ from go2_dashboard.grasp_coach_agent import (
     grasp_coach_step,
 )
 from go2_dashboard.grasp_coach_memory import read_recent_grasp_coach_events
+from go2_dashboard.grasp_teach_calib import (
+    teach_calib_cancel,
+    teach_calib_clear,
+    teach_calib_list_samples,
+    teach_calib_start,
+    teach_calib_status,
+)
 from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
 from go2_dashboard.cameras import (
     CAMERA_CACHE,
@@ -652,6 +659,47 @@ def api_grasp_coach_feedback() -> Any:
     """Feedback operatore sulla sessione (memoria JSONL, incluso nel prompt dello step successivo)."""
     body = request.get_json(silent=True) or {}
     return jsonify(merge_http_timing_into_json_dict(grasp_coach_feedback(body)))
+
+
+@bp.route("/api/grasp_coach/teach_calib/status", methods=["GET"])
+def api_grasp_coach_teach_calib_status() -> Any:
+    return jsonify(merge_http_timing_into_json_dict(teach_calib_status()))
+
+
+@bp.route("/api/grasp_coach/teach_calib/start", methods=["POST"])
+def api_grasp_coach_teach_calib_start() -> Any:
+    """Calibrazione manuale: detection → 4s hold → rilascio giunti → 15s teach → salva posa."""
+    body = request.get_json(silent=True) or {}
+    hold_s = body.get("hold_s")
+    manual_s = body.get("manual_s")
+    try:
+        hold_f = float(hold_s) if hold_s is not None else None
+    except (TypeError, ValueError):
+        hold_f = None
+    try:
+        manual_f = float(manual_s) if manual_s is not None else None
+    except (TypeError, ValueError):
+        manual_f = None
+    out = teach_calib_start(
+        instruction=str(body.get("instruction") or ""),
+        hold_s=hold_f,
+        manual_s=manual_f,
+        require_detection=body.get("require_detection", True) is not False,
+    )
+    code = 200 if out.get("ok") else 409 if out.get("reason") == "teach_session_active" else 400
+    return jsonify(merge_http_timing_into_json_dict(out)), code
+
+
+@bp.route("/api/grasp_coach/teach_calib/cancel", methods=["POST"])
+def api_grasp_coach_teach_calib_cancel() -> Any:
+    return jsonify(merge_http_timing_into_json_dict(teach_calib_cancel()))
+
+
+@bp.route("/api/grasp_coach/teach_calib/samples", methods=["GET", "DELETE"])
+def api_grasp_coach_teach_calib_samples() -> Any:
+    if request.method == "DELETE":
+        return jsonify(merge_http_timing_into_json_dict(teach_calib_clear()))
+    return jsonify(merge_http_timing_into_json_dict(teach_calib_list_samples()))
 
 
 @bp.route("/api/operator_session/memory", methods=["GET"])
@@ -1589,6 +1637,16 @@ def api_arm_joints_session_end() -> Any:
     """Chiude sessione jog e mantiene coppia sulla posa cache."""
     out = d1_arm_motion.end_live_session()
     return jsonify(out), 200
+
+
+@bp.route("/api/arm/joints/release", methods=["POST"])
+def api_arm_joints_release() -> Any:
+    """Rilascia coppia motori (funcode 5 mode 0) — giunti liberi per teach manuale."""
+    from go2_dashboard.d1_jog import service as jog_svc
+
+    out = jog_svc.motor_release()
+    code = 200 if out.get("ok") else 409
+    return jsonify(out), code
 
 
 @bp.route("/api/arm/joints/couple", methods=["POST"])
