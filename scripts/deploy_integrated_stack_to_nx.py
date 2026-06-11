@@ -44,6 +44,10 @@ def main() -> int:
         rc = _run("deploy_d1_jog_to_nx.py")
         if rc != 0:
             return rc
+        # deploy_d1_jog_to_nx.py ferma la dashboard 5052: riavviala per stack integrato.
+        rc = _run("deploy_dashboard_to_nx.py")
+        if rc != 0:
+            return rc
     if args.hermes:
         rc = _run("deploy_hermes_to_nx.py")
         if rc != 0:
