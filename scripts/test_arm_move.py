@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Test minimale: fa oscillare J1 del braccio per verificare che i comandi arrivino.
+Per esperimenti più completi in sim usare ``scripts/test_movimento.py``.
 1. Avvia simulatore (unitree_mujoco.py)
 2. python3 scripts/test_arm_move.py
 Se J1 si muove, il problema è in arm_control. Altrimenti è bridge/DDS.

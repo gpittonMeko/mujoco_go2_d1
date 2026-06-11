@@ -2,7 +2,7 @@
 # Supervisore: rilancia la dashboard Flask sulla NX (default: monolite modular per lab localDogTest).
 # L'avvio ufficiale su NX passa da qui (nx_start_dashboard.sh / boot wrapper), non più solo nohup diretto.
 set +e
-cd /home/unitree/go2_visual_dashboard || exit 1
+cd "$(dirname "$0")/.." || exit 1
 # shellcheck disable=SC1091
 source "$PWD/scripts/nx_dashboard_env.sh"
 # Traceback su abort/segfault utile in dashboard_run.log

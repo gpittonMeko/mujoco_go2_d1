@@ -41,6 +41,17 @@ def _ensure_cyclone_factory(domain: int, iface: str | None) -> None:
     _factory_initialized = True
 
 
+def ensure_go2_dds_channel_factory_from_env(project_root: Path | None = None) -> None:
+    """Inizializza Cyclone DDS una sola volta nel processo usando ``GO2_DDS_*`` (Sport / Voice RPC)."""
+    root = project_root if project_root is not None else Path(__file__).resolve().parent.parent
+    _ensure_sdk_path(root)
+    domain = int(os.environ.get("GO2_DDS_DOMAIN", "0"))
+    iface_raw = os.environ.get("GO2_DDS_INTERFACE", "").strip()
+    iface = iface_raw if iface_raw else None
+    with _lock:
+        _ensure_cyclone_factory(domain, iface)
+
+
 def _sport_rpc_code_explain(code: int) -> str:
     """Decodifica codici unitree_sdk2py.rpc.internal (0 = OK)."""
     try:
@@ -221,6 +232,10 @@ def sport_accompany(
     mode: str = "joystick",
     stand_up_first: bool = False,
     speed_level: int | None = None,
+    vx: float | None = None,
+    vy: float | None = None,
+    vyaw: float | None = None,
+    pre_balance: bool = True,
 ) -> dict[str, Any]:
     """
     mode ``stand_up``: ``StopMove`` → ``StandUp()`` → ``BalanceStand()`` — base in piedi.
@@ -233,6 +248,14 @@ def sport_accompany(
 
     mode ``balance_hold``: solo BalanceStand — equilibrio senza joystick.
 
+    mode ``stop``: solo ``StopMove``.
+
+    mode ``recovery_stand``: ``RecoveryStand`` → ``BalanceStand`` (ripresa da situazioni sporche).
+
+    mode ``velocity``: ``Move(vx, vy, vyaw)`` — SDK Sport (m/s e rad/s come da firmware).
+      Richiede i parametri ``vx``, ``vy``, ``vyaw`` oppure vengono usati 0.
+      Opzionale ``pre_balance`` (default ``True``): chiama ``BalanceStand`` prima del Move.
+
     Per ``stand_up`` / ``crouch`` il flag ``enable`` è ignorato.
     """
     global _sport_client
@@ -242,10 +265,22 @@ def sport_accompany(
     except Exception as exc:
         return {"ok": False, "reason": f"sdk_import_failed: {exc!r}"}
 
-    if mode not in {"joystick", "damping", "balance_hold", "stand_up", "crouch"}:
+    if mode not in {
+        "joystick",
+        "damping",
+        "balance_hold",
+        "stand_up",
+        "crouch",
+        "stop",
+        "recovery_stand",
+        "velocity",
+    }:
         return {
             "ok": False,
-            "reason": f"unknown mode {mode!r}; use stand_up|crouch|joystick|damping|balance_hold",
+            "reason": (
+                f"unknown mode {mode!r}; use stand_up|crouch|stop|recovery_stand|velocity|"
+                "joystick|damping|balance_hold"
+            ),
         }
 
     lvl = speed_level
@@ -314,6 +349,67 @@ def sport_accompany(
                 if motion_pre:
                     out_c["motion_prepare"] = motion_pre
                 return out_c
+
+            if mode == "stop":
+                code = sc.StopMove()
+                steps["stop_move"] = {"code": code}
+                steps = _steps_with_meanings(steps)
+                ok = _sport_steps_all_ok(steps)
+                return {
+                    "ok": ok,
+                    "mode": "stop",
+                    "robot": "go2_quadrupede",
+                    "steps": steps,
+                    "hint": "StopMove — ferma il movimento di marcia richiesto dalla Sport API.",
+                }
+
+            if mode == "recovery_stand":
+                code = sc.RecoveryStand()
+                steps["recovery_stand"] = {"code": code}
+                code = sc.BalanceStand()
+                steps["balance_stand"] = {"code": code}
+                steps = _steps_with_meanings(steps)
+                ok = _sport_steps_all_ok(steps)
+                return {
+                    "ok": ok,
+                    "mode": "recovery_stand",
+                    "robot": "go2_quadrupede",
+                    "steps": steps,
+                    "hint": (
+                        "RecoveryStand + BalanceStand — prova a rialzare/ristabilizzare la base."
+                        if ok
+                        else "Uno o più passi Sport falliti — vedi meaning nei codici."
+                    ),
+                }
+
+            if mode == "velocity":
+                try:
+                    vx_f = float(vx) if vx is not None else 0.0
+                    vy_f = float(vy) if vy is not None else 0.0
+                    vyaw_f = float(vyaw) if vyaw is not None else 0.0
+                except (TypeError, ValueError):
+                    return {"ok": False, "reason": "vx_vy_vyaw_invalid", "mode": "velocity"}
+                if pre_balance:
+                    code = sc.BalanceStand()
+                    steps["balance_stand"] = {"code": code}
+                code_m = sc.Move(vx_f, vy_f, vyaw_f)
+                steps["move"] = {"code": code_m, "vx": vx_f, "vy": vy_f, "vyaw": vyaw_f}
+                steps = _steps_with_meanings(steps)
+                ok = _sport_steps_all_ok(steps)
+                return {
+                    "ok": ok,
+                    "mode": "velocity",
+                    "robot": "go2_quadrupede",
+                    "vx": vx_f,
+                    "vy": vy_f,
+                    "vyaw": vyaw_f,
+                    "steps": steps,
+                    "hint": (
+                        "Move(vx, vy, vyaw) inviato (no-reply RPC). Verifica area libera e modalità sport sul cane."
+                        if ok
+                        else "Invio Move non accettato dal client DDS — controlla rete e sport_mode."
+                    ),
+                }
 
             if mode == "damping":
                 if enable:
@@ -424,149 +520,20 @@ def accompany_rc_mode(
     )
 
 
-def _sport_client_ready(
-    project_root: Path,
-    domain: int,
-    iface: str | None,
-) -> tuple[Any | None, dict[str, Any]]:
-    """Inizializza SportClient (singleton processo) — ritorna (client, err_dict)."""
-    global _sport_client
-    _ensure_sdk_path(project_root)
-    try:
-        from unitree_sdk2py.go2.sport.sport_client import SportClient
-    except Exception as exc:
-        return None, {"ok": False, "reason": f"sdk_import_failed: {exc!r}"}
-    with _lock:
-        try:
-            _ensure_cyclone_factory(domain, iface)
-            if _sport_client is None:
-                _sport_client = SportClient()
-                _sport_client.SetTimeout(10.0)
-                _sport_client.Init()
-            return _sport_client, {}
-        except Exception as exc:
-            return None, {"ok": False, "reason": repr(exc)}
-
-
-def sport_move(
-    *,
-    project_root: Path,
-    domain: int,
-    iface: str | None,
-    vx: float,
-    vy: float,
-    vyaw: float,
-    duration_s: float,
-    stand_first: bool = True,
-) -> dict[str, Any]:
-    """Move(vx,vy,vyaw) per ``duration_s`` secondi, poi StopMove + BalanceStand."""
-    import time as _time
-
-    sc, err = _sport_client_ready(project_root, domain, iface)
-    if sc is None:
-        return err
-
-    duration_s = max(0.05, float(duration_s))
-    steps: dict[str, Any] = {}
-    with _lock:
-        try:
-            if stand_first:
-                code = sc.BalanceStand()
-                steps["balance_stand"] = {"code": code}
-            code = sc.Move(float(vx), float(vy), float(vyaw))
-            steps["move"] = {"code": code, "vx": vx, "vy": vy, "vyaw": vyaw, "duration_s": duration_s}
-            _time.sleep(duration_s)
-            code = sc.StopMove()
-            steps["stop_move"] = {"code": code}
-            code = sc.BalanceStand()
-            steps["balance_after"] = {"code": code}
-            steps = _steps_with_meanings(steps)
-            ok = _sport_steps_all_ok(steps)
-            return {
-                "ok": ok,
-                "mode": "move",
-                "robot": "go2_quadrupede",
-                "steps": steps,
-                "vx": vx,
-                "vy": vy,
-                "vyaw": vyaw,
-                "duration_s": duration_s,
-                "hint": (
-                    f"Move {duration_s:.2f}s vx={vx} vy={vy} vyaw={vyaw} — poi StopMove."
-                    if ok
-                    else "Move/StopMove non riuscito (vedi meaning su ogni step)."
-                ),
-            }
-        except Exception as exc:
-            return {"ok": False, "mode": "move", "reason": repr(exc)}
-
-
-def sport_simple_action(
-    *,
-    project_root: Path,
-    domain: int,
-    iface: str | None,
-    action: str,
-) -> dict[str, Any]:
-    """Azioni Sport one-shot: stop, hello, stretch, sit, recovery, balance."""
-    sc, err = _sport_client_ready(project_root, domain, iface)
-    if sc is None:
-        return err
-
-    action = (action or "").strip().lower()
-    handlers: dict[str, str] = {
-        "stop": "stop",
-        "stop_move": "stop",
-        "hello": "hello",
-        "stretch": "stretch",
-        "sit": "sit",
-        "recovery": "recovery",
-        "balance": "balance",
-    }
-    if action not in handlers:
-        return {"ok": False, "reason": f"unknown_action_{action!r}"}
-
-    steps: dict[str, Any] = {}
-    with _lock:
-        try:
-            if action in {"stop", "stop_move"}:
-                code = sc.StopMove()
-                steps["stop_move"] = {"code": code}
-                code = sc.BalanceStand()
-                steps["balance_stand"] = {"code": code}
-            elif action == "hello":
-                code, _ = sc.Hello()
-                steps["hello"] = {"code": code}
-            elif action == "stretch":
-                code, _ = sc.Stretch()
-                steps["stretch"] = {"code": code}
-            elif action == "sit":
-                code, _ = sc.Sit()
-                steps["sit"] = {"code": code}
-            elif action == "recovery":
-                code, _ = sc.RecoveryStand()
-                steps["recovery_stand"] = {"code": code}
-            elif action == "balance":
-                code, _ = sc.BalanceStand()
-                steps["balance_stand"] = {"code": code}
-            steps = _steps_with_meanings(steps)
-            ok = _sport_steps_all_ok(steps)
-            return {
-                "ok": ok,
-                "mode": action,
-                "robot": "go2_quadrupede",
-                "steps": steps,
-                "hint": f"Sport {action} eseguito." if ok else f"Sport {action} fallito.",
-            }
-        except Exception as exc:
-            return {"ok": False, "mode": action, "reason": repr(exc)}
-
-
 if __name__ == "__main__":
     import argparse
     import json
 
-    _cli_modes = ("crouch", "stand_up", "joystick", "damping", "balance_hold")
+    _cli_modes = (
+        "crouch",
+        "stand_up",
+        "joystick",
+        "damping",
+        "balance_hold",
+        "stop",
+        "recovery_stand",
+        "velocity",
+    )
     ap = argparse.ArgumentParser(
         description="CLI Sport Go2: eseguire sulla macchina con Cyclone DDS verso il cane (es. Jetson sulla LAN Unitree)."
     )
@@ -577,6 +544,9 @@ if __name__ == "__main__":
         choices=_cli_modes,
         help="crouch = StopMove+StandDown; stand_up = StopMove+StandUp+BalanceStand (default: crouch)",
     )
+    ap.add_argument("--vx", type=float, default=0.0, help="solo mode=velocity")
+    ap.add_argument("--vy", type=float, default=0.0, help="solo mode=velocity")
+    ap.add_argument("--vyaw", type=float, default=0.0, help="solo mode=velocity (yaw rate)")
     ap.add_argument(
         "--no-enable",
         action="store_true",
@@ -593,6 +563,9 @@ if __name__ == "__main__":
         iface=iface,
         enable=enable,
         mode=args.mode,
+        vx=args.vx,
+        vy=args.vy,
+        vyaw=args.vyaw,
     )
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     raise SystemExit(0 if out.get("ok") else 1)

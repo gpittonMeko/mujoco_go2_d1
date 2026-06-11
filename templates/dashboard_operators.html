@@ -3,89 +3,825 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Go2 operator</title>
+  <title>Operator · Go2 + D1</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ script_root|default('') }}/static/css/operators.css" />
 </head>
 <body>
   <div class="app-shell">
-    <header class="app-header">
-      <h1>Dashboard operator</h1>
-      <p class="sub">host={{ go2_host }} · porta={{ dashboard_port }} · GO2_LOCAL={{ go2_local }}</p>
+    <header class="app-topbar" role="banner">
+      <div class="app-topbar-brand">
+        <span class="app-logo" aria-hidden="true"></span>
+        <div class="app-topbar-titles">
+          <h1 class="app-title">Operator Console</h1>
+          <p class="app-subtitle"><span class="app-mono">{{ go2_host }}</span><span class="app-subsep">·</span><span class="app-mono">:{{ dashboard_port }}</span></p>
+        </div>
+      </div>
+      <div class="app-topbar-actions" role="status">
+        <a class="app-badge app-badge--muted" href="http://{{ go2_host }}:5053/" target="_blank" rel="noopener" title="Dashboard D1 jog / teach pick (porta 5053)">D1 Teach · 5053</a>
+        <a class="app-badge app-badge--muted" href="http://{{ go2_host }}:5054/" target="_blank" rel="noopener" title="Hermes standalone (porta 5054, opzionale)">Hermes · 5054</a>
+        <span class="app-badge app-badge--edge">{{ 'Edge' if go2_local|default(false) else 'Client' }}</span>
+        <span class="app-badge app-badge--muted">HTTP</span>
+      </div>
     </header>
 
-    <main class="tab-panels">
+    <main class="tab-panels app-main">
       <section class="tab-panel active" data-tab="scene">
         <div class="banner">
-          <strong>Orbbec Gemini</strong> (USB <code>2bc5:080b</code>) è mappata su <strong>camera logica 0</strong> (RGB UVC dopo auto‑map). Intel RealSense su <strong>logico 6</strong>.
-          Guida ufficiale: <a href="https://www.orbbec.com/docs/orbbec-gemini-335-335l-documentation/" target="_blank" rel="noopener">Orbbec Gemini 335 / 335L</a>.
+          <strong>Scene</strong> — <code>log.0</code> / <code>log.6</code>. Grasp Coach: tab <strong>Presa</strong>.
         </div>
         <div class="card">
-          <h2>URL stream (LAN)</h2>
-          <p style="margin:0 0 8px;color:var(--muted);font-size:0.82rem;">Sostituisci host con l’IP della NX (es. <code>{{ go2_host }}</code>). Stessa porta HTTP della dashboard (<code>{{ dashboard_port }}</code>).</p>
+          <h2>URL stream</h2>
           <ul class="url-list" style="margin:0;padding-left:1.1rem;font-size:0.8rem;color:var(--text);">
-            <li><strong>Orbbec RGB live (MJPEG):</strong> <code id="urlOrbbecMjpg">…</code></li>
-            <li><strong>Orbbec RGB singolo frame (JPEG):</strong> <code id="urlOrbbecJpg">…</code></li>
-            <li><strong>RealSense RGB live:</strong> <code id="urlRsMjpg">…</code></li>
-            <li><strong>RealSense JPEG:</strong> <code id="urlRsJpg">…</code></li>
+            <li><strong>log.0 MJPEG:</strong> <code id="urlOrbbecMjpg">…</code></li>
+            <li><strong>log.0 JPEG:</strong> <code id="urlOrbbecJpg">…</code></li>
+            <li><strong>log.6 MJPEG:</strong> <code id="urlRsMjpg">…</code></li>
+            <li><strong>log.6 JPEG:</strong> <code id="urlRsJpg">…</code></li>
+            <li><strong>Rilevamento 2D:</strong> <code id="urlBoxDetect6">…</code></li>
           </ul>
         </div>
         <div class="card">
-          <h2>Stato camere (API)</h2>
-          <p style="margin:0 0 8px;color:var(--muted);font-size:0.82rem;"><code>GET /api/cameras/status</code> — mappa V4L, rgb_like, errori cache.</p>
+          <h2>Stato camere</h2>
+          <p style="margin:0 0 8px;color:var(--muted);font-size:0.82rem;">JSON USB opzionale (mapping <code>/dev/videoN</code>).</p>
+          <div id="cameraLog0Warn" style="display:none;margin:0 0 10px;padding:10px 12px;border-radius:8px;background:#450a0a;color:#fecaca;font-size:0.82rem;line-height:1.4;border:1px solid #991b1b;">
+            <strong>Attenzione log.0:</strong> <span id="cameraLog0WarnText"></span>
+          </div>
+          <div id="cameraLog0ExportHint" style="display:none;margin:0 0 10px;padding:10px 12px;border-radius:8px;background:#1e3a5f;color:#bae6fd;font-size:0.8rem;line-height:1.45;border:1px solid #38bdf8;">
+            <strong>Ripara log.0 (shell NX, poi riavvia dashboard):</strong> <code style="user-select:all;"></code>
+            <div class="fix-sysfs" style="margin-top:4px;opacity:0.9;font-size:0.76rem;"></div>
+          </div>
           <div class="btn-grid" style="margin-bottom:8px;">
             <button type="button" class="op-btn" onclick="operatorsRefreshCamerasStatus()">Aggiorna stato</button>
+            <button type="button" class="op-btn" onclick="operatorsBumpMjpegStreams()">Ricarica stream MJPEG</button>
           </div>
-          <pre id="cameraStatusPre" class="status-dump">Carico…</pre>
+          <label class="op-check" style="display:block;margin:0 0 8px;font-size:0.8rem;color:var(--muted);">
+            <input type="checkbox" id="cameraStatusShowJson" />
+            JSON USB completo
+          </label>
+          <pre id="cameraStatusPre" class="status-dump" style="max-height:280px;">Carico…</pre>
         </div>
         <div class="cam-grid">
           <div class="cam-tile">
-            <div class="label">Orbbec Gemini · RGB · <strong>log.0</strong> → <code>/dev/video*</code> (vedi stato sopra)</div>
-            <img alt="orbbec rgb" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg" />
+            <div class="label"><strong>log.0</strong></div>
+            <div id="cam0LiveBadge" class="cam-live-badge" style="margin:4px 0 6px;font-size:0.78rem;line-height:1.35;color:#94a3b8;">Carico stato…</div>
+            <div style="position:relative;width:100%;max-width:720px;" class="op-cam-mjpeg-wrap">
+              <div id="cam0MjpegLoading" class="op-cam-mjpeg-loading">
+                <div class="op-cam-mjpeg-loading-track"><div class="op-cam-mjpeg-loading-fill"></div></div>
+                <div class="op-cam-mjpeg-loading-txt">Connessione stream MJPEG log.0…</div>
+              </div>
+              <img id="cam0Preview" alt="camera 0" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg" style="display:block;width:100%;height:auto;" />
+              <canvas id="cam0YoloCanvas" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas>
+            </div>
+            <div class="cam-device-picker" id="cam0Picker" data-logical="0" aria-label="Selezione nodo V4L Orbbec / Sonix per log.0">
+              <button type="button" class="cam-pick-btn" title="Nodo precedente" onclick="operatorsCamPickerStep(0,-1)">◀</button>
+              <div class="cam-pick-center">
+                <span class="cam-pick-label" id="cam0PickLabel">/dev/video…</span>
+                <span class="cam-pick-meta" id="cam0PickMeta"></span>
+              </div>
+              <button type="button" class="cam-pick-btn" title="Nodo successivo" onclick="operatorsCamPickerStep(0,1)">▶</button>
+            </div>
           </div>
           <div class="cam-tile">
-            <div class="label">Intel RealSense · RGB · <strong>log.6</strong></div>
-            <img alt="realsense rgb" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg" />
+            <div class="label"><strong>log.6</strong></div>
+            <div id="cam6LiveBadge" class="cam-live-badge" style="margin:4px 0 6px;font-size:0.78rem;line-height:1.35;color:#94a3b8;">Carico stato…</div>
+            <div style="position:relative;width:100%;max-width:720px;" class="op-cam-mjpeg-wrap">
+              <div id="cam6MjpegLoading" class="op-cam-mjpeg-loading">
+                <div class="op-cam-mjpeg-loading-track"><div class="op-cam-mjpeg-loading-fill"></div></div>
+                <div class="op-cam-mjpeg-loading-txt">Connessione stream MJPEG log.6…</div>
+              </div>
+              <img id="cam6Preview" alt="camera 6" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg" style="display:block;width:100%;height:auto;" />
+              <canvas id="cam6YoloCanvas" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></canvas>
+            </div>
+            <div class="cam-device-picker" id="cam6Picker" data-logical="6" aria-label="Selezione nodo V4L RealSense per log.6">
+              <button type="button" class="cam-pick-btn" title="Nodo precedente" onclick="operatorsCamPickerStep(6,-1)">◀</button>
+              <div class="cam-pick-center">
+                <span class="cam-pick-label" id="cam6PickLabel">/dev/video…</span>
+                <span class="cam-pick-meta" id="cam6PickMeta"></span>
+              </div>
+              <button type="button" class="cam-pick-btn" title="Nodo successivo" onclick="operatorsCamPickerStep(6,1)">▶</button>
+            </div>
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Memoria missione (dati operativi)</h2>
+          <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
+            Append-only su <code>data/operator_session_memory.jsonl</code> sulla NX: annotazioni, pose, contesto da riusare in sessioni successive o per dataset.
+            API: <code>GET/POST /api/operator_session/memory</code>.
+          </p>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;color:var(--muted);">Titolo breve (opzionale)
+            <input type="text" id="opSessionMemTitle" class="agent-select" style="display:block;width:100%;max-width:520px;margin-top:4px;padding:8px 10px;border-radius:8px;border:1px solid #cbd5e133;background:#0f172a;color:#e2e8f0;" placeholder="Es. pre-presa scatola A, ostacolo dx" />
+          </label>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;">Nota / dati (testo o osservazioni)
+            <textarea id="opSessionMemNote" class="agent-textarea" rows="3" spellcheck="false" placeholder="Es. offset tool misurato, limite Y, sequenza riuscita, URL piano…"></textarea>
+          </label>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;color:var(--muted);">Tag separati da virgola (opzionale)
+            <input type="text" id="opSessionMemTags" class="agent-select" style="display:block;width:100%;max-width:520px;margin-top:4px;padding:8px 10px;border-radius:8px;border:1px solid #cbd5e133;background:#0f172a;color:#e2e8f0;" placeholder="lab, presa, replay" />
+          </label>
+          <div class="btn-grid" style="margin-top:10px;">
+            <button type="button" class="op-btn primary" onclick="operatorsSessionMemorySave()">Salva in memoria</button>
+            <button type="button" class="op-btn" onclick="operatorsSessionMemoryRefresh()">Mostra ultime righe</button>
+          </div>
+          <pre id="opSessionMemPre" class="status-dump" style="max-height:220px;margin-top:10px;">—</pre>
+        </div>
+
+        <div class="card">
+          <h2>Tutte le camere USB (V4L)</h2>
+          <p id="v4lNodesDetailNote" class="muted small" style="margin:0 0 10px;line-height:1.4;">
+            Un momento… Elenco di tutti i <code>/dev/videoN</code> con famiglia (Orbbec / RealSense), sysfs, collegamento a log.0 / log.6 e anteprima JPEG.
+          </p>
+          <div id="v4lNodesDetailWrap" class="v4l-nodes-wrap" style="overflow-x:auto;">—</div>
         </div>
       </section>
 
       <section class="tab-panel" data-tab="3d">
         <div class="card">
-          <h2>Viewer 3D (scene_3d)</h2>
-          <p class="muted small" style="margin:0 0 10px;">
-            Poll su <code>GET /api/arm/scene_3d</code> (implementazione <strong>solo operator</strong>: FK + geometria file, niente <code>api_box_plan</code> del monolite). <strong>fast</strong> / <strong>full</strong> usano lo stesso payload; <code>full=1</code> non avvia il planner legacy.
-            Serve rete verso <code>cdn.jsdelivr.net</code> per Three.js (come <code>dashboard.html</code>).
-          </p>
+          <h2>Viewer 3D</h2>
+          <p class="muted small" style="margin:0 0 10px;"><code>/api/arm/scene_3d</code> · Three.js da CDN.</p>
           <div class="btn-grid scene3d-toolbar">
             <button type="button" class="op-btn ok" onclick="operatorsScene3dStart()">Avvia aggiornamento</button>
             <button type="button" class="op-btn warn" onclick="operatorsScene3dStop()">Ferma</button>
             <label class="op-inline"><input type="radio" name="scene3dMode" value="fast" checked /> fast</label>
             <label class="op-inline"><input type="radio" name="scene3dMode" value="full" /> full</label>
             <label class="op-inline" style="flex:1 1 140px;min-width:120px;">Intervallo ms <input type="number" id="scene3dIntervalMs" min="400" step="100" value="1500" style="width:5rem;margin-left:6px;" /></label>
+            <label class="op-inline" style="margin-left:6px;font-size:0.78rem;color:var(--muted);">
+              <input type="checkbox" id="scene3dShowDebug" />
+              Debug (camere, LiDAR, landmark extra)
+            </label>
+            <label class="op-inline" style="margin-left:8px;font-size:0.78rem;">
+              <input type="checkbox" id="scene3dLoadStlArm" checked />
+              Mesh STL braccio (viewer)
+            </label>
+            <label class="op-inline" style="margin-left:8px;font-size:0.78rem;">
+              <input type="checkbox" id="scene3dShowFkBones" />
+              Cilindri FK (overlay)
+            </label>
           </div>
           <div id="operatorsScene3dCanvasWrap" class="scene3d-wrap">
             <canvas id="operatorsScene3dCanvas" aria-label="Viewer scena braccio"></canvas>
           </div>
-          <pre id="operatorsScene3dHint" class="status-dump" style="margin-top:8px;max-height:200px;">Premi «Avvia aggiornamento» (consigliato). Dopo «Piano»/«Execute», il viewer ridisegna anche senza poll se già inizializzato. Nuvola azzurra: array <code>operators_grasp_points_base_link_m</code> (triple in metri, frame <strong>base_link</strong>) oppure chiavi euristiche (<code>point_cloud</code>, <code>points_xyz</code>, …). Marker bianco: <code>grasp_display_base_link_m</code> o <code>translation</code> (anche sotto <code>data</code>).</pre>
+          <pre id="operatorsScene3dHint" class="status-dump" style="margin-top:8px;max-height:120px;">«Avvia aggiornamento».</pre>
         </div>
       </section>
 
       <section class="tab-panel" data-tab="calib">
         <div class="card">
-          <h2>Calibrazione</h2>
-          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem;">
-            Marker ArUco «5» + hand-eye: implementazione dedicata. API utili già montate: <code>/api/arm/tag5_calibration</code>, <code>/api/arm/vis_geometry</code>, <code>/api/alignment/start_pose</code>.
-          </p>
-          <div class="btn-grid">
-            <button type="button" class="op-btn" onclick="window.open('{{ script_root|default('') }}/api/alignment/start_pose', '_blank')">GET start_pose</button>
+          <h2>Calib</h2>
+          {% include '_calibration_panel.html' %}
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab="movement">
+        <div class="op-error-panel card">
+          <div class="op-error-panel-head">
+            <h2>Registro errori</h2>
+            <button type="button" class="op-btn op-btn--ghost" onclick="operatorsClearIssueLog()">Pulisci</button>
+          </div>
+          <pre id="operatorsErrorLogPre" class="status-dump op-error-pre">—</pre>
+        </div>
+
+        <div class="ut-deck">
+          <div class="ut-col ut-col-base">
+            <div class="ut-hero">
+              <h2 class="ut-hero-title">Telecomando base</h2>
+              <p class="ut-hero-sub">
+                Base: <code>GO2_ENABLE_BASE_MOTION=1</code>. Braccio: colonna a destra.
+              </p>
+              <div class="ut-hero-bar">
+                <span id="movementStatusPill" class="pill movement-pill warn">—</span>
+                <button type="button" class="ut-chip-btn" onclick="operatorsMovementFetchConnectivity()">DDS</button>
+                <button type="button" class="ut-chip-btn" onclick="operatorsMovementPollSportLast()">sport_last</button>
+              </div>
+              <pre id="movementSportLastPre" class="status-dump ut-micro-pre">sport_last…</pre>
+            </div>
+
+            <div class="ut-card-row">
+              <div class="ut-mini-card">
+                <div class="ut-mini-label">Pose</div>
+                <div class="ut-pose-grid">
+                  <button type="button" class="ut-pose-btn ut-pose-up" onclick="operatorsMovementBaseStand('stand_up')" title="StandUp + BalanceStand">▲<span>Stand</span></button>
+                  <button type="button" class="ut-pose-btn ut-pose-down" onclick="operatorsMovementBaseStand('crouch')" title="StandDown">▼<span>Crouch</span></button>
+                  <button type="button" class="ut-pose-btn" onclick="operatorsMovementPostAccompany({ mode: 'recovery_stand', sync: true })">↻<span>Recovery</span></button>
+                  <button type="button" class="ut-pose-btn ut-pose-stop" onclick="operatorsMovementPostAccompany({ mode: 'stop', sync: true })">■<span>Stop</span></button>
+                </div>
+              </div>
+              <div class="ut-mini-card ut-mini-card-wide">
+                <div class="ut-mini-label">Modalità locomozione</div>
+                <div class="ut-seg-grid">
+                  <button type="button" class="ut-seg" onclick="operatorsMovementPostAccompany({ mode: 'joystick', enable: true, sync: true })">RC on</button>
+                  <button type="button" class="ut-seg" onclick="operatorsMovementPostAccompany({ mode: 'joystick', enable: false, sync: true })">RC off</button>
+                  <button type="button" class="ut-seg warn" onclick="operatorsMovementPostAccompany({ mode: 'damping', enable: true, sync: true })">Smorza</button>
+                  <button type="button" class="ut-seg ok" onclick="operatorsMovementPostAccompany({ mode: 'damping', enable: false, sync: true })">Smorza off</button>
+                  <button type="button" class="ut-seg" onclick="operatorsMovementPostAccompany({ mode: 'balance_hold', enable: true, sync: true })">Equilibrio</button>
+                  <button type="button" class="ut-seg" onclick="operatorsMovementPostAccompany({ mode: 'balance_hold', enable: false, sync: true })">Eq. stop</button>
+                </div>
+                <div class="ut-rc-speed">
+                  <label>Vel. RC <input type="number" id="movementRcSpeedLevel" min="0" max="3" step="1" value="1" /></label>
+                  <button type="button" class="op-btn" onclick="operatorsMovementPostAccompany({ mode: 'joystick', enable: true, speed_level: parseInt(document.getElementById('movementRcSpeedLevel').value,10)||1, sync: true })">Applica</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ut-controller-shell">
+              <div class="ut-controller-head">
+                <span>Stick · tieni premuto per marciare</span>
+                <div class="ut-controller-tunes">
+                  <label title="vx / vy">V <input type="range" id="movementSpeedSlider" min="0.08" max="0.55" step="0.02" value="0.28" /></label>
+                  <code id="movementSpeedVal" class="ut-tune-val">0.28</code>
+                  <label title="yaw">ω <input type="range" id="movementYawSlider" min="0.15" max="0.9" step="0.05" value="0.45" /></label>
+                  <code id="movementYawVal" class="ut-tune-val">0.45</code>
+                </div>
+              </div>
+              <div class="ut-stick-wrap" onmouseleave="operatorsMovementDpadUp()">
+                <div class="movement-dpad ut-stick-pad" onmouseleave="operatorsMovementDpadUp()">
+                  <div class="spacer"></div>
+                  <button type="button" class="move-dpad-cell" title="Avanti"
+                    onmousedown="operatorsMovementDpadDown('fwd')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('fwd');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">▲</button>
+                  <div class="spacer"></div>
+                  <button type="button" class="move-dpad-cell"
+                    onmousedown="operatorsMovementDpadDown('left')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('left');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">◀</button>
+                  <button type="button" class="move-dpad-cell ut-stick-center" title="Stop"
+                    onclick="operatorsMovementStopHoldAndBrake();">■</button>
+                  <button type="button" class="move-dpad-cell"
+                    onmousedown="operatorsMovementDpadDown('right')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('right');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">▶</button>
+                  <button type="button" class="move-dpad-cell"
+                    onmousedown="operatorsMovementDpadDown('rotL')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('rotL');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">↺</button>
+                  <button type="button" class="move-dpad-cell"
+                    onmousedown="operatorsMovementDpadDown('back')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('back');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">▼</button>
+                  <button type="button" class="move-dpad-cell"
+                    onmousedown="operatorsMovementDpadDown('rotR')" onmouseup="operatorsMovementDpadUp()"
+                    ontouchstart="event.preventDefault();operatorsMovementDpadDown('rotR');" ontouchend="event.preventDefault();operatorsMovementDpadUp();">↻</button>
+                </div>
+              </div>
+              <pre id="movementLogPre" class="status-dump ut-micro-pre">Risposta Sport…</pre>
+            </div>
+          </div>
+
+          <div class="ut-col ut-col-arm">
+            <div class="card ut-arm-card">
+              <h2 class="ut-arm-title">Braccio D1 · giunti</h2>
+              <p class="ut-arm-lead">
+                All’apertura del tab <strong>Moto</strong>: <strong>Sincronizza da robot</strong> allinea gli slider al feedback DDS (<code>d1_sdk_feedback</code> se compilato sulla NX).
+                Con <strong>Controllo live</strong> ON si apre una <strong>sessione DDS</strong> (coppia motori + publisher persistente, come la dashboard jog) — lo stato mostra <em>Live ON (SDK stream)</em> se tutto ok.
+                Muovi gli slider: ogni tick invia la posa sul canale live (senza riavviare il comando a ogni movimento). Spegni Live per chiudere la sessione.
+                <strong>Smooth (goto)</strong> = traiettoria interpolata verso i gradi dei cursori. Richiede <code>GO2_LOCAL=1</code> e <code>GO2_ENABLE_REAL_ARM=1</code>.
+                Verifica backend: <code>GET /api/health</code> → <code>d1_arm_motion_backend: d1_sdk</code>.
+              </p>
+              <div class="ut-live-bar">
+                <label class="ut-live-check"><input type="checkbox" id="opJointLiveEnabled" checked onchange="operatorsJointLiveToggleRefresh()" /> <strong>Controllo live</strong></label>
+                <span id="opJointLiveStatus" class="ut-live-status">…</span>
+              </div>
+              <div class="ut-joint-list" id="opJointSlidersBlock">
+                <div class="ut-joint-row"><span class="ut-joint-lab">J0</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(0,-1)">−</button><input type="range" id="opJointSlide0" min="-135" max="135" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(0)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(0,1)">+</button><span class="ut-joint-val" id="opJointSlideV0">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">J1</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(1,-1)">−</button><input type="range" id="opJointSlide1" min="-90" max="90" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(1)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(1,1)">+</button><span class="ut-joint-val" id="opJointSlideV1">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">J2</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(2,-1)">−</button><input type="range" id="opJointSlide2" min="-90" max="90" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(2)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(2,1)">+</button><span class="ut-joint-val" id="opJointSlideV2">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">J3</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(3,-1)">−</button><input type="range" id="opJointSlide3" min="-135" max="135" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(3)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(3,1)">+</button><span class="ut-joint-val" id="opJointSlideV3">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">J4</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(4,-1)">−</button><input type="range" id="opJointSlide4" min="-90" max="90" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(4)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(4,1)">+</button><span class="ut-joint-val" id="opJointSlideV4">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">J5</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(5,-1)">−</button><input type="range" id="opJointSlide5" min="-135" max="135" step="0.25" value="0" oninput="operatorsJointSliderLiveInput(5)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(5,1)">+</button><span class="ut-joint-val" id="opJointSlideV5">0°</span></div>
+                <div class="ut-joint-row"><span class="ut-joint-lab">Gr</span><button type="button" class="ut-nudge" onclick="operatorsJointNudge(6,-1)">−</button><input type="range" id="opJointSlide6" min="0" max="90" step="0.25" value="50" oninput="operatorsJointSliderLiveInput(6)" onchange="operatorsJointSliderLiveFlush()" /><button type="button" class="ut-nudge" onclick="operatorsJointNudge(6,1)">+</button><span class="ut-joint-val" id="opJointSlideV6">50°</span></div>
+              </div>
+              <label style="display:block;margin:8px 0 4px;font-size:0.82rem;">Preset START
+                <select id="opStartVariant" class="agent-select" style="margin-left:8px;" onchange="operatorsStartVariantChanged()">
+                  <option value="lateral" selected>laterale (default · J0 ~90°)</option>
+                  <option value="frontal">frontale (secondario)</option>
+                </select>
+              </label>
+              <div class="ut-joint-actions">
+                <button type="button" id="opJointBtnSync" class="op-btn" onclick="operatorsJointEditorLoad()">Sincronizza da robot</button>
+                <button type="button" class="op-btn primary" onclick="operatorsJointEditorGoto()">Smooth (goto)</button>
+                <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveZero()">Salva ZERO</button>
+                <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveStart()">Salva START</button>
+                <button type="button" class="op-btn ok" onclick="operatorsJointEditorSaveStartLive()" title="Legge feedback motori e salva come START del preset scelto">Salva START da motori</button>
+              </div>
+              <div class="ut-joint-actions ut-joint-actions-danger">
+                <button type="button" class="op-btn danger" onclick="operatorsArmEmergencyHold()">E-stop hold</button>
+                <button type="button" class="op-btn" onclick="operatorsMovementArmHold()">Hold posa</button>
+                <button type="button" class="op-btn" onclick="operatorsArmGotoHome()">Home</button>
+                <button type="button" class="op-btn" onclick="operatorsArmGotoTrueZero()">Zero file</button>
+                <button type="button" class="op-btn" onclick="operatorsArmGotoSavedStart()">START file</button>
+              </div>
+              <pre id="opJointEditorLog" class="status-dump" style="max-height:200px;margin-top:10px;">«Sincronizza da robot» per allineare gli slider.</pre>
+            </div>
           </div>
         </div>
       </section>
 
+      <section class="tab-panel" data-tab="grasp">
+        <header class="op-module-hero op-module-hero--grasp op-module-hero--compact">
+          <p class="op-module-kicker">Presa</p>
+          <h2 class="op-module-title">Presa D1</h2>
+        </header>
+
+        <div class="card op-grasp-flow-switch-card">
+          <div class="op-grasp-flow-switch op-grasp-flow-switch--3" role="tablist" aria-label="Modalità presa">
+            <button type="button" class="op-grasp-flow-btn is-active" id="graspFlowBtnGuided" data-grasp-flow="guided" role="tab" aria-selected="true">
+              <span class="op-grasp-flow-btn-t">Locale · sequenza completa</span>
+              <span class="op-grasp-flow-btn-s">Orbbec/GraspGen sulla NX · senza VLA</span>
+            </button>
+            <button type="button" class="op-grasp-flow-btn" id="graspFlowBtnVla" data-grasp-flow="vla" role="tab" aria-selected="false">
+              <span class="op-grasp-flow-btn-t">VLA AWS · passo-passo</span>
+              <span class="op-grasp-flow-btn-s">piano dal worker EC2 · esecuzione manuale</span>
+            </button>
+            <button type="button" class="op-grasp-flow-btn" id="graspFlowBtnTeach" data-grasp-flow="teach" role="tab" aria-selected="false">
+              <span class="op-grasp-flow-btn-t">Teaching · GPT-nano</span>
+              <span class="op-grasp-flow-btn-s">coach OpenAI vision · step + memoria</span>
+            </button>
+          </div>
+          <p id="graspFlowCaption" class="muted small op-grasp-flow-caption">
+            <strong>Locale:</strong> sequenza completa in un comando, piano dal polso sulla NX (Orbbec metrico / GraspGen). È il flusso del laboratorio, <strong>senza</strong> OpenVLA; ricade sul worker solo se il locale fallisce.
+          </p>
+        </div>
+
+        <div class="card op-grasp-progress-card" id="graspProgressCard" aria-live="polite">
+          <div class="op-grasp-progress-head">
+            <h2 class="op-grasp-progress-h">Avanzamento</h2>
+            <button type="button" class="op-btn op-btn--ghost op-grasp-progress-reset">Azzera</button>
+          </div>
+          <p id="graspProgressCaption" class="op-grasp-progress-caption">Pronto — scegli un flusso e avvia</p>
+          <div class="op-grasp-progress-track" id="graspProgressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="op-grasp-progress-fill" id="graspProgressFill"></div>
+          </div>
+          <ul class="op-grasp-step-chips" aria-hidden="true">
+            <li class="op-grasp-step-chip" data-grasp-step="0">Worker</li>
+            <li class="op-grasp-step-chip" data-grasp-step="1">Piano</li>
+            <li class="op-grasp-step-chip" data-grasp-step="2">Anteprima</li>
+            <li class="op-grasp-step-chip" data-grasp-step="3">Esecuzione</li>
+            <li class="op-grasp-step-chip" data-grasp-step="4">Fatto</li>
+          </ul>
+        </div>
+
+        <!-- ===================== FLUSSO GUIDATO (sequenza completa) ===================== -->
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="guided">
+          <div class="card op-grasp-full-card" id="graspFullCard">
+            <h2>Prendi l'oggetto · sequenza completa</h2>
+            <p class="muted small" style="margin:0 0 10px;line-height:1.5;">
+              Un comando: <strong>frontale vede l'oggetto</strong> → <strong>braccio a START</strong> →
+              <strong>pose estimation dal polso</strong> → <strong>presa a fasi</strong>. Movimento sullo stesso
+              stack del tab <strong>Braccio D1 · giunti</strong> (coppia + sessione live + smooth).
+            </p>
+            <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione (IT/EN)
+              <input type="text" id="graspFullInstruction" class="agent-select" style="width:100%;margin-top:4px;" value="prendi la scatola bianca davanti al braccio" spellcheck="true" />
+            </label>
+            <p class="muted small" style="margin:6px 0;line-height:1.45;"><span class="op-grasp-front-badge is-idle" id="graspStartPoseBadge">START: verifica…</span>
+              · Il piano dal polso parte <strong>solo</strong> da START salvata. La sequenza reale fa fold+START prima della presa.</p>
+            <label class="op-check" style="display:block;margin:8px 0;"><input type="checkbox" id="graspFullDryRun" /> Solo anteprima (dry-run · <strong>non</strong> va a START né prende)</label>
+            <div class="op-grasp-go-row" style="margin-top:10px;">
+              <button type="button" class="op-btn primary op-grasp-go-btn" id="graspFullRunBtn" onclick="operatorsGraspRunFull()">▸ Prendi oggetto (sequenza completa)</button>
+              <button type="button" class="op-btn" onclick="operatorsGraspRunFull(true)">Anteprima (dry-run)</button>
+            </div>
+
+            <ol class="op-grasp-storyboard" id="graspFullSteps" aria-live="polite">
+              <li class="op-grasp-story-step is-idle" data-step="front_detect"><span class="op-grasp-story-ico">1</span><span class="op-grasp-story-txt">Frontale vede l'oggetto</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="goto_start"><span class="op-grasp-story-ico">2</span><span class="op-grasp-story-txt">Fold + braccio alla posa START</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="start_pose_check"><span class="op-grasp-story-ico">2b</span><span class="op-grasp-story-txt">Verifica feedback su START</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="wrist_plan"><span class="op-grasp-story-ico">3</span><span class="op-grasp-story-txt">Pose estimation dal polso</span></li>
+              <li class="op-grasp-story-step is-idle" data-step="execute_phased"><span class="op-grasp-story-ico">4</span><span class="op-grasp-story-txt">Presa a fasi (pre_grasp → grasp → lift)</span></li>
+            </ol>
+            <p id="graspFullSummary" class="muted small" style="margin:8px 0 0;line-height:1.45;">Premi «Prendi oggetto» per avviare l'intera sequenza.</p>
+            <p class="muted small op-grasp-hint-live" style="margin:8px 0 0;line-height:1.4;">
+              ℹ️ <code>run_full</code> è una sola chiamata: lo storyboard si completa <strong>a fine sequenza</strong>. Per i micro-passi vai su <strong>VLA AWS · passo-passo</strong>.
+            </p>
+
+            <div class="op-grasp-front" id="graspFrontPanel">
+              <div class="op-grasp-front-head">
+                <span class="op-grasp-front-title">Camera frontale · detection</span>
+                <span class="op-grasp-front-badge is-idle" id="graspFrontBadge">in attesa…</span>
+              </div>
+              <div class="op-grasp-front-stage">
+                <img id="graspFrontImg" alt="camera frontale del cane" />
+                <canvas id="graspFrontCanvas"></canvas>
+              </div>
+              <div class="btn-grid" style="margin-top:8px;">
+                <button type="button" class="op-btn small" id="graspFrontDetectBtn" onclick="operatorsGraspFrontDetect()">Rileva oggetto sulla frontale</button>
+              </div>
+              <p id="graspFront3d" class="muted small" style="margin:8px 0 0;line-height:1.45;">Punti 3D presa: nessun piano ancora. Lancia l'anteprima per vedere i marker nella tab <strong>3D</strong>.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== FLUSSO VLA AWS (passo-passo) ===================== -->
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="vla" hidden>
+          <div class="card">
+            <h2>OpenVLA · AWS</h2>
+            <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
+              La NX invia <strong>JPEG inline</strong> (Orbbec log.0 + RealSense log.6) al worker cloud.
+              Richiede <code>GO2_ANYGRASP_WORKER_URL</code> + <code>GO2_WORKER_TOKEN</code>. Configura con
+              <code>python scripts/pair_nx_aws_vla.py</code> dal PC.
+            </p>
+
+            <ol class="op-grasp-vla-steps">
+              <li><strong>1.</strong> <em>Health</em> worker (e <em>Avvia EC2</em> se spento)</li>
+              <li><strong>2.</strong> <em>Piano VLA</em> → controlla la <strong>Validazione</strong> sotto</li>
+              <li><strong>3.</strong> Esegui: <em>Sequenza fasi</em> (consigliato), <em>IK</em> o <em>FK</em></li>
+            </ol>
+
+            <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione (IT/EN)
+              <input type="text" id="operatorsOpenvlaInstruction" class="agent-select" style="width:100%;margin-top:4px;" value="afferra la scatola bianca davanti al braccio" spellcheck="true" />
+            </label>
+            <fieldset style="margin:10px 0;border:none;padding:0;font-size:0.82rem;">
+              <legend class="muted small">Camera primaria per il piano</legend>
+              <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="0" checked /> log.0 polso</label>
+              <label class="op-inline"><input type="radio" name="openvlaImgSrc" value="6" /> log.6 frontale</label>
+            </fieldset>
+
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Worker</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn" onclick="operatorsGraspHealth()">Health worker</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspEc2Start()">Avvia EC2</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspEc2Stop()">Stop EC2</button>
+              </div>
+            </div>
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Piano</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn primary" onclick="operatorsGraspStartPresaPipeline()">Piano VLA (1 click)</button>
+                <button type="button" class="op-btn" onclick="operatorsGraspPlan()">Solo POST plan</button>
+              </div>
+            </div>
+            <div class="op-grasp-vla-group">
+              <span class="op-grasp-vla-group-lbl">Esecuzione braccio</span>
+              <div class="btn-grid">
+                <button type="button" class="op-btn ok" id="graspBtnExecutePhased" onclick="operatorsGraspExecutePhased()" disabled>Sequenza presa (fasi)</button>
+                <button type="button" class="op-btn ok" id="graspBtnExecuteIk" onclick="operatorsExecuteLastPlanIkArm()" disabled>Muovi IK</button>
+                <button type="button" class="op-btn ok" id="graspBtnExecuteFk" onclick="operatorsOpenvlaExecuteD1Arm()" disabled>Muovi FK D1</button>
+              </div>
+              <p class="muted small" style="margin:6px 0 0;">I pulsanti verdi si sbloccano solo con la riga «Esecuzione braccio consentita» verde nella Validazione.</p>
+            </div>
+
+            <p id="graspVlaInputLabel" class="muted small" style="margin:8px 0 0;">—</p>
+            <details class="op-grasp-details" style="margin-top:8px;">
+              <summary>JSON piano (avanzato)</summary>
+              <div class="op-grasp-details-body">
+                <textarea id="graspPlanJson" class="grasp-json-ta" rows="4" spellcheck="false" style="width:100%;">{}</textarea>
+              </div>
+            </details>
+            <h3 style="margin:14px 0 6px;font-size:0.95rem;">Anteprima polso + overlay</h3>
+            <div class="grasp-preview-stack">
+              <img id="graspWristImg" alt="polso rgb" src="{{ script_root|default('') }}/api/robot/camera/0.jpg" />
+              <canvas id="graspOverlayCanvas" class="grasp-overlay-canvas" width="640" height="480"></canvas>
+            </div>
+            <p id="graspOverlayDbg" class="muted small" style="margin:6px 0 0;">—</p>
+          </div>
+        </div>
+
+        <!-- ===================== COMUNE: validazione + log + camere ===================== -->
+        <div class="card op-grasp-validation-card" id="graspValidationPanel" aria-live="polite">
+          <h2 class="op-grasp-validation-h">Validazione presa (obbligatoria)</h2>
+          <p id="graspValidationBanner" class="op-grasp-validation-banner op-grasp-validation-banner--idle">
+            Lancia un piano (guidato o VLA): qui appare la checklist. Nessuno stub: solo planner reale.
+          </p>
+          <table class="op-grasp-validation-table" id="graspValidationTable">
+            <thead><tr><th>Controllo</th><th>Stato</th><th>Dettaglio</th></tr></thead>
+            <tbody id="graspValidationBody">
+              <tr><td colspan="3" class="muted small">In attesa…</td></tr>
+            </tbody>
+          </table>
+          <p class="muted small" style="margin:10px 0 0;line-height:1.45;">
+            <strong>Dove guardare l’oggetto:</strong> anteprima/overlay sopra · stream MJPEG sotto · marker in tab <strong>3D</strong>.
+          </p>
+        </div>
+
+        <details class="op-grasp-details" id="graspLogDetails">
+          <summary>Log risposta server (debug)</summary>
+          <div class="op-grasp-details-body">
+            <pre id="graspPhase" class="status-dump grasp-phase" style="margin-top:6px;max-height:240px;">In attesa…</pre>
+          </div>
+        </details>
+
+        <div class="card">
+          <h2>Camere · 3D</h2>
+          <div class="op-dock-grid">
+            <div class="op-dock-cell">
+              <div class="op-dock-label">log.0 · live UVC (non SDK)</div>
+              <div id="graspDockCam0Badge" class="cam-live-badge" style="margin:0 0 4px;font-size:0.72rem;line-height:1.3;color:#94a3b8;">Stato stream…</div>
+              <div class="op-dock-frame op-cam-mjpeg-wrap">
+                <div id="graspDockCam0Loading" class="op-cam-mjpeg-loading op-cam-mjpeg-loading--dock">
+                  <div class="op-cam-mjpeg-loading-track"><div class="op-cam-mjpeg-loading-fill"></div></div>
+                  <div class="op-cam-mjpeg-loading-txt">Stream…</div>
+                </div>
+                <img id="graspDockCam0" alt="stream 0" class="op-dock-thumb" src="{{ script_root|default('') }}/stream/robot/camera/0.mjpg" />
+              </div>
+            </div>
+            <div class="op-dock-cell">
+              <div class="op-dock-label">log.6</div>
+              <div class="op-dock-frame op-cam-mjpeg-wrap">
+                <div id="graspDockCam6Loading" class="op-cam-mjpeg-loading op-cam-mjpeg-loading--dock">
+                  <div class="op-cam-mjpeg-loading-track"><div class="op-cam-mjpeg-loading-fill"></div></div>
+                  <div class="op-cam-mjpeg-loading-txt">Stream…</div>
+                </div>
+                <img id="graspDockCam6" alt="stream 6" class="op-dock-thumb" src="{{ script_root|default('') }}/stream/robot/camera/6.mjpg" />
+              </div>
+            </div>
+          </div>
+          <div class="btn-grid" style="margin-top:12px;">
+            <button type="button" class="op-btn primary" data-op-jump-tab="scene">Scene</button>
+            <button type="button" class="op-btn ok" data-op-jump-tab="3d">3D</button>
+            <button type="button" class="op-btn" id="graspDockRefreshBtn">Refresh MJPEG</button>
+          </div>
+        </div>
+
+        <div class="op-grasp-flow-panel" data-grasp-flow-panel="teach" hidden>
+        <div class="card">
+          <h2>Grasp Teaching · presa laterale (camera polso)</h2>
+          <p class="muted small" style="margin:0 0 10px;line-height:1.45;">
+            Flusso principale: <strong>START laterale</strong> → <strong>camera log.0 (polso Orbbec)</strong> →
+            <strong>acquisizione metrica</strong> (depth + bbox + asse presa) → step coach. In modalità laterale
+            <strong>nessuna NO-GO zone</strong> testa/camera. Stack braccio = tab <strong>Braccio D1 · giunti</strong>.
+          </p>
+          <label style="display:block;margin:0 0 8px;font-size:0.82rem;">Preset START
+            <select id="graspCoachStartVariant" class="agent-select" style="margin-left:8px;" onchange="operatorsStartVariantChanged()">
+              <option value="lateral" selected>laterale (default · NO-GO off)</option>
+              <option value="frontal">frontale (vincoli testa/camera)</option>
+            </select>
+          </label>
+          <div class="op-teach-acquire-box" style="margin:0 0 10px;padding:10px;border:2px solid rgba(80,200,120,0.35);border-radius:8px;background:rgba(40,120,80,0.08);">
+            <div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Camera polso · log.0 (Orbbec)</div>
+            <p class="muted small" style="margin:0 0 8px;line-height:1.45;">
+              Cattura RGB+depth dal polso, stima distanza (<code>depth_m</code>), target 3D, asse di presa e traiettoria IK.
+              <strong>Non muove il braccio.</strong>
+            </p>
+            <div class="btn-grid" style="margin-bottom:8px;">
+              <button type="button" class="op-btn primary" id="graspCoachAcquireBtn" onclick="operatorsGraspCoachAcquire()" title="Orbbec polso: detection + depth metrica + viz">Acquisizione e stima</button>
+              <button type="button" class="op-btn" id="graspCoachStartBtn" onclick="operatorsGraspCoachGotoStart()" title="Porta il braccio in START laterale">Vai in START</button>
+              <button type="button" class="op-btn ok" id="graspCoachGraspBtn" onclick="operatorsGraspCoachGrasp()" title="Uno step coach verso l'oggetto">Esegui presa (step)</button>
+            </div>
+            <div class="op-teach-calib-box" style="margin:0 0 10px;padding:8px;border:1px dashed rgba(120,180,255,0.45);border-radius:6px;background:rgba(40,80,140,0.06);">
+              <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Calibrazione presa manuale (teach)</div>
+              <p class="muted small" style="margin:0 0 8px;line-height:1.45;">
+                Con <strong>oggetto rilevato</strong>: attendi <strong>4 s</strong> (coppia attiva) → i giunti si <strong>rilasciano</strong> →
+                hai <strong>15 s</strong> per portare il braccio nella posa di presa corretta → la dashboard <strong>memorizza l’offset</strong>
+                (Δ giunti/TCP vs IK) e lo somma al target <strong>dinamico</strong> dove vede l’oggetto — non fissa la posa insegnata.
+              </p>
+              <div class="btn-grid" style="margin-bottom:6px;">
+                <button type="button" class="op-btn warn" id="graspTeachCalibBtn" onclick="operatorsGraspTeachCalibStart()" title="Rilascio giunti temporaneo — posa manuale">Calibra posa presa</button>
+                <button type="button" class="op-btn" id="graspTeachCalibCancelBtn" onclick="operatorsGraspTeachCalibCancel()" disabled>Annulla teach</button>
+                <button type="button" class="op-btn" id="graspTeachCalibListBtn" onclick="operatorsGraspTeachCalibRefresh()">Campioni salvati</button>
+              </div>
+              <div id="graspTeachCalibStatus" class="muted small" style="line-height:1.4;min-height:2.2em;">Pronto — esegui acquisizione con oggetto visibile, poi «Calibra posa presa».</div>
+            </div>
+            <div id="graspCoachMetricPanel" class="op-teach-metric-panel" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:0.78rem;margin-bottom:8px;">
+              <div><span class="muted">Oggetto:</span> <strong id="graspCoachMetObj">—</strong></div>
+              <div><span class="muted">Confidenza:</span> <strong id="graspCoachMetConf">—</strong></div>
+              <div><span class="muted">Distanza depth:</span> <strong id="graspCoachMetDepth">—</strong></div>
+              <div><span class="muted">Reach braccio:</span> <strong id="graspCoachMetReach">—</strong></div>
+              <div style="grid-column:1/-1;"><span class="muted">Target base_link:</span> <strong id="graspCoachMetTarget">—</strong></div>
+              <div style="grid-column:1/-1;"><span class="muted">Stato:</span> <strong id="graspCoachMetStatus">Premi «Acquisizione e stima»</strong></div>
+            </div>
+            <div id="graspCoachVizWrap">
+              <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Feedback grafico presa (polso)</div>
+              <p class="muted small" style="margin:0 0 6px;line-height:1.4;">
+                <strong>Acquisizione</strong> = frame RGB+depth Orbbec SDK (sotto). <strong>Live tab Scene</strong> = stream UVC MJPEG
+                (<code>log.0</code>): se vedi puntini IR/depth, in tab <strong>Scene</strong> usa le frecce sotto l’anteprima fino a
+                <span style="color:#86efac;">RGB OK</span> su <code>/dev/video2</code> (o nodo RGB dalla badge).
+              </p>
+              <div id="graspCoachLiveBadge" class="cam-live-badge" style="margin:0 0 6px;font-size:0.76rem;line-height:1.35;color:#94a3b8;">Stato stream log.0…</div>
+              <div id="graspCoachVizStatus" style="font-size:0.8rem;margin-bottom:4px;color:var(--muted);">In attesa acquisizione…</div>
+              <canvas id="graspCoachViz" width="480" height="360" style="width:100%;max-width:520px;border:1px solid var(--border,#333);border-radius:6px;background:#111;"></canvas>
+              <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">SDK acquisizione: blu = scatola · giallo = asse presa · verde = centro · sotto = stadi IK.</div>
+              <div id="graspCoachStages" style="margin-top:6px;"></div>
+            </div>
+          </div>
+          <div class="op-teach-flow-box" style="margin:0 0 10px;padding:8px;border:1px solid var(--border,#333);border-radius:6px;">
+            <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">Coach (opzionale dopo acquisizione OK)</div>
+            <p class="muted small" style="margin:0 0 8px;line-height:1.4;">Step coach GPT-nano con target ancorato alla depth Orbbec quando l'acquisizione ha successo.</p>
+            <div class="btn-grid">
+              <button type="button" class="op-btn" id="graspCoachPreviewBtn" onclick="operatorsGraspCoachAcquire()" title="Alias di Acquisizione e stima" hidden>Anteprima</button>
+              <button type="button" class="op-btn" id="graspCoachStepBtn" onclick="operatorsGraspCoachStep()">Step coach</button>
+            </div>
+          </div>
+          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachExecute" checked /> Esegui mossa D1 (stack Giunti / DDS live)</label>
+          <label class="op-check" style="display:block;margin:6px 0;"><input type="checkbox" id="graspCoachDepth" checked /> Includi depth preview</label>
+          <input type="hidden" id="graspCoachCam" value="0" />
+          <p class="muted small" style="margin:4px 0 8px;">Camera fissa: <strong>log.0 polso Orbbec</strong> (acquisizione metrica).</p>
+          <label style="display:block;margin:10px 0 4px;font-size:0.82rem;">
+            Ampiezza passo (avvicinamento per step):
+            <strong id="graspCoachBlendVal" style="color:var(--accent,#5cf);">20%</strong>
+            <input type="range" id="graspCoachBlend" min="5" max="60" step="5" value="20"
+                   style="width:100%;margin-top:4px;" oninput="operatorsGraspCoachBlendLabel()" />
+            <span class="muted small">basso = micro-correzioni sicure · alto = ti avvicini prima (sovrascrive il modello)</span>
+          </label>
+          <label style="display:block;margin:10px 0 4px;font-size:0.82rem;">
+            Step automatici per click:
+            <strong id="graspCoachChainVal" style="color:var(--accent,#5cf);">1</strong>
+            <input type="range" id="graspCoachChain" min="1" max="6" step="1" value="1"
+                   style="width:100%;margin-top:4px;" oninput="operatorsGraspCoachChainLabel()" />
+            <span class="muted small">>1 = il coach ripete da solo (foto→piano→mossa) usando istruzione + memoria. Si ferma se chiude la pinza o target nullo.</span>
+          </label>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;color:var(--muted);">Session note (contesto che resta nel prompt)
+            <textarea id="graspCoachSession" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. scatola davanti, presa laterale, zona fragile…"></textarea>
+          </label>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;">Istruzione per questo step (comando al coach)
+            <textarea id="graspCoachInstruction" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. avvicinati del 20% al centro oggetto; non chiudere pinza."></textarea>
+          </label>
+          <div class="op-side-setup-box" style="margin:6px 0 10px;padding:8px;border:1px solid var(--border,#333);border-radius:6px;background:rgba(80,160,255,0.06);">
+            <div style="font-size:0.82rem;font-weight:600;margin-bottom:2px;">2 · Presa di lato (frontale vede l'oggetto)</div>
+            <p class="muted small" style="margin:0 0 6px;line-height:1.4;">
+              Frontale vede l'oggetto → (mi alzo se accovacciato · 2 passi avanti se in piedi) → giro il cane 90° a destra → braccio a <strong>START laterale</strong> (preset standard). Così la testa non è tra pinza e scatole. <strong>Muove cane + braccio.</strong>
+            </p>
+            <label style="display:block;font-size:0.8rem;margin-bottom:6px;">Postura attuale
+              <select id="graspSidePosture" class="agent-select" style="margin-left:6px;">
+                <option value="auto" selected>auto</option>
+                <option value="crouch">accovacciato</option>
+                <option value="standing">in piedi</option>
+              </select>
+            </label>
+            <button type="button" class="op-btn warn" id="graspSideSetupBtn" onclick="operatorsGraspSideSetup()" title="Esegue il setup completo (cane + braccio)">Esegui setup presa di lato</button>
+          </div>
+          <div class="btn-grid" style="margin-top:6px;">
+            <button type="button" class="op-btn" id="graspCoachStatusBtn" onclick="operatorsGraspCoachStatus()">Status API</button>
+          </div>
+          <div id="graspCoachProgressWrap" class="op-progress-wrap" hidden>
+            <div class="op-progress-label" id="graspCoachProgressLabel"></div>
+            <div class="op-progress-track"><div class="op-progress-fill" id="graspCoachProgressFill"></div></div>
+          </div>
+          <label style="display:block;margin:12px 0 6px;font-size:0.82rem;color:var(--muted);">Dopo la risposta — feedback (salvato in memoria per il prossimo step)
+            <textarea id="graspCoachFeedbackAfter" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. troppo corto su X; preferisco pinza aperta ancora; oggetto è più a sinistra…"></textarea>
+          </label>
+          <label style="display:block;margin:8px 0;font-size:0.82rem;color:var(--muted);">Correzione codice / prompt (note per chi sviluppa + hint per il modello)
+            <textarea id="graspCoachCodeCorrection" class="agent-textarea" rows="2" spellcheck="false" placeholder="Es. abbassa GO2_GRASP_COACH_MAX_APPROACH_BLEND; il frame base_link va spiegato meglio nel prompt…"></textarea>
+          </label>
+          <button type="button" class="op-btn ok" id="graspCoachFeedbackBtn" onclick="operatorsGraspCoachFeedback()" style="margin-top:6px;">Salva feedback in memoria</button>
+          <pre id="graspCoachPre" class="status-dump" style="max-height:280px;margin-top:10px;">—</pre>
+        </div>
+        </div>
+
+      </section>
+
+      <section class="tab-panel" data-tab="agent">
+        <div class="card agent-console-card agent-console-card--compact hermes-layout">
+          <div class="agent-console-toolbar hermes-header-toolbar">
+            <h2 class="agent-console-title agent-console-title--inline">Hermes</h2>
+            <span id="hermesIntegrationBadge" class="muted small hermes-integration-badge" title="Stato integrazione">—</span>
+            <details class="agent-help-fold">
+              <summary>Note</summary>
+              <p class="muted small hermes-help-p">
+                Flusso principale: <strong>chat</strong> → JSON azioni (Sport, braccio, jog, IK visione).
+                <strong>Due modalità:</strong> «Esegui subito» applica al cane dopo il messaggio; «Anteprima → approvo» mostra il piano e richiede il pulsante verde.
+                «Dry-run» resta simulazione anche dopo approvazione. Mic / voce opzionali.
+                «Salva in memoria» scrive note persistenti su <code class="agent-code">data/operator_session_memory.jsonl</code> sulla NX.
+                EN · visione: <strong>Camera</strong> on.
+                <strong>Memoria:</strong> tag <code class="agent-code">hermes</code> nel prompt se la checkbox è attiva.
+                <strong>Turni:</strong> «Salva turno in memoria» — tag <code class="agent-code">turn_log</code>. Skill: <code class="agent-code">data/hermes_skills/</code>.
+              </p>
+            </details>
+          </div>
+
+          <details class="hermes-context-fold">
+            <summary class="hermes-context-summary">Contesto missione &amp; memoria</summary>
+            <div class="hermes-context-inner">
+              <textarea id="hermesMissionBrief" class="agent-textarea agent-textarea--context hermes-context-field" rows="1" spellcheck="false" placeholder="Optional mission prefix…" title="Mission context"></textarea>
+
+              <label class="op-check hermes-context-check">
+                <input type="checkbox" id="hermesIncludeMemory" checked />
+                Includi memoria operatore (tag <span class="agent-code">hermes</span>) nel prompt
+              </label>
+
+              <label class="op-check hermes-context-check">
+                <input type="checkbox" id="hermesLogTurns" checked />
+                Salva ogni turno chat in memoria (tag <span class="agent-code">turn_log</span>) — Sport / braccio
+              </label>
+
+              <label class="hermes-context-label">
+                <span class="agent-field-label">Feedback da ricordare</span>
+                <textarea id="hermesMemorySticky" class="agent-textarea agent-textarea--context hermes-context-field" rows="2" spellcheck="false" placeholder="Es. «Joint 0 negativo = sinistra robot; non superare 6°»…"></textarea>
+              </label>
+              <div class="hermes-context-actions">
+                <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesSaveMemoryNote()">Salva in memoria</button>
+                <span class="muted small">POST <code class="agent-code">/api/operator_session/memory</code></span>
+              </div>
+            </div>
+          </details>
+
+          <div id="hermesLoadingWrap" class="agent-hermes-loading-wrap hermes-loading-strip" style="display:none;" aria-busy="false" aria-live="polite">
+            <div class="agent-hermes-loading-track" role="progressbar" aria-label="Caricamento Hermes">
+              <div class="agent-hermes-loading-indeterminate"></div>
+            </div>
+            <span class="agent-hermes-loading-label muted small">Hermes…</span>
+          </div>
+
+          <div class="hermes-thread">
+            <div id="hermesChatLog" class="agent-chat-log agent-chat-log--main hermes-chat-log" role="log" aria-label="Hermes chat"></div>
+          </div>
+
+          <div class="hermes-composer-dock">
+            <div id="hermesApprovePanel" class="hermes-approve-panel hermes-approve-panel--dock" style="display: none" aria-hidden="true">
+              <div class="hermes-approve-head">
+                <span class="hermes-approve-title">In attesa di approvazione</span>
+                <span class="hermes-approve-badge">motori OFF</span>
+              </div>
+              <p id="hermesApproveDigest" class="hermes-approve-digest">—</p>
+              <div class="hermes-approve-actions">
+                <button type="button" id="hermesApproveBtn" class="op-btn ok" onclick="operatorsHermesApprovePending()">
+                  Approva ed esegui
+                </button>
+                <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesDiscardPending()">
+                  Annulla
+                </button>
+              </div>
+            </div>
+
+            <div class="hermes-composer-toolbar" title="Stesso JSON Hermes (Sport, braccio, IK). Anteprima non muove finché non approvi.">
+              <span class="hermes-composer-toolbar-label muted small">Movimenti</span>
+              <div class="hermes-mode-row hermes-mode-row--dock" role="radiogroup" aria-label="Modalità esecuzione Hermes">
+                <label class="hermes-mode-pill hermes-mode-pill--chip">
+                  <input type="radio" name="hermesExecMode" value="run" checked />
+                  Esegui subito
+                </label>
+                <label class="hermes-mode-pill hermes-mode-pill--chip" title="Mostra il piano e richiedi Approva prima di muovere il robot.">
+                  <input type="radio" name="hermesExecMode" value="preview" />
+                  Anteprima
+                </label>
+              </div>
+            </div>
+
+            <div class="agent-compose-row hermes-compose-row">
+              <textarea id="hermesCommandInput" class="agent-textarea agent-textarea--grow hermes-composer-textarea" rows="1" spellcheck="false" placeholder="Message…"></textarea>
+              <div class="agent-compose-actions hermes-compose-actions">
+                <button type="button" class="op-btn warn agent-btn-icon" onclick="operatorsHermesMicToggle()" title="Mic">Mic</button>
+                <button type="button" class="op-btn primary agent-btn-send" onclick="operatorsHermesSend()">Send</button>
+              </div>
+            </div>
+            <div id="hermesMicStatus" class="agent-mic-status muted small hermes-mic-status" style="display:none;"></div>
+          </div>
+
+          <details class="agent-advanced-fold">
+            <summary>Voice · permissions</summary>
+            <div class="agent-row-2 agent-row-2--tight">
+              <label class="agent-select-wrap">
+                <span class="agent-field-label">Personality</span>
+                <select id="hermesPersonalitySelect" class="agent-select" onchange="operatorsHermesOnPersonalityChange()">
+                  <option value="bender_meeting" selected>VIP snark</option>
+                  <option value="">Neutral</option>
+                </select>
+              </label>
+              <label class="agent-select-wrap">
+                <span class="agent-field-label">Cloud voice</span>
+                <select id="hermesOpenAiVoiceSelect" class="agent-select">
+                  <option value="">Auto</option>
+                  <option value="echo">echo</option>
+                  <option value="onyx">onyx</option>
+                  <option value="fable">fable</option>
+                  <option value="nova">nova</option>
+                  <option value="alloy">alloy</option>
+                  <option value="shimmer">shimmer</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="agent-cap-grid agent-cap-grid--dense">
+              <label class="op-check"><input type="checkbox" id="hermesCapExplicit" checked /> Granular</label>
+              <label class="op-check"><input type="checkbox" id="hermesFragile" /> Fragile</label>
+              <label class="op-check"><input type="checkbox" id="hermesAttachCamera" checked /> Camera</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowBase" checked /> Base</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowStandCrouch" checked /> Stand/crouch</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowJoystick" checked /> Joystick</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowVelocity" /> Velocity</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowDamping" /> Damping</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowArmPre" checked /> Arm presets</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowArmJog" checked /> Arm jog Δ°</label>
+              <label class="op-check"><input type="checkbox" id="hermesAllowArmVisionIk" checked /> Vision IK</label>
+              <label class="op-check"><input type="checkbox" id="hermesDryRun" /> Dry-run</label>
+              <label class="op-check"><input type="checkbox" id="hermesTtsBrowser" /> Browser TTS</label>
+              <label class="op-check"><input type="checkbox" id="hermesTtsOpenAi" checked /> Cloud TTS</label>
+            </div>
+          </details>
+
+          <div class="agent-toolbar-row">
+            <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesStopSpeech()">Stop audio</button>
+            <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesStatus()">API status</button>
+            <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesClearChat()">Clear chat</button>
+            <button type="button" class="op-btn op-btn--ghost" onclick="operatorsHermesClearMission()">Clear mission</button>
+          </div>
+
+          <details class="agent-json-details">
+            <summary>Technical JSON</summary>
+            <pre id="hermesReplyPre" class="status-dump agent-json-pre">—</pre>
+          </details>
+        </div>
+      </section>
+
       <section class="tab-panel" data-tab="robot">
+        <header class="op-module-hero op-module-hero--robot">
+          <p class="op-module-kicker">Scorciatoie</p>
+          <h2 class="op-module-title">Robot · veloci</h2>
+          <p class="op-module-lead">Grasp Coach → <strong>Presa</strong> · Hermes → <strong>Hermes</strong> · Camera → <strong>Scene</strong> · 3D → <strong>3D</strong>.</p>
+        </header>
+<div class="card">
+          <h2>Rilevamento 2D</h2>
+          <div class="btn-grid" style="margin-bottom:8px;">
+            <button type="button" class="op-btn primary" onclick="operatorsBoxDetectCamera(6)">Rilevamento 2D su log.6</button>
+            <button type="button" class="op-btn" onclick="operatorsBoxDetectCamera(0)">Rilevamento 2D su log.0</button>
+          </div>
+          <pre id="boxDetectPre" class="status-dump" style="max-height:160px;">—</pre>
+        </div>
         <div class="card">
           <h2>Base (Sport)</h2>
           <div class="btn-grid">
@@ -97,58 +833,73 @@
           </p>
           <pre id="sportLast" class="status-dump" style="margin-top:8px;">sport_last…</pre>
         </div>
-        <div class="card">
-          <h2>Presa (AnyGrasp) + diagnostica pipeline</h2>
-          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem;">
-            Worker opzionale <code>GO2_ANYGRASP_WORKER_URL</code> (default <code>127.0.0.1:8765</code>). Questa app <strong>non</strong> carica <code>diagnostics_dashboard</code>: niente <code>/api/box/plan</code>; <code>scene_3d</code> è implementato in <code>go2_dashboard/operator_scene.py</code> (FK + file geometria).
-          </p>
-          <div class="btn-grid">
-            <button type="button" class="op-btn" onclick="operatorsGraspHealth()">Health grasp</button>
-            <button type="button" class="op-btn" onclick="operatorsGraspPipeline()">Pipeline presa</button>
-            <button type="button" class="op-btn primary" onclick="operatorsGraspPlan()">Piano (POST)</button>
-            <button type="button" class="op-btn ok" onclick="operatorsGraspExecute()">Execute (POST)</button>
-            <button type="button" class="op-btn" onclick="operatorsRefreshGraspPreviewFrame()">Aggiorna frame polso</button>
-            <button type="button" class="op-btn" onclick="operatorsGraspDrawOverlay()">Ridisegna overlay</button>
-          </div>
-          <p style="margin:10px 0 6px;font-size:0.8rem;color:var(--muted);">Corpo JSON per <code>/api/grasp/plan</code> e <code>/api/grasp/execute</code> (modifica secondo il tuo worker).</p>
-          <textarea id="graspPlanJson" class="grasp-json-ta" rows="5" spellcheck="false">{}</textarea>
-          <label class="op-check" style="display:block;margin:8px 0;font-size:0.82rem;color:var(--text);">
-            <input type="checkbox" id="graspExecuteMergeLast" checked />
-            In Execute, unisci l’ultima risposta «Piano» sotto il JSON sopra (campi omonimi: vince il textarea)
-          </label>
-          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Anteprima polso (log.0) + overlay 2D</h3>
-          <p style="margin:0 0 8px;font-size:0.78rem;color:var(--muted);">
-            Frame JPEG da <code>/api/robot/camera/0.jpg</code>. Cerchi azzurri: <code>grip_point.cx/cy</code> pixel, <code>grip_point.u/v</code> normalizzati, <code>operators_overlay_uv</code>, oppure <code>operators_overlay_points: [{&quot;x&quot;,&quot;y&quot;,&quot;label&quot;}]</code>. Per il tab <strong>3D</strong>, passa anche <code>operators_grasp_points_base_link_m</code> (nuvola) nello stesso frame del marker.
-          </p>
-          <div class="grasp-preview-stack">
-            <img id="graspWristImg" alt="polso rgb" src="{{ script_root|default('') }}/api/robot/camera/0.jpg" />
-            <canvas id="graspOverlayCanvas" class="grasp-overlay-canvas" width="640" height="480"></canvas>
-          </div>
-          <p id="graspOverlayDbg" class="muted small" style="margin:6px 0 0;">—</p>
-          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Pipeline (riassunto)</h3>
-          <pre id="graspPipelinePre" class="status-dump" style="max-height:220px;">Premi «Pipeline presa».</pre>
-          <h3 style="margin:14px 0 6px;font-size:0.95rem;">Risposta grasp / execute</h3>
-          <pre id="graspPhase" class="status-dump grasp-phase" style="margin-top:6px;">In attesa…</pre>
-        </div>
       </section>
-
       <section class="tab-panel" data-tab="stato">
         <div class="card">
-          <h2>Stato NX</h2>
+          <h2>Mission console</h2>
           <div class="btn-grid" style="margin-bottom:10px;">
-            <button type="button" class="op-btn" onclick="operatorsRefreshStack()">Aggiorna</button>
+            <button type="button" class="op-btn" onclick="operatorsMissionConsoleRefresh()">Aggiorna</button>
+            <label class="muted small" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+              <input type="checkbox" id="missionConsolePoll" />
+              Auto ogni 8s
+            </label>
+          </div>
+          <pre id="missionConsolePre" class="status-dump" style="max-height:420px;">—</pre>
+          <div id="missionRestartBox" style="margin-top:14px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.04);">
+            <h3 style="margin:0 0 8px;font-size:0.95rem;">Riavvio dashboard</h3>
+            <p class="muted small" id="missionRestartHint" style="margin:0 0 8px;">—</p>
+            <div id="missionRestartForm" style="display:none;">
+              <form autocomplete="off" onsubmit="return false;" style="margin:0;display:flex;flex-direction:column;align-items:flex-start;gap:6px;">
+                <input type="password" id="missionAdminToken" name="missionAdminToken" placeholder="Token (GO2_MISSION_ADMIN_TOKEN)" style="width:min(420px,100%);" autocomplete="off" />
+                <button type="button" class="op-btn" onclick="operatorsMissionDashboardRestart()">POST dashboard restart</button>
+              </form>
+            </div>
+            <pre id="missionRestartCmd" class="status-dump" style="max-height:160px;margin-top:8px;">—</pre>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px;">
+          <h2>Stack NX</h2>
+          <div class="btn-grid" style="margin-bottom:10px;">
+            <button type="button" class="op-btn" onclick="operatorsRefreshStack()">Aggiorna stack</button>
           </div>
           <pre id="stackStatus" class="status-dump">Carico…</pre>
         </div>
       </section>
     </main>
 
-    <nav class="tab-bar" aria-label="Tab principali">
-      <button type="button" data-tab="scene" class="active" onclick="operatorsSwitchTab('scene')">Scene</button>
-      <button type="button" data-tab="3d" onclick="operatorsSwitchTab('3d')">3D</button>
-      <button type="button" data-tab="calib" onclick="operatorsSwitchTab('calib')">Calib</button>
-      <button type="button" data-tab="robot" onclick="operatorsSwitchTab('robot')">Robot</button>
-      <button type="button" data-tab="stato" onclick="operatorsSwitchTab('stato')">Stato</button>
+    <nav class="tab-bar" aria-label="Sezioni">
+      <button type="button" class="tab-bar-btn active" data-tab="scene" onclick="operatorsSwitchTab('scene')">
+        <span class="tab-ico" aria-hidden="true">◎</span>
+        <span class="tab-lbl">Scene</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="3d" onclick="operatorsSwitchTab('3d')">
+        <span class="tab-ico" aria-hidden="true">◈</span>
+        <span class="tab-lbl">3D</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="calib" onclick="operatorsSwitchTab('calib')">
+        <span class="tab-ico" aria-hidden="true">⌖</span>
+        <span class="tab-lbl">Calib</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="movement" onclick="operatorsSwitchTab('movement')">
+        <span class="tab-ico" aria-hidden="true">⎋</span>
+        <span class="tab-lbl">Moto</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="grasp" onclick="operatorsSwitchTab('grasp')">
+        <span class="tab-ico" aria-hidden="true">✥</span>
+        <span class="tab-lbl">Presa</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="agent" onclick="operatorsSwitchTab('agent')">
+        <span class="tab-ico" aria-hidden="true">◇</span>
+        <span class="tab-lbl">Hermes</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="robot" onclick="operatorsSwitchTab('robot')">
+        <span class="tab-ico" aria-hidden="true">⚙</span>
+        <span class="tab-lbl">Robot</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="stato" onclick="operatorsSwitchTab('stato')">
+        <span class="tab-ico" aria-hidden="true">◧</span>
+        <span class="tab-lbl">Sistema</span>
+      </button>
     </nav>
   </div>
 
@@ -157,7 +908,17 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_core.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_cameras.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_grasp.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_mission.js" defer></script>
   <script src="{{ script_root|default('') }}/static/js/operators.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_agent.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_grasp_coach.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_movement.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_arm_joints.js" defer></script>
   <script src="{{ script_root|default('') }}/static/js/operators_scene3d.js" defer></script>
+  <script src="{{ script_root|default('') }}/static/js/operators_calibration.js" defer></script>
 </body>
 </html>

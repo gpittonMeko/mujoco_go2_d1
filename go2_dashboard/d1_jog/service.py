@@ -1,4 +1,4 @@
-"""Client DDS braccio D1 — protocollo ufficiale (funcode da d1_sdk / doc Unitree)."""
+﻿"""Client DDS braccio D1 ÔÇö protocollo ufficiale (funcode da d1_sdk / doc Unitree)."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _cyclonedds_uri_for_iface(iface: str) -> str:
 
 
 def _subprocess_env() -> dict[str, str]:
-    """Env per binari C++ DDS — interfaccia L2 obbligatoria sulla Jetson (eth0)."""
+    """Env per binari C++ DDS ÔÇö interfaccia L2 obbligatoria sulla Jetson (eth0)."""
     env = os.environ.copy()
     if not (env.get("CYCLONEDDS_URI") or "").strip():
         iface = (env.get("GO2_DDS_INTERFACE") or env.get("D1_DDS_INTERFACE") or "eth0").strip()
@@ -191,7 +191,7 @@ _cmd_daemon_delay_ms: int | None = None
 
 
 def _spawn_cmd_daemon(delay_ms: int) -> subprocess.Popen[str]:
-    """Publisher persistente — come ``d1_drag_follow_experimental`` (Popen diretto)."""
+    """Publisher persistente ÔÇö come ``d1_drag_follow_experimental`` (Popen diretto)."""
     cmd_bin = str(D1_SDK_COMMAND_BIN)
     args = [cmd_bin, str(_dds_domain()), str(delay_ms)]
     cwd = str(PROJECT_ROOT)
@@ -255,7 +255,7 @@ def stop_command_daemon() -> None:
 def publish_messages_stream(
     messages: list[dict[str, Any]], *, delay_ms: int | None = None
 ) -> dict[str, Any]:
-    """Invio rapido su publisher DDS già avviato (jog continuo)."""
+    """Invio rapido su publisher DDS gi├á avviato (jog continuo)."""
     if not messages:
         return {"ok": True, "count": 0}
     if not _real_arm_enabled():
@@ -290,7 +290,7 @@ def wait_cartesian_idle(*, timeout_s: float = 4.0) -> bool:
 
 
 def _halt_cartesian_stream(*, wait_idle: bool = False) -> None:
-    """Disarma jog cartesiano — il thread non invia più comandi DDS."""
+    """Disarma jog cartesiano ÔÇö il thread non invia pi├╣ comandi DDS."""
     try:
         from go2_dashboard.d1_jog import jog_stream
 
@@ -302,7 +302,7 @@ def _halt_cartesian_stream(*, wait_idle: bool = False) -> None:
 
 
 def motion_reset() -> dict[str, Any]:
-    """Reset motion guard / jog stream — NON chiude il daemon DDS (evita cedimento motori)."""
+    """Reset motion guard / jog stream ÔÇö NON chiude il daemon DDS (evita cedimento motori)."""
     _halt_cartesian_stream()
     motion_force_idle()
     return {"ok": True, "action": "motion_reset", **motion_guard_status()}
@@ -317,7 +317,7 @@ def motion_status() -> dict[str, Any]:
 
 
 def hold_pose_stream(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
-    """Solo funcode 2 sulla posa — mai funcode 5 / release (coppia già attiva)."""
+    """Solo funcode 2 sulla posa ÔÇö mai funcode 5 / release (coppia gi├á attiva)."""
     sd = clamp_servo_deg(servo_deg) if servo_deg is not None else None
     if sd is None:
         cached = get_servo_cache()
@@ -333,14 +333,14 @@ def hold_pose_stream(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
 
 
 def maintain_coupling_stream(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
-    """Alias: solo hold funcode 2 — non rinnova funcode 5."""
+    """Alias: solo hold funcode 2 ÔÇö non rinnova funcode 5."""
     out = hold_pose_stream(servo_deg=servo_deg)
     out["action"] = "maintain_coupling"
     return out
 
 
 def page_handoff(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
-    """Cambio pagina: ferma jog, hold posa — mai couple/release."""
+    """Cambio pagina: ferma jog, hold posa ÔÇö mai couple/release."""
     _halt_cartesian_stream()
     motion_force_idle()
     out = hold_pose_stream(servo_deg=servo_deg)
@@ -349,7 +349,7 @@ def page_handoff(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
 
 
 def _publish_messages(messages: list[dict[str, Any]], *, delay_ms: int) -> dict[str, Any]:
-    """Comandi one-shot (zero) — processo separato; non chiude il daemon persistente."""
+    """Comandi one-shot (zero) ÔÇö processo separato; non chiude il daemon persistente."""
     _halt_cartesian_stream(wait_idle=True)
     if not _real_arm_enabled():
         return {"ok": True, "skipped": True, "reason": "dry_run", "messages": messages}
@@ -394,7 +394,7 @@ def _infer_coupled_on_feedback_enabled() -> bool:
 
 
 def mark_coupled_from_feedback() -> bool:
-    """Feedback DDS valido ⇒ braccio raggiungibile; non invia funcode 5."""
+    """Feedback DDS valido ÔçÆ braccio raggiungibile; non invia funcode 5."""
     global _arm_coupled, _couple_last_ts
     if not _infer_coupled_on_feedback_enabled():
         return False
@@ -418,7 +418,7 @@ def get_servo_cache() -> list[float] | None:
 
 
 def merge_single_joint_jog(servo_deg: list[float], joint_index: int) -> list[float]:
-    """Un solo giunto muove — base dalla cache, mai feedback DDS nel hot path."""
+    """Un solo giunto muove ÔÇö base dalla cache, mai feedback DDS nel hot path."""
     ji = int(joint_index)
     base = get_servo_cache()
     if base is None:
@@ -459,7 +459,7 @@ def _couple_messages(*, with_power: bool, seq: int) -> list[dict[str, Any]]:
 
 
 def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str, Any]:
-    """Coppia ON esplicita — funcode 5 mode 1 solo se serve; mai release automatico."""
+    """Coppia ON esplicita ÔÇö funcode 5 mode 1 solo se serve; mai release automatico."""
     global _arm_coupled, _couple_last_ts
     if _arm_coupled and not force:
         return {
@@ -491,7 +491,7 @@ def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str
 def ensure_coupled_for_motion() -> dict[str, Any]:
     """
     Prima di movimenti programmati (scan, waypoint): non chiedere Coppia ON se il
-    feedback giunti è già valido; non reinviare funcode 5 se già in coppia.
+    feedback giunti ├¿ gi├á valido; non reinviare funcode 5 se gi├á in coppia.
     """
     global _arm_coupled
     if _arm_coupled:
@@ -518,14 +518,14 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
 
 
 def arm_power_on() -> dict[str, Any]:
-    """funcode 6 — alimentazione motori braccio (power=1)."""
+    """funcode 6 ÔÇö alimentazione motori braccio (power=1)."""
     seq = int(time.time()) % 100000
     msg = {"seq": seq, "address": 1, "funcode": 6, "data": {"power": 1}}
     return _publish_messages([msg], delay_ms=100)
 
 
 def enable_all(*, mode: int = 1, with_power: bool = False) -> dict[str, Any]:
-    """funcode 5 — abilita coppia motori (mode 1). Opzionale funcode 6 prima."""
+    """funcode 5 ÔÇö abilita coppia motori (mode 1). Opzionale funcode 6 prima."""
     seq = int(time.time()) % 100000
     msgs: list[dict[str, Any]] = []
     if with_power:
@@ -534,11 +534,53 @@ def enable_all(*, mode: int = 1, with_power: bool = False) -> dict[str, Any]:
     return _publish_messages(msgs, delay_ms=100)
 
 
+def _prepare_for_admin_release() -> dict[str, Any]:
+    """Chiude sessione giunti/live e azzera motion_guard prima di release/zero admin."""
+    prep: dict[str, Any] = {"action": "prepare_admin_release"}
+    try:
+        from go2_dashboard import d1_arm_motion
+
+        prep["live_session_end"] = d1_arm_motion.end_live_session()
+    except Exception as exc:
+        prep["live_session_end"] = {"ok": False, "detail": repr(exc)}
+    try:
+        _halt_cartesian_stream(wait_idle=True)
+    except Exception:
+        pass
+    try:
+        prep["joint_end"] = joint_control_end()
+    except Exception as exc:
+        prep["joint_end"] = {"ok": False, "detail": repr(exc)}
+    motion_force_idle()
+    prep["guard_after"] = motion_guard_status()
+    prep["ok"] = True
+    return prep
+
+
 def motor_release() -> dict[str, Any]:
-    """funcode 5 mode 0 — SOLO su richiesta esplicita utente (mai automatico)."""
+    """funcode 5 mode 0 ÔÇö SOLO su richiesta esplicita utente (mai automatico)."""
+    prep = _prepare_for_admin_release()
     ok, busy = motion_try_acquire("admin")
     if not ok:
-        return {"ok": False, "reason": busy, "action": "motor_release"}
+        guard = motion_guard_status()
+        hint = (
+            "Piano motion ancora occupato"
+            + (f" ({busy})" if busy else "")
+            + ": attendi la fine di una mossa braccio o riprova tra 2s."
+        )
+        if str(busy or "").startswith("plane_busy:joint"):
+            hint = (
+                "Sessione giunti ancora attiva sulla dashboard — di solito basta riprovare; "
+                "se persiste, tab Grasp Teaching: annulla teach e ripeti «Calibra posa presa»."
+            )
+        return {
+            "ok": False,
+            "reason": busy,
+            "action": "motor_release",
+            "hint_it": hint,
+            "prepare": prep,
+            "guard": guard,
+        }
     try:
         _halt_cartesian_stream(wait_idle=True)
         stop_command_daemon()
@@ -579,7 +621,7 @@ def hold_current_pose(
 
 
 def _stream_pose_hold(servo_deg: list[float], *, repeats: int = 1) -> dict[str, Any]:
-    """Mantiene posa con soli funcode 2 sul daemon — niente burst funcode 5."""
+    """Mantiene posa con soli funcode 2 sul daemon ÔÇö niente burst funcode 5."""
     from go2_dashboard.d1_jog import motion_profile
 
     cur = clamp_servo_deg(servo_deg)
@@ -638,7 +680,7 @@ def _hold_current_pose_impl(
 
 
 def go_zero() -> dict[str, Any]:
-    """Solo funcode 7, attesa, poi hold — nessun altro comando durante il movimento."""
+    """Solo funcode 7, attesa, poi hold ÔÇö nessun altro comando durante il movimento."""
     ok, busy = motion_try_acquire("zero")
     if not ok:
         return {"ok": False, "reason": busy, "action": "go_zero"}
@@ -688,7 +730,7 @@ def jog_pose_deg(
     mode: int | None = None,
     keep_lock: bool = False,
 ) -> dict[str, Any]:
-    """Solo funcode 2 sul daemon DDS — niente nuovo processo per tick."""
+    """Solo funcode 2 sul daemon DDS ÔÇö niente nuovo processo per tick."""
     if not keep_lock:
         ok, busy = motion_try_acquire("joint")
         if not ok:

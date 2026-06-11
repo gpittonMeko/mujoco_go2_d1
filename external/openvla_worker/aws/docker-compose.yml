@@ -1,0 +1,32 @@
+# EC2 g5 + NVIDIA Container Toolkit installato.
+# Uso (dalla root repo): docker compose -f external/openvla_worker/aws/docker-compose.yml up -d --build
+
+services:
+  vla-worker:
+    build:
+      context: ../../..
+      dockerfile: external/openvla_worker/aws/Dockerfile
+    image: go2-vla-worker:aws
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
+    volumes:
+      - hf_cache:/data/huggingface
+      - /var/lib/go2-worker:/var/lib/go2-worker
+    environment:
+      - GO2_EC2_ACTIVITY_STAMP=/var/lib/go2-worker/last_plan_unix
+      - GO2_GRASP_GEN_ZMQ=tcp://172.17.0.1:5556
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf_cache:

@@ -1,6 +1,45 @@
 # D1 — Fattibilità «accompagnamento» / drag-teaching (vs UR)
 
-Questo repository **non contiene** gli header IDL Unitree (`PubServoInfo_.hpp`, `ArmString_.hpp`) del SDK installato sul robot: sono nel toolchain Jetson sotto i path del pacchetto **unitree_sdk2** (es. `/usr/include` o tree di build locale).
+Questo repository **non contiene** gli header IDL Unitree (`PubServoInfo_.hpp`, `ArmString_.hpp`) del SDK installato sul robot: sono nel toolchain Jetson sotto i path del pacchetto **unitree_sdk2** (es. `/usr/include` o tree di build locale). In repo ci sono copie Cyclone in [`msg/ArmString_.hpp`](../msg/ArmString_.hpp) e [`msg/PubServoInfo_.hpp`](../msg/PubServoInfo_.hpp) per build helper C++.
+
+Riferimento ufficiale: **D1 Mechanical Arm Services Interface** (Unitree Go2 SDK doc) — DDS `rt/arm_Command` / `rt/arm_Feedback`, JSON `seq` / `address` / `funcode` / `data`.
+
+## Mappa protocollo Unitree ↔ questo repository
+
+| Funzione (doc Unitree) | address | funcode | Nel repo | File / nota |
+|------------------------|---------|---------|----------|----------------|
+| Singolo giunto | 1 | 1 | **No** | `move_one` usa funcode **2** con 7 angoli ([`d1_arm_publish_lite.py`](../go2_dashboard/d1_arm_publish_lite.py)) |
+| Tutti i giunti | 1 | 2 | **Sì** | Movimento principale; `data.mode` 0/1 ([`d1_arm_publish_lite.py`](../go2_dashboard/d1_arm_publish_lite.py), [`diagnostics_dashboard.py`](../diagnostics_dashboard.py)) |
+| Enable/scarica singolo motore | 1 | 4 | **No** | — |
+| Enable/scarica tutti i motori | 1 | 5 | **Parziale** | Solo `mode: 1` prima di ogni burst; **mai** `mode: 0` (drag ufficiale) |
+| Alimentazione motori | 1 | 6 | **No** | E-stop HTTP = hold funcode 2, non power off |
+| Zero postura (firmware) | 1 | 7 | **No** | Zero lab = `data/true_zero_pose.json` + funcode 2 |
+| Angoli giunti (feedback) | 2 | 1 | **Parziale** | Angoli da topic `current_servo_angle` (`PubServoInfo_`), non parse JSON su `arm_Feedback` |
+| Stato braccio | 2 | 3 | **No** | `enable_status`, `power_status`, `error_status` non parsati |
+| Stato motori online | 2 | 4 | **No** | `motor0_status`…`motor6_status` non parsati |
+| Ricezione comando | 3 | 1 | **No** | `recv_status` non usato |
+| Esecuzione comando | 3 | 2 | **No** | `exec_status` non usato |
+
+### Topic DDS
+
+| Topic (doc / sample SDK) | Nel repo | File |
+|--------------------------|----------|------|
+| `rt/arm_Command` | **Sì** | [`scripts/d1_arm_dds_helper.cpp`](../scripts/d1_arm_dds_helper.cpp) → `bin/d1_arm_command` |
+| `rt/arm_Feedback` | **Non sottoscritto** | Doc driver; sample #5 usa anche `arm_Feedback` senza `rt/` |
+| `arm_Feedback` | **Sì (solo log)** | [`scripts/d1_arm_feedback_helper.cpp`](../scripts/d1_arm_feedback_helper.cpp) |
+| `current_servo_angle` | **Sì** | C++ helper, [`d1_arm_servo_read_python.py`](../scripts/d1_arm_servo_read_python.py), [`d1_arm_servo_stream_ndjson.py`](../scripts/d1_arm_servo_stream_ndjson.py) |
+
+### HTTP dashboard operator (porta **5052**, lite)
+
+| Equivalente operativo | Route | Stack DDS |
+|-------------------------|-------|-----------|
+| Lettura angoli | `GET /api/arm/servo_snapshot` | `read_servo_deg_with_diag` |
+| Tutti i giunti | `POST /api/arm/joints/goto_deg`, `live_deg` | funcode 5+2 |
+| Un giunto (workaround) | `POST /api/arm/joints/move_one` | funcode 2 (tutti e 7) |
+| Zero lab | `POST /api/arm/goto_true_zero`, `true_zero` | file JSON + funcode 2 |
+| Hold / e-stop soft | `POST /api/arm/emergency_hold` | funcode 5+2 hold |
+| Drag-teach ufficiale | — | `POST /api/arm/teach_mode` → **501** (solo monolite [`diagnostics_dashboard.py`](../diagnostics_dashboard.py)) |
+| Drag software | — | `POST /api/arm/drag_follow` → **solo monolite**; lite: [`d1_drag_follow_experimental.py`](../scripts/d1_drag_follow_experimental.py) CLI |
 
 ## Cosa è già verificabile dal codice qui
 
@@ -8,10 +47,10 @@ Questo repository **non contiene** gli header IDL Unitree (`PubServoInfo_.hpp`, 
 
 Gli helper [`scripts/d1_arm_dds_helper.cpp`](../scripts/d1_arm_dds_helper.cpp) pubblicano righe JSON via `stdin`. La dashboard usa oggi solo:
 
-- **`funcode` 5** con `data.mode: 1` — inizializzazione / stato controller (come da uso in `publish_d1_hold_current` / `_stage_messages`).
-- **`funcode` 2** — comando di **posa** (angoli servo in gradi).
+- **`funcode` 5** con `data.mode: 1` — **enable tutti i motori** (tabella Unitree); inviato come primo messaggio di ogni burst.
+- **`funcode` 2** — comando di **posa** (angoli servo in gradi, `angle0`…`angle6`, `mode` 0 stream / 1 traiettoria).
 
-Non è documentato in-repo un valore `funcode`/`mode` ufficiale per **torque/impedenza/drag** tipo UR.
+**funcode 5 `mode: 0`** (scarica coppia, drag memory teaching) non è usato in produzione; vedi `teach_mode` 501 sotto.
 
 ### Feedback
 

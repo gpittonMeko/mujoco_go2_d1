@@ -1,0 +1,35 @@
+---
+description: D1 arm torque/funcode hold — evitare il cedimento del braccio all'avvio di presa/coach
+alwaysApply: true
+---
+
+# Tenuta coppia braccio D1 (funcode) — NON far cadere il braccio
+
+Problema ricorrente: all'avvio di una presa / step coach il braccio **cede e cade** perché
+si perde la *liveliness* DDS verso il firmware D1 e i motori rilasciano la coppia.
+
+## Regola d'oro
+Il ramo che **funziona** è il tab Operatori **«Braccio D1 · giunti»** (controllo live):
+`ensure_coupled` → `joint_control_begin` → daemon persistente `d1_sdk_command` che
+ripubblica funcode 2 in continuo. **Non chiude/uccide mai** il publisher DDS.
+
+Qualsiasi percorso di presa/coach/fold/START **deve** comportarsi come quel tab:
+
+- **MAI** `stop_command_daemon()` + `pkill d1_sdk_command` + restart all'inizio di una
+  sessione: il gap senza publisher (anche ~100 ms) fa perdere la liveliness → cedimento.
+  Per questo `GO2_GRASP_RECONCILE_DDS` deve restare **0** (default) salvo casi eccezionali.
+- Usare **un solo daemon persistente** (`ensure_command_daemon`); avviarlo solo se morto.
+- Tenere la coppia con **funcode 2 in streaming** continuo (`hold_pose_stream` /
+  `stream_torque_during_sleep`), **mai** burst one-shot che creano/distruggono un writer DDS.
+- Couple = **funcode 5 mode 1** una sola volta (`ensure_coupled(with_power=False)`); il
+  release (funcode 5 mode 0) **solo** su richiesta esplicita dell'utente, mai automatico.
+- Se per qualsiasi motivo il daemon viene riavviato, **ri-asserire la coppia** (resettare
+  `_arm_coupled` e rifare funcode 5) prima di muovere, altrimenti i motori restano molli.
+
+## Movimento
+- **START**: può andare veloce (poche frazioni grosse) — `D1_START_ALIGN_PARTIAL_FRACTIONS`.
+- **Approach all'oggetto (coach/presa)**: deve andare **lento e a sotto-step parziali**,
+  mai un salto IK unico.
+
+Se l'utente segnala "il braccio cade in partenza": confrontare SEMPRE il percorso col tab
+«Braccio D1 · giunti» e rimuovere ogni kill/restart del publisher all'avvio.

@@ -1,4 +1,4 @@
-"""Blueprint route solo sul server modulare (/api/modular/*)."""
+"""/api/modular/* (shared with modular server)."""
 
 from __future__ import annotations
 

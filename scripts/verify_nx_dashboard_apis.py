@@ -3,7 +3,8 @@
 Smoke test **solo lettura** verso la dashboard sulla NX (nessun comando Sport al cane).
 
 Uso dalla root del repo (PC sulla LAN Unitree):
-  python scripts/verify_nx_dashboard_apis.py http://192.168.123.18:5050
+  python scripts/verify_nx_dashboard_apis.py http://192.168.123.18:5052
+  # oppure: python scripts/verify_go2_lab.py dashboard-nx http://192.168.123.18:5052
 
 Include ``GET /api/base/sport_connectivity`` (MotionSwitcher ``CheckMode``, stesso DDS della Sport API).
 
@@ -28,7 +29,7 @@ def _get(url: str, timeout: float = 12.0) -> tuple[int, bytes]:
 
 
 def main() -> int:
-    base = (sys.argv[1] if len(sys.argv) > 1 else "http://192.168.123.18:5050").rstrip("/")
+    base = (sys.argv[1] if len(sys.argv) > 1 else "http://192.168.123.18:5052").rstrip("/")
     errs: list[str] = []
 
     checks: list[tuple[str, str]] = [

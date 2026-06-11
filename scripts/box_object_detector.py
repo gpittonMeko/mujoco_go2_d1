@@ -10,6 +10,7 @@ clearly so it is not confused with a trained detector.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -20,6 +21,69 @@ import numpy as np
 
 _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_META_CACHE: dict[str, dict[str, Any]] = {}
+
+# Calibrazione colore persistita (data/color_box_calib.json): le soglie HSV della scatola
+# si risolvono con priorita' env > file di calibrazione > default. Permette di tarare il
+# colore dal vivo (auto-calibrazione dal polso) senza riavviare la dashboard.
+_COLOR_CALIB_CACHE: dict[str, Any] = {"mtime": -1.0, "data": {}}
+# Se True, _color_int/_color_float ignorano data/color_box_calib.json (fallback detection).
+_IGNORE_COLOR_CALIB = False
+
+
+def _calib_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "data" / "color_box_calib.json"
+
+
+def _load_color_calib() -> dict[str, Any]:
+    if _IGNORE_COLOR_CALIB:
+        return {}
+    p = _calib_path()
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _COLOR_CALIB_CACHE["mtime"]:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        _COLOR_CALIB_CACHE["data"] = data if isinstance(data, dict) else {}
+        _COLOR_CALIB_CACHE["mtime"] = mtime
+    return _COLOR_CALIB_CACHE["data"]
+
+
+def _color_int(name: str, default: int) -> int:
+    """Soglia colore intera: env > file calibrazione > default."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+    val = _load_color_calib().get(name)
+    if val is not None:
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _color_float(name: str, default: float) -> float:
+    """Soglia colore float: env > file calibrazione > default."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    val = _load_color_calib().get(name)
+    if val is not None:
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+    return default
 
 
 def _infer_model_family(model_path: str | None) -> str | None:
@@ -116,10 +180,11 @@ def detector_status() -> dict[str, Any]:
         "classic_fallback_enabled": os.environ.get("GO2_CLASSIC_BOX_FALLBACK", "1").lower()
         in {"1", "true", "yes"},
         "color_hsv": {
-            "h_min": _parse_int_env("D1_COLOR_BOX_H_MIN", 95),
-            "h_max": _parse_int_env("D1_COLOR_BOX_H_MAX", 130),
-            "s_min": _parse_int_env("D1_COLOR_BOX_S_MIN", 45),
-            "v_min": _parse_int_env("D1_COLOR_BOX_V_MIN", 35),
+            "h_min": _color_int("D1_COLOR_BOX_H_MIN", 95),
+            "h_max": _color_int("D1_COLOR_BOX_H_MAX", 130),
+            "s_min": _color_int("D1_COLOR_BOX_S_MIN", 45),
+            "v_min": _color_int("D1_COLOR_BOX_V_MIN", 35),
+            "calibrated": bool(_load_color_calib()),
         },
         "recommended_models": ["YOLO-World small TensorRT FP16", "YOLO11n TensorRT FP16"],
         **meta,
@@ -236,100 +301,6 @@ def _angle_from_min_area_rect(rw: float, rh: float, angle: float) -> float:
     return _normalize_angle_deg(a)
 
 
-def _shortest_angle_delta_deg(a: float, b: float) -> float:
-    d = float(a) - float(b)
-    while d > 90.0:
-        d -= 180.0
-    while d < -90.0:
-        d += 180.0
-    return d
-
-
-def _circular_mean_deg(a: float, b: float, *, wa: float = 0.6, wb: float = 0.4) -> float:
-    import math
-
-    ra = math.radians(float(a))
-    rb = math.radians(float(b))
-    x = wa * math.cos(ra) + wb * math.cos(rb)
-    y = wa * math.sin(ra) + wb * math.sin(rb)
-    if abs(x) < 1e-9 and abs(y) < 1e-9:
-        return _normalize_angle_deg(a)
-    return _normalize_angle_deg(math.degrees(math.atan2(y, x)))
-
-
-def _long_edge_angle_from_box_pts(box_pts: np.ndarray | list[Any]) -> float | None:
-    """Angolo del lato più lungo del box orientato (più stabile vicino a ±90°)."""
-    import math
-
-    pts = np.asarray(box_pts, dtype=np.float64).reshape(-1, 2)
-    if pts.shape[0] < 4:
-        return None
-    best_len = 0.0
-    best_ang: float | None = None
-    for i in range(4):
-        p0 = pts[i]
-        p1 = pts[(i + 1) % 4]
-        dx = float(p1[0] - p0[0])
-        dy = float(p1[1] - p0[1])
-        ln = math.hypot(dx, dy)
-        if ln <= best_len:
-            continue
-        best_len = ln
-        best_ang = math.degrees(math.atan2(dy, dx))
-    if best_ang is None:
-        return None
-    return _normalize_angle_deg(best_ang)
-
-
-def _orientation_from_mask_pca(mask: np.ndarray, cnt: np.ndarray) -> float | None:
-    """Asse principale del blob blu (PCA) — meno salti di minAreaRect."""
-    import math
-
-    pts = cv2.findNonZero(mask)
-    if pts is None or len(pts) < 24:
-        if cnt is None or len(cnt) < 5:
-            return None
-        pts = cnt.reshape(-1, 1, 2)
-    pts2 = pts.reshape(-1, 2).astype(np.float64)
-    if pts2.shape[0] < 24:
-        return None
-    mean = pts2.mean(axis=0)
-    centered = pts2 - mean
-    cov = np.cov(centered.T)
-    if cov.shape != (2, 2):
-        return None
-    evals, evecs = np.linalg.eigh(cov)
-    major = evecs[:, int(np.argmax(evals))]
-    if float(np.linalg.norm(major)) < 1e-6:
-        return None
-    return _normalize_angle_deg(math.degrees(math.atan2(float(major[1]), float(major[0]))))
-
-
-def _fuse_orientation_deg(
-    *,
-    pca_deg: float | None,
-    rect_deg: float,
-    edge_deg: float | None,
-) -> tuple[float, str]:
-    """Combina PCA + lato lungo; minAreaRect solo come fallback."""
-    if pca_deg is None and edge_deg is None:
-        return rect_deg, "min_area_rect"
-    cand = pca_deg if pca_deg is not None else edge_deg
-    method = "pca_mask" if pca_deg is not None else "long_edge"
-    if edge_deg is not None and pca_deg is not None:
-        if abs(_shortest_angle_delta_deg(edge_deg, pca_deg)) > 20.0:
-            edge_flip = _normalize_angle_deg(edge_deg + 90.0)
-            if abs(_shortest_angle_delta_deg(edge_flip, pca_deg)) < abs(
-                _shortest_angle_delta_deg(edge_deg, pca_deg)
-            ):
-                edge_deg = edge_flip
-        cand = _circular_mean_deg(pca_deg, edge_deg, wa=0.65, wb=0.35)
-        method = "pca_long_edge"
-    if abs(_shortest_angle_delta_deg(cand, rect_deg)) > 35.0:
-        return cand, method
-    return _circular_mean_deg(cand, rect_deg, wa=0.75, wb=0.25), method
-
-
 def _orient_axis_from_center(cx: float, cy: float, orient_deg: float, length: float) -> list[list[float]]:
     import math
 
@@ -340,118 +311,58 @@ def _orient_axis_from_center(cx: float, cy: float, orient_deg: float, length: fl
     ]
 
 
-def _edge_angles_from_box_pts(box_pts: np.ndarray | list[Any]) -> list[tuple[float, float]]:
-    """Ritorna [(lunghezza_lato, angolo_deg), ...] per i 4 lati del rettangolo."""
-    import math
+def _apply_gripper_exclude_crop(mask: np.ndarray) -> np.ndarray:
+    """Azzera la fascia basso-centrale dove compaiono le chele/pinza nel frame polso.
 
-    pts = np.asarray(box_pts, dtype=np.float64).reshape(-1, 2)
-    if pts.shape[0] < 4:
-        return []
-    edges: list[tuple[float, float]] = []
-    for i in range(4):
-        p0 = pts[i]
-        p1 = pts[(i + 1) % 4]
-        dx = float(p1[0] - p0[0])
-        dy = float(p1[1] - p0[1])
-        ln = math.hypot(dx, dy)
-        if ln < 1.0:
-            continue
-        edges.append((ln, math.degrees(math.atan2(dy, dx))))
-    return edges
-
-
-def canonical_rectangle_axes(
-    *,
-    cx: float,
-    cy: float,
-    box_pts: np.ndarray | list[Any],
-    rw: float | None = None,
-    rh: float | None = None,
-    long_deg_hint: float | None = None,
-) -> dict[str, Any]:
+    Le chele non sono blu ma il minAreaRect di blob vicini puo' inglobarle; escludendo
+    fisicamente quella ROI dalla maschera si evita che contorni o bbox scendano sulla pinza.
     """
-    Geometria fissa rettangolo:
-    - orient_axis_px (magenta) = lato LUNGO
-    - grip_align_axis_px (ciano) = lato CORTO (pinza chiude qui)
+    h, w = int(mask.shape[0]), int(mask.shape[1])
+    bottom_frac = min(max(_parse_float_env("D1_PICK_GRIPPER_EXCLUDE_BOTTOM_FRAC", 0.20), 0.0), 0.45)
+    width_frac = min(max(_parse_float_env("D1_PICK_GRIPPER_EXCLUDE_WIDTH_FRAC", 0.62), 0.2), 1.0)
+    if bottom_frac <= 0.0:
+        return mask
+    y0 = int(round(h * (1.0 - bottom_frac)))
+    if y0 < 0 or y0 >= h:
+        return mask
+    x_margin = int(round(w * (1.0 - width_frac) / 2.0))
+    x0 = max(0, x_margin)
+    x1 = min(w, w - x_margin)
+    if x1 > x0:
+        mask[y0:, x0:x1] = 0
+    return mask
+
+
+def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
+    """Azzera le fasce alta/bassa della maschera per escludere zone non-oggetto.
+
+    Sul polso (Orbbec) la **fascia bassa** dell'inquadratura e' occupata dal corpo del
+    cane e dalle chele: senza questo crop il detector li preferisce alla scatola. Tunable:
+      * ``D1_PICK_BOTTOM_CROP_FRAC`` (default 0.30) — frazione bassa azzerata (cane+chele);
+      * ``D1_PICK_TOP_CROP_FRAC``    (default 0.0)  — frazione alta azzerata (orizzonte);
+      * ``D1_PICK_GRIPPER_EXCLUDE_*`` — ulteriore ROI centrale pinza sopra il crop globale.
     """
-    edges = _edge_angles_from_box_pts(box_pts)
-    if not edges:
-        long_len = max(float(rw or 40.0), float(rh or 40.0))
-        short_len = min(float(rw or 40.0), float(rh or 40.0))
-        long_ang = _normalize_angle_deg(float(long_deg_hint or 0.0))
-        short_ang = _normalize_angle_deg(long_ang + 90.0)
-    else:
-        edges_sorted = sorted(edges, key=lambda e: -e[0])
-        long_len = float(edges_sorted[0][0])
-        short_len = float(edges_sorted[-1][0])
-        if rw is not None and rh is not None and rw > 1.0 and rh > 1.0:
-            long_len = max(float(rw), float(rh))
-            short_len = min(float(rw), float(rh))
-        long_ang = _normalize_angle_deg(edges_sorted[0][1])
-        if long_deg_hint is not None:
-            hint = _normalize_angle_deg(float(long_deg_hint))
-            candidates = [
-                long_ang,
-                _normalize_angle_deg(long_ang + 90.0),
-                _normalize_angle_deg(long_ang + 180.0),
-                _normalize_angle_deg(long_ang - 90.0),
-            ]
-            long_ang = min(
-                candidates,
-                key=lambda a: abs(_shortest_angle_delta_deg(a, hint)),
-            )
-        short_ang = _normalize_angle_deg(long_ang + 90.0)
-    half_long = max(long_len * 0.48, 12.0)
-    half_short = max(short_len * 0.48, 10.0)
-    return {
-        "orientation_deg": round(long_ang, 2),
-        "grip_align_deg": round(short_ang, 2),
-        "orient_axis_px": _orient_axis_from_center(cx, cy, long_ang, half_long),
-        "grip_align_axis_px": _orient_axis_from_center(cx, cy, short_ang, half_short),
-        "grip_axis_px": _orient_axis_from_center(cx, cy, short_ang, half_short),
-        "box_long_side_px": round(long_len, 1),
-        "box_short_side_px": round(short_len, 1),
-        "aspect_ratio": round(long_len / max(short_len, 1.0), 2),
-        "axis_geometry": "long_short_fixed",
-    }
-
-
-def refresh_detection_rectangle_axes(det: dict[str, Any]) -> dict[str, Any]:
-    """Ricalcola assi dal box orientato — l'ungo e il corto non si scambiano mai."""
-    if not isinstance(det, dict) or not det.get("ok"):
-        return det
-    obox = det.get("orient_box_px")
-    if not isinstance(obox, list) or len(obox) < 4:
-        return det
-    gcx, gcy = det.get("grip_center_px") or det.get("bbox_center_px") or [0, 0]
-    rw = det.get("rect_rw")
-    rh = det.get("rect_rh")
-    if rw is None or rh is None:
-        edges = _edge_angles_from_box_pts(obox)
-        if edges:
-            lens = sorted((e[0] for e in edges), reverse=True)
-            rw = lens[0]
-            rh = lens[-1]
-    axes = canonical_rectangle_axes(
-        cx=float(gcx),
-        cy=float(gcy),
-        box_pts=obox,
-        rw=float(rw) if rw is not None else None,
-        rh=float(rh) if rh is not None else None,
-        long_deg_hint=det.get("orientation_deg"),
-    )
-    out = dict(det)
-    out.update(axes)
-    return out
+    h = int(mask.shape[0])
+    bottom_frac = min(max(_parse_float_env("D1_PICK_BOTTOM_CROP_FRAC", 0.30), 0.0), 0.6)
+    top_frac = min(max(_parse_float_env("D1_PICK_TOP_CROP_FRAC", 0.0), 0.0), 0.6)
+    if bottom_frac > 0.0:
+        y0 = int(round(h * (1.0 - bottom_frac)))
+        if 0 <= y0 < h:
+            mask[y0:, :] = 0
+    if top_frac > 0.0:
+        y1 = int(round(h * top_frac))
+        if 0 < y1 <= h:
+            mask[:y1, :] = 0
+    return _apply_gripper_exclude_crop(mask)
 
 
 def _color_box_hsv_mask(frame: np.ndarray) -> np.ndarray:
     """Maschera HSV per scatoletta blu (tunable via env)."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h_min = _parse_int_env("D1_COLOR_BOX_H_MIN", 95)
-    h_max = _parse_int_env("D1_COLOR_BOX_H_MAX", 130)
-    s_min = _parse_int_env("D1_COLOR_BOX_S_MIN", 45)
-    v_min = _parse_int_env("D1_COLOR_BOX_V_MIN", 35)
+    h_min = _color_int("D1_COLOR_BOX_H_MIN", 95)
+    h_max = _color_int("D1_COLOR_BOX_H_MAX", 130)
+    s_min = _color_int("D1_COLOR_BOX_S_MIN", 45)
+    v_min = _color_int("D1_COLOR_BOX_V_MIN", 35)
     lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
     upper = np.array([min(179, h_max), 255, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
@@ -459,6 +370,7 @@ def _color_box_hsv_mask(frame: np.ndarray) -> np.ndarray:
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = _apply_detect_roi_crop(mask)
     return mask
 
 
@@ -476,12 +388,37 @@ def _score_color_candidate(
     frame_area = max(float(w * h), 1.0)
     area_ratio = area / frame_area
     x_pen = abs(cx - w / 2.0) / max(w / 2.0, 1.0)
-    # Pezzo sul tavolo: penalizza bbox troppo in alto (YOLO spesso sbaglia verso l'alto).
-    y_target = h * _parse_float_env("D1_COLOR_BOX_Y_TARGET_FRAC", 0.62)
+    # Con la fascia bassa (corpo del cane) gia' esclusa dal crop, NON spingiamo piu' la
+    # scelta verso il basso: bias y neutro (centro frame) e peso ridotto, cosi' la scatola
+    # nella zona alta/centrale non viene penalizzata a favore di blob piu' bassi.
+    y_target = h * _parse_float_env("D1_COLOR_BOX_Y_TARGET_FRAC", 0.5)
     y_pen = abs(cy - y_target) / max(h * 0.5, 1.0)
+    y_pen_w = _parse_float_env("D1_COLOR_BOX_Y_PEN_W", 0.10)
     aspect = max(rw, rh) / max(min(rw, rh), 1.0)
     aspect_pen = 0.0 if 1.1 <= aspect <= 4.5 else 0.25
-    return area_ratio - 0.18 * x_pen - 0.22 * y_pen - aspect_pen
+    return area_ratio - 0.18 * x_pen - y_pen_w * y_pen - aspect_pen
+
+
+def _detection_confidence(
+    *,
+    cnt_area: float,
+    bbox_area: float,
+    solidity: float,
+    frame_area: float,
+    area_ratio: float,
+) -> float:
+    """Confidenza euristica per color_blue_box: compattezza + dimensione da oggetto."""
+    extent = cnt_area / max(bbox_area, 1.0)
+    target = _parse_float_env("D1_COLOR_BOX_TARGET_AREA_RATIO", 0.018)
+    if area_ratio <= target:
+        size_fit = max(0.35, area_ratio / max(target, 1e-6))
+    else:
+        size_fit = max(0.25, target / area_ratio)
+    # Penalizza blob enormi (pavimento/riflessi) che prima passavano con conf alta ma bbox gigante.
+    if area_ratio > _parse_float_env("D1_COLOR_BOX_MAX_AREA_RATIO", 0.10):
+        size_fit *= 0.35
+    raw = 0.30 * min(1.0, solidity) + 0.28 * min(1.0, extent) + 0.42 * min(1.0, size_fit)
+    return round(max(0.15, min(0.95, raw)), 4)
 
 
 def _detection_from_color_contour(
@@ -490,32 +427,47 @@ def _detection_from_color_contour(
     *,
     score: float,
     elapsed_s: float,
-    mask: np.ndarray | None = None,
+    solidity: float = 0.0,
 ) -> dict[str, Any]:
     h, w = int(frame.shape[0]), int(frame.shape[1])
+    cnt_area = float(cv2.contourArea(cnt))
     (cx, cy), (rw, rh), angle = cv2.minAreaRect(cnt)
     cx_f, cy_f = float(cx), float(cy)
     rw_f, rh_f = float(rw), float(rh)
-    rect_orient = _angle_from_min_area_rect(rw_f, rh_f, angle)
+    orient = _angle_from_min_area_rect(rw_f, rh_f, angle)
     box_pts = cv2.boxPoints(((cx, cy), (rw, rh), angle))
-    pca_orient = _orientation_from_mask_pca(mask, cnt) if mask is not None else None
-    edge_orient = _long_edge_angle_from_box_pts(box_pts)
-    orient, orient_method = _fuse_orientation_deg(
-        pca_deg=pca_orient,
-        rect_deg=rect_orient,
-        edge_deg=edge_orient,
-    )
-    x1 = float(np.min(box_pts[:, 0]))
-    y1 = float(np.min(box_pts[:, 1]))
-    x2 = float(np.max(box_pts[:, 0]))
-    y2 = float(np.max(box_pts[:, 1]))
+    mar_x1 = float(np.min(box_pts[:, 0]))
+    mar_y1 = float(np.min(box_pts[:, 1]))
+    mar_x2 = float(np.max(box_pts[:, 0]))
+    mar_y2 = float(np.max(box_pts[:, 1]))
+    # Bbox metrica: preferisci il rettangolo stretto del contorno (evita che minAreaRect
+    # allarghi verso le chele quando il blob e' inclinato o rumoroso).
+    bx, by, bw, bh = cv2.boundingRect(cnt)
+    x1, y1, x2, y2 = float(bx), float(by), float(bx + bw), float(by + bh)
+    mar_area = max(1.0, (mar_x2 - mar_x1) * (mar_y2 - mar_y1))
+    tight_area = max(1.0, bw * bh)
+    if mar_area < tight_area * 1.8:
+        x1, y1, x2, y2 = mar_x1, mar_y1, mar_x2, mar_y2
     bw = max(1.0, x2 - x1)
     bh = max(1.0, y2 - y1)
+    bbox_area = bw * bh
+    area_ratio = bbox_area / max(w * h, 1)
+    if solidity <= 0.0 and cnt_area > 0:
+        hull = cv2.convexHull(cnt)
+        solidity = cnt_area / max(float(cv2.contourArea(hull)), 1.0)
+    conf = _detection_confidence(
+        cnt_area=cnt_area,
+        bbox_area=bbox_area,
+        solidity=float(solidity),
+        frame_area=float(w * h),
+        area_ratio=float(area_ratio),
+    )
+    long_side = max(rw_f, rh_f)
     base = {
         "ok": True,
         "backend": "color_blue_box",
         "label": "blue_box",
-        "confidence": round(max(0.05, min(0.99, score + 0.35)), 4),
+        "confidence": conf,
         "bbox_xyxy": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
         "bbox_center_px": [round(cx_f, 1), round(cy_f, 1)],
         "bbox_size_px": [round(bw, 1), round(bh, 1)],
@@ -526,23 +478,22 @@ def _detection_from_color_contour(
             round((cy_f - h / 2.0) / max(h / 2.0, 1.0), 4),
         ],
         "grip_center_px": [round(cx_f, 1), round(cy_f, 1)],
+        "grip_axis_px": _orient_axis_from_center(cx_f, cy_f, orient, long_side * 0.45),
         "gripper_model": "color_box_center",
         "latency_ms": round(elapsed_s * 1000.0, 2),
         "all_count": 1,
-        "orientation_deg_rect": rect_orient,
-        "orientation_deg_pca": pca_orient,
-        "orientation_deg_edge": edge_orient,
-        "orient_method": orient_method,
+        "orientation_deg": orient,
+        "orient_axis_px": _orient_axis_from_center(cx_f, cy_f, orient, long_side * 0.45),
         "orient_box_px": [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in box_pts],
-        "rect_rw": round(rw_f, 2),
-        "rect_rh": round(rh_f, 2),
+        "contour_area_px": round(cnt_area, 1),
+        "solidity": round(float(solidity), 3),
+        "extent": round(cnt_area / max(bbox_area, 1.0), 3),
         "detect_method": "hsv_blue_contour",
     }
-    base["orientation_deg"] = orient
-    return refresh_detection_rectangle_axes(base)
+    return base
 
 
-def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+def _detect_color_box_core(frame: np.ndarray) -> dict[str, Any]:
     """Rileva scatoletta blu per maschera HSV + minAreaRect (posizione e rotazione reali)."""
     t0 = time.perf_counter()
     h, w = frame.shape[:2]
@@ -555,13 +506,17 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
             "reason": "no_blue_contour",
             "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
-    min_area = _parse_float_env("D1_COLOR_BOX_MIN_AREA_FRAC", 0.012) * float(w * h)
-    min_solidity = _parse_float_env("D1_COLOR_BOX_MIN_SOLIDITY", 0.55)
+    min_area = _color_float("D1_COLOR_BOX_MIN_AREA_FRAC", 0.004) * float(w * h)
+    max_area = _color_float("D1_COLOR_BOX_MAX_AREA_FRAC", 0.10) * float(w * h)
+    min_solidity = _color_float("D1_COLOR_BOX_MIN_SOLIDITY", 0.55)
     best_cnt = None
     best_score = -1.0
+    best_solidity = 0.0
+    max_cy_frac = _parse_float_env("D1_COLOR_BOX_MAX_CY_FRAC", 0.68)
+    max_bbox_h_frac = _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.34)
     for cnt in cnts:
         area = float(cv2.contourArea(cnt))
-        if area < min_area:
+        if area < min_area or area > max_area:
             continue
         hull = cv2.convexHull(cnt)
         hull_area = float(cv2.contourArea(hull))
@@ -570,8 +525,15 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
         solidity = area / hull_area
         if solidity < min_solidity:
             continue
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+        if bh > h * max_bbox_h_frac:
+            continue
+        if (by + bh) > h * _parse_float_env("D1_COLOR_BOX_MAX_BOTTOM_Y_FRAC", 0.72):
+            continue
         (cx, cy), (rw, rh), _angle = cv2.minAreaRect(cnt)
-        if min(rw, rh) < 12.0:
+        if min(rw, rh) < 8.0:
+            continue
+        if float(cy) > h * max_cy_frac:
             continue
         sc = _score_color_candidate(
             area=area,
@@ -584,6 +546,7 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
         if sc > best_score:
             best_score = sc
             best_cnt = cnt
+            best_solidity = solidity
     if best_cnt is None:
         return {
             "ok": False,
@@ -591,16 +554,171 @@ def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
             "reason": "blue_contour_filtered",
             "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
-    cnt_mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.drawContours(cnt_mask, [best_cnt], -1, 255, thickness=-1)
-    local_mask = cv2.bitwise_and(mask, cnt_mask)
     return _detection_from_color_contour(
         frame,
         best_cnt,
         score=best_score,
         elapsed_s=time.perf_counter() - t0,
-        mask=local_mask,
+        solidity=best_solidity,
     )
+
+
+def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+    """Detection HSV con fallback se la calibrazione salvata è troppo stretta per la luce attuale."""
+    det = _detect_color_box_core(frame)
+    if det.get("ok"):
+        return det
+    cal = _load_color_calib()
+    if not cal:
+        return det
+    reason = str(det.get("reason") or "")
+    if reason not in ("no_blue_contour", "blue_contour_filtered"):
+        return det
+    try:
+        s_cal = int(float(cal.get("D1_COLOR_BOX_S_MIN", 0)))
+    except (TypeError, ValueError):
+        s_cal = 0
+    if s_cal < 80:
+        return det
+    global _IGNORE_COLOR_CALIB
+    _IGNORE_COLOR_CALIB = True
+    try:
+        fb = _detect_color_box_core(frame)
+    finally:
+        _IGNORE_COLOR_CALIB = False
+    if not fb.get("ok"):
+        return det
+    out = dict(fb)
+    out["calib_fallback"] = True
+    out["reason_prev"] = reason
+    out["hint_it"] = (
+        "Calibrazione colore troppo stretta per questa luce — usate soglie default. "
+        "Ricalibra dal vivo (Calibra colore) con la scatola inquadrata."
+    )
+    return out
+
+
+def calibrate_color_from_frame(
+    frame: np.ndarray,
+    *,
+    bbox_norm: list[float] | None = None,
+    point_norm: list[float] | None = None,
+    radius_frac: float = 0.06,
+    margin_h: int = 12,
+    margin_sv: int = 35,
+) -> dict[str, Any]:
+    """Campiona l'HSV della scatola e salva le soglie in ``data/color_box_calib.json``.
+
+    Regione campionata (in ordine di priorita'):
+      * ``bbox_norm`` = [x0,y0,x1,y1] normalizzati 0..1;
+      * ``point_norm`` = [u,v] normalizzati 0..1 (+ ``radius_frac``);
+      * **auto**: blob piu' saturo/compatto nella zona non-cropped (esclude la fascia bassa = cane).
+
+    Applica le nuove soglie **subito** in-process (``os.environ``) e le **persiste** su file,
+    cosi' valgono anche dopo un riavvio e per gli altri processi (jog 5053).
+    """
+    if frame is None or not getattr(frame, "size", 0):
+        return {"ok": False, "reason": "no_frame"}
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    region_kind = "auto"
+    if bbox_norm and len(bbox_norm) >= 4:
+        x0 = int(max(0, min(w - 1, round(float(bbox_norm[0]) * w))))
+        y0 = int(max(0, min(h - 1, round(float(bbox_norm[1]) * h))))
+        x1 = int(max(x0 + 1, min(w, round(float(bbox_norm[2]) * w))))
+        y1 = int(max(y0 + 1, min(h, round(float(bbox_norm[3]) * h))))
+        region_kind = "bbox"
+        roi = hsv[y0:y1, x0:x1].reshape(-1, 3)
+    elif point_norm and len(point_norm) >= 2:
+        cx = int(max(0, min(w - 1, round(float(point_norm[0]) * w))))
+        cy = int(max(0, min(h - 1, round(float(point_norm[1]) * h))))
+        r = max(4, int(round(float(radius_frac) * min(w, h))))
+        x0, y0, x1, y1 = max(0, cx - r), max(0, cy - r), min(w, cx + r), min(h, cy + r)
+        region_kind = "point"
+        roi = hsv[y0:y1, x0:x1].reshape(-1, 3)
+    else:
+        # AUTO robusto: localizza la scatola con una maschera blu PERMISSIVA (unico oggetto
+        # blu in scena; il cane e' gia' fuori dal crop), poi campiona SOLO i pixel del blob
+        # (dentro il contorno) — niente pavimento → tinta pulita ovunque sia la scatola.
+        boot_lo = np.array([_color_int("D1_COLOR_BOOT_H_MIN", 90),
+                            _color_int("D1_COLOR_BOOT_S_MIN", 40),
+                            _color_int("D1_COLOR_BOOT_V_MIN", 40)], dtype=np.uint8)
+        boot_hi = np.array([_color_int("D1_COLOR_BOOT_H_MAX", 135), 255, 255], dtype=np.uint8)
+        boot = cv2.inRange(hsv, boot_lo, boot_hi)
+        boot = _apply_detect_roi_crop(boot)
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        boot = cv2.morphologyEx(boot, cv2.MORPH_OPEN, k, iterations=1)
+        boot = cv2.morphologyEx(boot, cv2.MORPH_CLOSE, k, iterations=2)
+        cnts, _ = cv2.findContours(boot, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return {"ok": False, "reason": "no_blue_object",
+                    "hint_it": "Scatola blu non trovata nel frame del polso: portala in vista, "
+                               "oppure indica point_norm/bbox_norm."}
+        big = max(cnts, key=cv2.contourArea)
+        if float(cv2.contourArea(big)) < 0.0012 * float(w * h):
+            return {"ok": False, "reason": "blue_object_too_small",
+                    "hint_it": "Oggetto blu troppo piccolo/lontano: avvicina la scatola o indica point_norm."}
+        mblob = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mblob, [big], -1, 255, -1)
+        ys, xs = np.where(mblob > 0)
+        roi = hsv[ys, xs]
+        x0, y0, bw, bh = cv2.boundingRect(big)
+        x1, y1 = x0 + bw, y0 + bh
+        region_kind = "auto_blue"
+
+    if roi.shape[0] < 30:
+        return {"ok": False, "reason": "roi_too_small", "region_px": [x0, y0, x1, y1]}
+
+    # Scarta i pixel a bassa saturazione (bordi/ombre) prima di stimare la tinta.
+    s_all = roi[:, 1]
+    keep = roi[s_all >= max(20, int(np.percentile(s_all, 30)))]
+    if keep.shape[0] < 30:
+        keep = roi
+    Hh = keep[:, 0].astype(np.int32)
+    Ss = keep[:, 1].astype(np.int32)
+    Vv = keep[:, 2].astype(np.int32)
+    h_lo, h_hi = int(np.percentile(Hh, 5)), int(np.percentile(Hh, 95))
+    s_lo, v_lo = int(np.percentile(Ss, 5)), int(np.percentile(Vv, 5))
+    # Guard: una tinta troppo larga = la regione campionata NON e' un colore singolo
+    # (probabile pavimento/sfondo dentro la ROI) → calibrazione inaffidabile, meglio rifiutare.
+    if (h_hi - h_lo) > 45:
+        return {
+            "ok": False,
+            "reason": "hue_too_broad",
+            "hue_p5_p95": [h_lo, h_hi],
+            "region_px": [x0, y0, x1, y1],
+            "hint_it": "Regione non a tinta unica (pavimento incluso): indica un punto sul "
+                       "colore pieno della scatola (point_norm) o un riquadro piu' stretto.",
+        }
+    bounds = {
+        "D1_COLOR_BOX_H_MIN": int(max(0, h_lo - margin_h)),
+        "D1_COLOR_BOX_H_MAX": int(min(179, h_hi + margin_h)),
+        # Saturazione: non copiare s_p5 quasi verbatim — sotto luce diversa la scatola
+        # desatura e la detection fallisce (no_blue_contour). Margine ampio su S, V permissivo.
+        "D1_COLOR_BOX_S_MIN": int(max(40, min(s_lo - 10, s_lo - 70, int(s_lo * 0.58)))),
+        "D1_COLOR_BOX_V_MIN": int(max(25, min(v_lo - 45, v_lo - 25))),
+    }
+    for kk, vv in bounds.items():
+        os.environ[kk] = str(vv)
+    payload = {
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "region_kind": region_kind,
+        "region_px": [x0, y0, x1, y1],
+        "hue_p5_p95": [h_lo, h_hi],
+        "s_p5": s_lo,
+        "v_p5": v_lo,
+        "samples": int(keep.shape[0]),
+        **bounds,
+    }
+    try:
+        p = _calib_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _COLOR_CALIB_CACHE["mtime"] = -1.0  # forza rilettura
+    except OSError as exc:
+        return {"ok": False, "reason": "calib_write_failed", "detail": repr(exc), **payload}
+    return {"ok": True, "calibration": payload, "applied": bounds, "frame": [w, h]}
 
 
 def _orientation_deg_from_bbox_roi(frame: np.ndarray, xyxy: list[float]) -> float:

@@ -36,29 +36,14 @@ except Exception:  # pragma: no cover - optional runtime dependency
     paramiko = None
 
 
-from go2_dashboard.paths import (
-    D1_ARM_COMMAND_BIN,
-    D1_ARM_FEEDBACK_BIN,
-    D1_ARM_SERVO_READ_PY,
-    D1_BUILD_HELPERS_SH,
-    D1_DRAG_FOLLOW_PY,
-    D1_GO2_D1_ASSETS,
-    D1_GO2_D1_MESHES,
-    D1_PROTOCOL_DOC,
-    MUJOCO_SCENE_D1_MESH_XML,
-    PROJECT_ROOT,
-    REL_D1_BUILD_HELPERS,
-    REL_D1_OLD_SCRIPTS,
-    REL_GO2_D1,
-    d1_urdf_search_paths,
-    ensure_d1_scripts_on_sys_path,
-)
-
+PROJECT_ROOT = Path(__file__).resolve().parent
 TAG5_CALIB_PATH = PROJECT_ROOT / "data" / "tag5_calibration_arm_base.json"
-GO2_SCENE_ASSETS_DIR = D1_GO2_D1_ASSETS
-D1_SCENE_MESH_DIR = D1_GO2_D1_MESHES
-MUJOCO_SCENE_PREVIEW_XML = MUJOCO_SCENE_D1_MESH_XML
-ensure_d1_scripts_on_sys_path()
+GO2_SCENE_ASSETS_DIR = PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "assets"
+D1_SCENE_MESH_DIR = (
+    PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "d1_550_description" / "meshes"
+)
+# Scena MuJoCo inclusa (Go2+D1 mesh + tavolo/palla) per anteprima PNG server-side.
+MUJOCO_SCENE_PREVIEW_XML = PROJECT_ROOT / "unitree_mujoco" / "unitree_robots" / "go2_d1" / "scene_d1_mesh.xml"
 
 from go2_dashboard.cameras import (
     CAMERA_CACHE,
@@ -132,7 +117,22 @@ def _d1_urdf_visual_offsets_list() -> list[dict[str, Any]]:
     """
     ident = {"pos_m": [0.0, 0.0, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
     out: list[dict[str, Any]] = [dict(ident) for _ in range(7)]
-    cands = d1_urdf_search_paths()
+    cands: list[Path] = []
+    envp = os.environ.get("GO2_D1_URDF_PATH", "").strip()
+    if envp:
+        cands.append(Path(envp))
+    cands.extend(
+        [
+            PROJECT_ROOT / "d1_550_description" / "urdf" / "d1_550_description.urdf",
+            PROJECT_ROOT
+            / "unitree_mujoco"
+            / "unitree_robots"
+            / "go2_d1"
+            / "d1_550_description"
+            / "urdf"
+            / "d1_550_description.urdf",
+        ]
+    )
     path = next((p for p in cands if str(p) and p.is_file()), None)
     if path is None:
         return out
@@ -429,8 +429,8 @@ def _drag_follow_diagnostics_payload(*, lines_process: int, lines_loop: int, lin
     ll, le = _tail_file_lines(loop_path, lines_loop)
     jl, je = _tail_file_lines(jsonl_path, lines_jsonl)
 
-    fb_bin = D1_ARM_FEEDBACK_BIN
-    cmd_bin = D1_ARM_COMMAND_BIN
+    fb_bin = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+    cmd_bin = PROJECT_ROOT / "bin" / "d1_arm_command"
     bundle: dict[str, Any] = {
         "ok": True,
         "paths": {
@@ -1591,8 +1591,8 @@ def arm_diagnose_motion() -> dict[str, Any]:
         hints.append(
             "GO2_ENABLE_REAL_ARM disattivo: nessun comando reale al braccio (solo pianificazione / dry-run)."
         )
-    fb_bin = D1_ARM_FEEDBACK_BIN
-    cmd_bin = D1_ARM_COMMAND_BIN
+    fb_bin = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+    cmd_bin = PROJECT_ROOT / "bin" / "d1_arm_command"
     if not fb_bin.is_file():
         hints.append(f"Manca {fb_bin.name} — senza feedback il loop rifiuta ricerca e IK.")
     if not cmd_bin.is_file():
@@ -1884,6 +1884,15 @@ def api_base_accompany_mode() -> Any:
                 body["speed_level"] = int(sl)
             except ValueError:
                 pass
+        for qaxis in ("vx", "vy", "vyaw"):
+            qv = request.args.get(qaxis)
+            if qv is not None and str(qv).strip() != "":
+                try:
+                    body[qaxis] = float(qv)
+                except ValueError:
+                    pass
+        if request.args.get("pre_balance", "").lower() in {"0", "false", "no"}:
+            body["pre_balance"] = False
         if request.args.get("sync", "").lower() in {"1", "true", "yes"}:
             body["sync"] = True
     else:
@@ -1893,6 +1902,12 @@ def api_base_accompany_mode() -> Any:
     stand_first = bool(body.get("stand_up_first", False))
     speed_raw = body.get("speed_level")
     speed_level = int(speed_raw) if speed_raw is not None else None
+
+    _pb_raw = body.get("pre_balance", True)
+    if isinstance(_pb_raw, str):
+        pre_balance_b = _pb_raw.lower() not in {"0", "false", "no"}
+    else:
+        pre_balance_b = bool(_pb_raw)
 
     iface = GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None
     mode = str(body.get("mode") or "joystick").strip().lower()
@@ -1917,6 +1932,10 @@ def api_base_accompany_mode() -> Any:
             mode=mode,
             stand_up_first=stand_first,
             speed_level=speed_level,
+            vx=body.get("vx"),
+            vy=body.get("vy"),
+            vyaw=body.get("vyaw"),
+            pre_balance=pre_balance_b,
         )
 
     sync = os.environ.get("GO2_SPORT_RPC_SYNC", "0").lower() in {"1", "true", "yes"}
@@ -1927,6 +1946,9 @@ def api_base_accompany_mode() -> Any:
     # Crouch/Stand: default sincrono così la risposta HTTP riporta i codici RPC reali (202 «OK» nasconde fallimenti DDS).
     async_stand = os.environ.get("GO2_SPORT_ASYNC_STAND_MODES", "0").lower() in {"1", "true", "yes"}
     if mode in {"crouch", "stand_up"} and not async_stand:
+        sync = True
+    # Comandi brevi: risposta con esito RPC (evita 202 senza payload per la UI).
+    if mode in {"velocity", "stop", "recovery_stand"}:
         sync = True
 
     if not sync:
@@ -2364,7 +2386,7 @@ def api_arm_teach_mode() -> Any:
                 "ok": False,
                 "reason": "teach_drag_not_implemented",
                 "enable_requested": enable,
-                "feasibility_doc": str(D1_PROTOCOL_DOC.relative_to(PROJECT_ROOT)),
+                "feasibility_doc": "docs/d1_arm_protocol_feasibility.md",
                 "hint": (
                     "Workaround: posiziona il braccio (app Unitree o comandi a piccoli step), "
                     "poi Salva START o leggi angoli servo — start_alignment.json include arm_at_start."
@@ -2513,12 +2535,12 @@ def api_arm_drag_follow() -> Any:
     if not GO2_LOCAL:
         return jsonify({"ok": False, "reason": "GO2_LOCAL=1 required"}), 400
 
-    fb_h = D1_ARM_FEEDBACK_BIN
-    cmd_h = D1_ARM_COMMAND_BIN
+    fb_h = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+    cmd_h = PROJECT_ROOT / "bin" / "d1_arm_command"
     if not fb_h.is_file() or not cmd_h.is_file():
         return jsonify({"ok": False, "reason": "missing bin/d1_arm_feedback_helper or d1_arm_command"}), 503
 
-    script = D1_DRAG_FOLLOW_PY
+    script = PROJECT_ROOT / "scripts" / "d1_drag_follow_experimental.py"
     if not script.is_file():
         return jsonify({"ok": False, "reason": "scripts/d1_drag_follow_experimental.py missing"}), 500
 
@@ -3290,8 +3312,8 @@ def command_stack_status() -> dict[str, Any]:
                 modules[name] = {"ok": False, "error": repr(exc)}
         # Python cyclonedds: optional on NX/Jetson (often unreliable); arm motion uses C++ helpers only.
         sdk_python_ok = modules.get("cyclonedds", {}).get("ok") and modules.get("unitree_sdk2py", {}).get("ok")
-        helper_pub = D1_ARM_COMMAND_BIN
-        helper_fb = D1_ARM_FEEDBACK_BIN
+        helper_pub = PROJECT_ROOT / "bin" / "d1_arm_command"
+        helper_fb = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
         d1_binaries_ok = helper_pub.exists() and helper_fb.exists()
         # On Jetson, compiled helpers suffice for arm; Python cyclonedds may be absent.
         stack_any_ok = bool(sdk_python_ok or d1_binaries_ok)
@@ -3323,7 +3345,7 @@ def _run_d1_messages(
     post_hold: bool | None = None,
     hold_between_chunks: bool | None = None,
 ) -> dict[str, Any]:
-    helper = D1_ARM_COMMAND_BIN
+    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
     if not helper.exists():
         return {"ok": False, "reason": f"D1 DDS helper missing: {helper}"}
     chunk_size = int(os.environ.get("D1_ABORTABLE_CHUNK_MESSAGES", "8"))
@@ -3474,7 +3496,7 @@ def publish_d1_hold_current(*, repeats: int | None = None, delay_ms: int | None 
     """
     if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes"}:
         return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM is not enabled"}
-    helper = D1_ARM_COMMAND_BIN
+    helper = PROJECT_ROOT / "bin" / "d1_arm_command"
     if not helper.exists():
         return {"ok": False, "reason": f"D1 DDS helper missing: {helper}"}
     rpt = repeats if repeats is not None else int(os.environ.get("D1_HOLD_REPEATS", "14"))
@@ -3669,8 +3691,8 @@ _D1_SERVO_FB_STATE: dict[str, Any] = {
 
 def _read_d1_servo_angles_uncached() -> tuple[list[float] | None, dict[str, Any]]:
     """Legge angoli servo D1: prima ``bin/d1_arm_feedback_helper`` (C++), poi ``scripts/d1_arm_servo_read_python.py`` (Python / stesso DDS di Sport)."""
-    helper = D1_ARM_FEEDBACK_BIN
-    py_reader = D1_ARM_SERVO_READ_PY
+    helper = PROJECT_ROOT / "bin" / "d1_arm_feedback_helper"
+    py_reader = PROJECT_ROOT / "scripts" / "d1_arm_servo_read_python.py"
     listen_s = max(1, int(os.environ.get("D1_FEEDBACK_HELPER_LISTEN_S", "3")))
     timeout_s = float(os.environ.get("D1_FEEDBACK_HELPER_TIMEOUT_S", "14"))
     domain = int(GO2_DDS_DOMAIN)
@@ -3709,7 +3731,7 @@ def _read_d1_servo_angles_uncached() -> tuple[list[float] | None, dict[str, Any]
         d["backend"] = "cpp_subprocess"
         if not helper.is_file():
             d["reason"] = "MISSING_BINARY"
-            d["fix_it"] = f"Sulla NX: bash {REL_D1_BUILD_HELPERS} oppure usa fallback Python (automatico)."
+            d["fix_it"] = "Sulla NX: bash scripts/build_d1_arm_helpers.sh oppure usa fallback Python (automatico)."
             return None, d
         if not os.access(helper, os.X_OK):
             d["reason"] = "HELPER_NOT_EXECUTABLE"
@@ -3729,7 +3751,7 @@ def _read_d1_servo_angles_uncached() -> tuple[list[float] | None, dict[str, Any]
             if stderr and ("symbol lookup error" in stderr or "undefined symbol" in stderr):
                 d["reason"] = "HELPER_RUNTIME_LINK_ERROR"
                 d["fix_it"] = (
-                    f"Ricompila ``d1_arm_feedback_helper`` sulla NX (``bash {REL_D1_BUILD_HELPERS}``) "
+                    "Ricompila ``d1_arm_feedback_helper`` sulla NX (``bash scripts/build_d1_arm_helpers.sh``) "
                     "oppure usa lettura Python (fallback automatico)."
                 )
                 return None, d
@@ -4081,7 +4103,7 @@ def _goto_fold_arm_pose() -> dict[str, Any]:
     if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes"}:
         return {"ok": True, "skipped": True, "reason": "GO2_ENABLE_REAL_ARM off (dry)"}
     try:
-        ensure_d1_scripts_on_sys_path()
+        sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
         from arm_kinematics_d1_template import ARM_FOLD_POSE
 
         jr = [float(v) for v in ARM_FOLD_POSE[:6]]
@@ -6822,7 +6844,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
 
     geometry_fast: salta api_box_plan (pesante su NX) — utile durante gli slider «Allinea vista 3D».
     """
-    ensure_d1_scripts_on_sys_path()
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
     import numpy as np
 
     from arm_kinematics_d1_template import (
@@ -6875,7 +6897,7 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
 
     _d_ax = depth_camera_optical_axis_unit_arm_base()
     cam_sites: dict[str, Any] = {
-        "mjcf_ref": f"{REL_GO2_D1}/go2_d1_d1mesh.xml",
+        "mjcf_ref": "unitree_mujoco/unitree_robots/go2_d1/go2_d1_d1mesh.xml",
         "logical_6_go2_front": {
             "label": "MJCF depth_camera (base_link)",
             "pos_arm_base_m": [round(float(_depth_vis_arm[i]), 5) for i in range(3)],
@@ -7560,9 +7582,9 @@ def _arm_scene_3d_payload(*, geometry_fast: bool = False) -> dict[str, Any]:
         payload["viewer_3d_warnings"].append(
             "Mesh D1: i file STL sul server sembrano placeholder (Empty_Link tipici a ~0.5–1 KiB, pochi triangoli = un box). "
             "Non è un errore di Three.js: sostituisci i file in "
-            f"{REL_GO2_D1}/d1_550_description/meshes/ con il set del SDK Unitree o "
+            "unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes/ con il set del SDK Unitree o "
             "da un clone tipo github.com/JeewanthaSadaruwan/unitree-D1-550-Robot-ARM "
-            f"poi esegui: python {REL_D1_OLD_SCRIPTS}/sync_d1_meshes_from_package.py <.../meshes> ."
+            "poi esegui: python scripts/sync_d1_meshes_from_package.py <.../d1_550_description/meshes> ."
         )
 
     payload["scene_mesh"] = {
