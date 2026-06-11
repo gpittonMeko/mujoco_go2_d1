@@ -20,7 +20,7 @@
         </div>
       </div>
       <div class="app-topbar-actions" role="status">
-        <a class="app-badge app-badge--muted" href="http://{{ go2_host }}:5053/" target="_blank" rel="noopener" title="Dashboard D1 jog / teach pick (porta 5053)">D1 Teach · 5053</a>
+        <a class="app-badge app-badge--muted" href="#" onclick="operatorsSwitchTab('pick_luca');return false;" title="Pick teach Orbbec (Luca) integrato su 5052">Pick teach</a>
         <a class="app-badge app-badge--muted" href="http://{{ go2_host }}:5054/" target="_blank" rel="noopener" title="Hermes standalone (porta 5054, opzionale)">Hermes · 5054</a>
         <span class="app-badge app-badge--edge">{{ 'Edge' if go2_local|default(false) else 'Client' }}</span>
         <span class="app-badge app-badge--muted">HTTP</span>
@@ -655,6 +655,19 @@
 
       </section>
 
+      <section class="tab-panel" data-tab="pick_luca">
+        <div class="banner">
+          <strong>Pick teach (Luca)</strong> — Orbbec RGB, presa zero, teach multiplo, crop ROI. Stesso flusso della ex-dashboard 5053, integrato su <code>:5052</code>.
+        </div>
+        <iframe
+          id="operatorsPickLucaFrame"
+          title="D1 pick teach Orbbec"
+          src="{{ script_root|default('') }}/operators/d1-pick"
+          style="display:block;width:100%;min-height:72vh;border:1px solid var(--border,#2d3548);border-radius:10px;background:#0c0e12;"
+          loading="lazy"
+        ></iframe>
+      </section>
+
       <section class="tab-panel" data-tab="agent">
         <div class="card agent-console-card agent-console-card--compact hermes-layout">
           <div class="agent-console-toolbar hermes-header-toolbar">
@@ -887,6 +900,10 @@
       <button type="button" class="tab-bar-btn" data-tab="grasp" onclick="operatorsSwitchTab('grasp')">
         <span class="tab-ico" aria-hidden="true">✥</span>
         <span class="tab-lbl">Presa</span>
+      </button>
+      <button type="button" class="tab-bar-btn" data-tab="pick_luca" onclick="operatorsSwitchTab('pick_luca')">
+        <span class="tab-ico" aria-hidden="true">◉</span>
+        <span class="tab-lbl">Pick teach</span>
       </button>
       <button type="button" class="tab-bar-btn" data-tab="agent" onclick="operatorsSwitchTab('agent')">
         <span class="tab-ico" aria-hidden="true">◇</span>

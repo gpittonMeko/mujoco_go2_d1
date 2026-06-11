@@ -6,6 +6,7 @@ import os
 
 from flask import Flask, Response, render_template, request
 
+from go2_dashboard.blueprints.d1_pick_teach import bp as d1_pick_teach_bp
 from go2_dashboard.blueprints.grasp import bp as grasp_bp
 from go2_dashboard.blueprints.meta import bp as meta_bp
 from go2_dashboard.blueprints.operator_api import bp as operator_api_bp
@@ -25,6 +26,7 @@ def create_operators_app() -> Flask:
     app.register_blueprint(meta_bp)
     app.register_blueprint(operator_api_bp)
     app.register_blueprint(grasp_bp)
+    app.register_blueprint(d1_pick_teach_bp)
 
     @app.route("/")
     def operators_index() -> Response:
@@ -42,6 +44,22 @@ def create_operators_app() -> Flask:
             dashboard_port=port,
             script_root=script_root,
             go2_local=go2_local(),
+        )
+        return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+    @app.route("/operators/d1-pick")
+    def operators_d1_pick_embed() -> Response:
+        """UI pick teach Orbbec (Luca) embedded nella dashboard 5052 — stesse API /api/pick/*."""
+        port = int(os.environ.get("GO2_DASHBOARD_PORT", "5052"))
+        go2_host = os.environ.get("GO2_HOST", "192.168.123.18").strip()
+        html = render_template(
+            "d1_jog_dashboard.html",
+            dashboard_port=port,
+            d1_arm_host=os.environ.get("D1_ARM_HOST", os.environ.get("SERVO_ARM_HOST", "192.168.123.100")),
+            go2_local=os.environ.get("GO2_LOCAL", "0"),
+            dash_mode="arm",
+            embed_in_operators=True,
+            go2_host=go2_host,
         )
         return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
 

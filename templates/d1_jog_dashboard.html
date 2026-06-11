@@ -64,16 +64,18 @@
   </style>
 </head>
 <body data-page="teach">
-  <header class="topbar">
+  <header class="topbar"{% if embed_in_operators|default(false) %} style="padding:10px 16px"{% endif %}>
     <div class="brand">
       <h1>D1 Teach</h1>
-      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}</span>
+      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}{% if embed_in_operators|default(false) %} · integrato 5052{% endif %}</span>
     </div>
     <div class="topbar-actions">
+      {% if not embed_in_operators|default(false) %}
       <nav class="topbar-nav">
         <a href="/" class="active">Teach</a>
         <a href="/program">Programma</a>
       </nav>
+      {% endif %}
       <button type="button" class="top-jog joint-jog" id="btnJointJog">Jog giunti</button>
       <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
       <span id="healthBadge" class="badge">…</span>
