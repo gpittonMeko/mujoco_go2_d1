@@ -29,6 +29,8 @@ def create_operators_app() -> Flask:
     app.register_blueprint(d1_pick_teach_bp)
 
     @app.route("/")
+    @app.route("/operators")
+    @app.route("/operators/")
     def operators_index() -> Response:
         url_prefix = os.environ.get("GO2_DASHBOARD_URL_PREFIX", "").strip().rstrip("/")
         script_root = url_prefix or ((request.script_root or "").rstrip("/"))
