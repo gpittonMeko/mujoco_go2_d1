@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Presa / Teach</title>
+  <link rel="stylesheet" href="{{ script_root }}/static/focus/focus_dashboard.css?v={{ asset_ver }}" />
+  <style>
+    body { margin: 0; background: #0b0f14; color: #e7edf5; font-family: Inter, system-ui, sans-serif; }
+    .teach-shell { padding: 14px; display: grid; gap: 14px; }
+    .teach-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .teach-head h1 { margin: 0; font-size: 1.15rem; }
+    .teach-grid { display: grid; grid-template-columns: minmax(300px, 440px) minmax(320px, 1fr); gap: 14px; }
+    .teach-actions { display: grid; gap: 10px; }
+    .teach-actions button { min-height: 50px; }
+    .teach-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .teach-cams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .teach-cam { border: 1px solid #273241; border-radius: 8px; overflow: hidden; background: #070b10; }
+    .teach-cam img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; }
+    .teach-cam span { display: block; padding: 7px 9px; color: #93a2b4; font-size: 0.78rem; border-bottom: 1px solid #273241; }
+    .teach-note { padding: 9px 10px; border: 1px solid #314055; border-radius: 8px; background: #0f151d; }
+    #teachLog { min-height: 340px; max-height: calc(100vh - 250px); }
+    .teach-primary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .teach-primary button { min-height: 74px; font-size: 0.98rem; background: linear-gradient(135deg, #172234, #121a26); }
+    .teach-primary button.ok { background: linear-gradient(135deg, rgba(20, 184, 166, .22), #121a26); }
+    .teach-primary button.warn { background: linear-gradient(135deg, rgba(245, 158, 11, .25), #121a26); }
+    .progress-card { display: grid; gap: 10px; }
+    .progress-top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .progress-title { font-weight: 750; }
+    .progress-pct { color: #9ad7ff; font-variant-numeric: tabular-nums; }
+    .progress-track { height: 14px; border: 1px solid #2d3a4d; border-radius: 999px; background: #0b1119; overflow: hidden; }
+    .progress-fill { display: block; width: 0%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb, #14b8a6, #84cc16); transition: width .25s ease; }
+    .progress-fill.err { background: linear-gradient(90deg, #f97316, #fb7185); }
+    .progress-fill.warn { background: linear-gradient(90deg, #f59e0b, #22c55e); }
+    .step-rail { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+    .step-chip { padding: 7px 6px; border: 1px solid #283548; border-radius: 8px; background: #0f151d; color: #93a2b4; font-size: .72rem; text-align: center; min-height: 34px; }
+    .step-chip.on { color: #e7edf5; border-color: #60a5fa; background: rgba(37, 99, 235, .18); }
+    .step-chip.done { color: #99f6e4; border-color: rgba(20, 184, 166, .5); }
+    .step-chip.err { color: #fecdd3; border-color: rgba(251, 113, 133, .6); background: rgba(127, 29, 29, .2); }
+    .log-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-bottom: 10px; }
+    input[type="text"] { width: 100%; border: 1px solid #3a4656; border-radius: 8px; background: #0f151d; color: #e7edf5; padding: 10px 12px; font: inherit; }
+    @media (max-width: 900px) { .teach-grid, .teach-cams, .teach-row, .teach-primary { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="teach-shell">
+    <header class="teach-head">
+      <div>
+        <h1>Presa / Teach</h1>
+        <p class="muted">Dashboard autonoma 5056: RealSense polso, braccio D1, teaching locale.</p>
+      </div>
+      <span id="teachPill" class="pill warn">check...</span>
+    </header>
+
+    <section class="teach-grid">
+      <article class="card">
+        <h2>Oggetto</h2>
+        <label class="muted">Istruzione</label>
+        <input id="teachInstruction" type="text" value="prendi il pezzo" />
+        <div class="teach-row" style="margin-top:10px;">
+          <button id="btnTeachStatus" type="button">Aggiorna stato</button>
+          <button id="btnSnapshot" type="button">Foto + detect</button>
+        </div>
+        <div class="teach-note muted" id="teachSummary" style="margin-top:10px;">Carico stato...</div>
+      </article>
+
+      <article class="card">
+        <h2>Camere</h2>
+        <div class="teach-cams">
+          <div class="teach-cam"><span>Polso RealSense - log.0</span><img src="{{ script_root }}/stream/robot/camera/0.mjpg" alt="polso" /></div>
+          <div class="teach-cam"><span>Frontale RealSense - log.6</span><img src="{{ script_root }}/stream/robot/camera/6.mjpg" alt="frontale" /></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="card progress-card">
+      <div class="progress-top">
+        <span class="progress-title" id="teachProgressTitle">Pronto</span>
+        <span class="progress-pct" id="teachProgressPct">0%</span>
+      </div>
+      <div class="progress-track"><i class="progress-fill" id="teachProgressFill"></i></div>
+      <div class="step-rail" id="teachStepRail">
+        <span class="step-chip" data-step="move90">Muovi 90</span>
+        <span class="step-chip" data-step="rgbd">RGB+depth</span>
+        <span class="step-chip" data-step="ik">IK</span>
+        <span class="step-chip" data-step="execute">Esegui</span>
+        <span class="step-chip" data-step="verify">Esito</span>
+        <span class="step-chip" data-step="teach">Teach</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Comandi presa</h2>
+      <div class="teach-primary" style="margin-top:12px;">
+        <button class="warn" id="btnScanLeft90" type="button">Muovi a 90&deg; a sinistra</button>
+        <button class="warn" id="btnScanRight90" type="button">Muovi a 90&deg; a destra</button>
+        <button class="ok" id="btnStartGrasp" type="button">Inizia presa</button>
+      </div>
+    </section>
+
+    <section class="teach-grid">
+      <article class="card">
+        <h2>Teaching presa</h2>
+        <p class="muted">Teaching posizione indipendente: dopo 5 secondi release completo, poi 20 secondi per portare manualmente il braccio sulla presa e salvare la posa.</p>
+        <div class="teach-actions" style="margin-top:12px;">
+          <button class="warn" id="btnTeachPosition" type="button">Teaching posizione presa</button>
+          <button class="warn" id="btnMarkGraspFailed" type="button">Presa fallita &rarr; teaching</button>
+          <button id="btnManualTeachLeft" type="button">Teaching completo sinistra</button>
+          <button id="btnManualTeachRight" type="button">Teaching completo destra</button>
+          <button class="ok" id="btnBuildTeachModel" type="button">Ricrea modello teach</button>
+          <button class="danger" id="btnTeachCancel" type="button">Annulla flusso</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Test movimento</h2>
+        <p class="muted">Comandi manuali di servizio. La presa completa usa invece: muovi 90, RGB+depth, IK, esecuzione.</p>
+        <div class="teach-actions" style="margin-top:12px;">
+          <button class="ok" id="btnGraspLeft" type="button">Solo avvicina sinistra</button>
+          <button class="ok" id="btnGraspRight" type="button">Solo avvicina destra</button>
+          <button id="btnArmCouple" type="button">Coppia ON</button>
+          <button class="danger" id="btnArmRelease" type="button">Release giunti</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="log-head">
+        <h2>Log operativo</h2>
+        <button id="btnClearLog" type="button">Pulisci log</button>
+      </div>
+      <pre id="teachLog">-</pre>
+    </section>
+  </div>
+  <script>
+    window.__FOCUS_SCRIPT_ROOT__ = "{{ script_root }}";
+  </script>
+  <script src="{{ script_root }}/static/focus/focus_teach.js?v={{ asset_ver }}" defer></script>
+</body>
+</html>

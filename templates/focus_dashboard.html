@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Focus</title>
+  <link rel="stylesheet" href="{{ script_root }}/static/focus/focus_dashboard.css?v={{ asset_ver }}" />
+</head>
+<body>
+  <div class="focus-app">
+    <header class="focus-top">
+      <div>
+        <h1>Go2 Focus</h1>
+        <p>{{ go2_host }}:{{ dashboard_port }} - Presa / Teach - Moto - Motori - Hermes</p>
+      </div>
+      <div class="focus-status">
+        <span id="focusHealthPill" class="pill warn">check...</span>
+        <span id="focusTeachPill" class="pill">Teach</span>
+      </div>
+    </header>
+
+    <nav class="focus-tabs" aria-label="Sezioni">
+      <button class="active" data-tab="teach" type="button">Presa / Teach</button>
+      <button data-tab="motion" type="button">Movimento cane</button>
+      <button data-tab="motors" type="button">Motori</button>
+      <button data-tab="hermes" type="button">Hermes</button>
+      <button data-tab="system" type="button">Stato</button>
+    </nav>
+
+    <main>
+      <section class="panel active" id="tab-teach">
+        <iframe id="teachFrame" title="Presa / Teach" src="{{ script_root }}/focus/teach"></iframe>
+      </section>
+
+      <section class="panel" id="tab-motion">
+        <div class="motion-grid">
+          <article class="card">
+            <h2>Pose base</h2>
+            <p class="muted">Comandi Sport/DDS separati dal teaching. Usare solo con area libera.</p>
+            <div class="pose-actions">
+              <button class="big ok" data-sport="stand_up" type="button">Stand</button>
+              <button class="big warn" data-sport="crouch" type="button">Crouch down</button>
+              <button data-sport="recovery_stand" type="button">Recovery</button>
+              <button class="danger" data-sport="stop" type="button">Stop</button>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Diagnostica base</h2>
+            <div class="row-actions">
+              <button id="btnDds" type="button">Test DDS</button>
+              <button id="btnSportLast" type="button">Sport last</button>
+            </div>
+            <pre id="motionOut">Pronto.</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="tab-hermes">
+        <iframe id="hermesFrame" title="Hermes" data-src="{{ script_root }}/focus/hermes"></iframe>
+      </section>
+
+      <section class="panel" id="tab-motors">
+        <iframe id="motorsFrame" title="Stato motori Go2" data-src="{{ script_root }}/focus/motor"></iframe>
+      </section>
+
+      <section class="panel" id="tab-system">
+        <div class="card">
+          <h2>Recap live</h2>
+          <div class="row-actions">
+            <button id="btnRefreshAll" type="button">Aggiorna</button>
+            <a href="{{ script_root }}/api/health" target="_blank" rel="noreferrer">health JSON</a>
+            <a href="{{ script_root }}/api/focus/status" target="_blank" rel="noreferrer">focus JSON</a>
+            <a href="{{ script_root }}/api/motor/state" target="_blank" rel="noreferrer">motor JSON</a>
+          </div>
+          <pre id="systemOut">-</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    window.__FOCUS_SCRIPT_ROOT__ = "{{ script_root }}";
+  </script>
+  <script src="{{ script_root }}/static/focus/focus_dashboard.js?v={{ asset_ver }}" defer></script>
+</body>
+</html>
