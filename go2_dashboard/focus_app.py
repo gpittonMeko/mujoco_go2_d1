@@ -19,7 +19,10 @@ from go2_dashboard.paths import PROJECT_ROOT
 def _mount_motor_health(app: Flask) -> None:
     """Mount the Go2 motor health dashboard into the focus Flask process."""
     from go2_dashboard.motor_health_app import create_motor_health_app
+    from go2_dashboard.motor_health_env import apply_motor_health_env_defaults, ensure_thermal_settings_file
 
+    apply_motor_health_env_defaults()
+    ensure_thermal_settings_file()
     motor_app = create_motor_health_app()
     for rule in motor_app.url_map.iter_rules():
         if rule.endpoint == "static":
@@ -161,6 +164,31 @@ def create_focus_app() -> Flask:
         except Exception as exc:  # noqa: BLE001
             payload["teach"] = {"ok": False, "error": repr(exc)}
         return jsonify(payload)
+
+    @app.route("/api/focus/debug/log", methods=["POST"])
+    def focus_debug_log() -> Response:
+        """NDJSON debug da UI teach (sessione agente)."""
+        import json
+        import time
+
+        body = request.get_json(silent=True) or {}
+        row: dict[str, Any] = {
+            "sessionId": str(body.get("sessionId") or "7c69a6"),
+            "timestamp": int(body.get("timestamp") or time.time() * 1000),
+            "location": str(body.get("location") or "focus_teach.js"),
+            "message": str(body.get("message") or "event"),
+            "data": body.get("data") if isinstance(body.get("data"), dict) else {"raw": body.get("data")},
+            "hypothesisId": str(body.get("hypothesisId") or "BTN"),
+        }
+        if body.get("runId"):
+            row["runId"] = body["runId"]
+        try:
+            log_path = PROJECT_ROOT / "debug-7c69a6.log"
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        return jsonify({"ok": True})
 
     app.register_blueprint(operator_api_bp)
     app.register_blueprint(d1_pick_teach_bp)

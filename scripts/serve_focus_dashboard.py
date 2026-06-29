@@ -30,6 +30,11 @@ def main() -> None:
         os.environ.setdefault("GO2_ENABLE_REAL_ARM", "1")
     _warmup_cameras()
 
+    from go2_dashboard.motor_health_env import apply_motor_health_env_defaults, ensure_thermal_settings_file
+
+    apply_motor_health_env_defaults()
+    ensure_thermal_settings_file()
+
     from go2_dashboard.focus_app import create_focus_app
 
     bind = os.environ.get("GO2_FOCUS_BIND", os.environ.get("GO2_DASHBOARD_BIND", "0.0.0.0")).strip()

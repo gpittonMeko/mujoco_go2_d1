@@ -3,8 +3,134 @@
 
   var SR = window.__FOCUS_SCRIPT_ROOT__ || "";
   var logLines = [];
-  var activeVariant = "j90_left";
+  var activeVariant = "j90";
   var STEP_INDEX = { move90: 0, rgbd: 1, ik: 2, execute: 3, verify: 4, teach: 5 };
+  var SVC_LABELS = {
+    comando: "comando",
+    detect: "detect",
+    depth: "depth",
+    ik: "IK",
+    execute: "execute",
+  };
+  var svcState = {
+    comando: "idle",
+    detect: "idle",
+    depth: "idle",
+    ik: "idle",
+    execute: "idle",
+  };
+
+  function resetSvcAck() {
+    Object.keys(SVC_LABELS).forEach(function (k) { setSvcAck(k, "idle"); });
+    setExecutePhase("waiting");
+  }
+
+  function setSvcAck(key, state) {
+    svcState[key] = state || "idle";
+    var el = $("svcAck" + key.charAt(0).toUpperCase() + key.slice(1));
+    if (!el && key === "ik") el = $("svcAckIk");
+    if (!el) el = document.querySelector('[data-svc="' + key + '"]');
+    if (!el) return;
+    var sym = { idle: " ", run: "~", ok: "\u2713", err: "\u2717" };
+    el.className = "svc-ack" + (state && state !== "idle" ? " " + state : "");
+    el.textContent = "[" + (sym[state] || "?") + "] " + (SVC_LABELS[key] || key);
+  }
+
+  function setExecutePhase(phase) {
+    var el = $("svcExecLine");
+    if (!el) return;
+    el.className = "svc-exec-line";
+    if (phase === "running") el.classList.add("running");
+    if (phase === "completed") el.classList.add("completed");
+    if (phase === "failed") el.classList.add("failed");
+    el.textContent = "EXECUTE: " + phase + "...";
+  }
+
+  function applyFullSequenceSteps(steps) {
+    if (!Array.isArray(steps)) return;
+    steps.forEach(function (st) {
+      if (st.phase === "move_90") setSvcAck("comando", st.ok ? "ok" : "err");
+      if (st.phase === "rgbd_scan_ik") {
+        setSvcAck("detect", st.ok ? "ok" : "err");
+        setSvcAck("depth", st.ok ? "ok" : "err");
+        setSvcAck("ik", st.ok ? "ok" : "err");
+      }
+      if (st.phase === "execute_phased") {
+        setSvcAck("ik", st.ok ? "ok" : "err");
+        setSvcAck("execute", st.ok ? "ok" : "err");
+        setExecutePhase(st.ok ? "completed" : "failed");
+      }
+      if (st.phase === "close" && st.ok) setExecutePhase("completed");
+      if (st.phase === "lift") {
+        setExecutePhase(st.ok ? "completed" : "failed");
+      }
+    });
+  }
+
+  function executeAckReady() {
+    return svcState.execute === "ok" && svcState.ik === "ok";
+  }
+
+  // #region agent log
+  var DBG = {
+    sessionId: "7c69a6",
+    ingest: "http://127.0.0.1:7916/ingest/d92fe5a3-25e7-4f47-9434-0f427e3439d8",
+    seq: 0,
+    activeButton: null,
+    buttons: {
+      btnTeachStatus: { label: "Aggiorna stato", apis: ["GET /api/focus/status", "GET /api/pick/teach/samples", "GET /api/arm/status"] },
+      btnSnapshot: { label: "Foto + detect", apis: ["POST /api/pick/snapshot"] },
+      btnScanLeft90: { label: "Muovi 90 sinistra", apis: ["POST /api/presets/scan/goto variant=j90_left"] },
+      btnScanRight90: { label: "Muovi 90 destra", apis: ["POST /api/presets/scan/goto variant=j90"] },
+      btnStartGrasp: { label: "Inizia presa", apis: ["POST /api/pick/grasp/close_and_lift"] },
+      btnAutoGrasp: { label: "Presa automatica", apis: ["POST /api/pick/full_sequence"] },
+      btnGripperClose: { label: "Chiudi pinza", apis: ["POST /api/pick/gripper/close"] },
+      btnTeachPosition: { label: "Teaching posizione", apis: ["POST /api/arm/joints/release", "GET /api/arm/servo_snapshot", "POST /api/pick/teach/finish", "POST /api/pick/teach/build_model"] },
+      btnMarkGraspFailed: { label: "Presa fallita teach", apis: ["POST /api/arm/joints/release", "GET /api/arm/servo_snapshot", "POST /api/pick/teach/finish"] },
+      btnManualTeachLeft: { label: "Teaching completo sinistra", apis: ["POST /api/presets/scan/goto", "POST /api/pick/snapshot", "POST /api/arm/joints/release", "POST /api/pick/teach/finish"] },
+      btnManualTeachRight: { label: "Teaching completo destra", apis: ["POST /api/presets/scan/goto", "POST /api/pick/snapshot", "POST /api/arm/joints/release", "POST /api/pick/teach/finish"] },
+      btnBuildTeachModel: { label: "Ricrea modello teach", apis: ["POST /api/pick/teach/build_model"] },
+      btnTeachCancel: { label: "Annulla flusso", apis: ["POST /api/grasp/teach_cancel"] },
+      btnGraspLeft: { label: "Solo avvicina sinistra", apis: ["POST /api/pick/grasp/goto scan_variant=j90_left"] },
+      btnGraspRight: { label: "Solo avvicina destra", apis: ["POST /api/pick/grasp/goto scan_variant=j90"] },
+      btnArmCouple: { label: "Coppia ON", apis: ["POST /api/arm/joints/couple"] },
+      btnArmRelease: { label: "Release giunti", apis: ["POST /api/arm/joints/release"] },
+      btnGotoHome: { label: "Torna Home", apis: ["POST /api/arm/goto_home"] },
+      btnClearLog: { label: "Pulisci log", apis: [] },
+    },
+  };
+
+  function dbgBtn(buttonId, phase, data, hypothesisId) {
+    var meta = DBG.buttons[buttonId] || { label: buttonId, apis: [] };
+    var row = {
+      sessionId: DBG.sessionId,
+      id: "btn_" + String(++DBG.seq),
+      timestamp: Date.now(),
+      location: "focus_teach.js:" + (buttonId || "unknown"),
+      message: phase,
+      data: Object.assign(
+        {
+          buttonId: buttonId,
+          buttonLabel: meta.label,
+          apis: meta.apis,
+          activeVariant: activeVariant,
+        },
+        data || {}
+      ),
+      hypothesisId: hypothesisId || "BTN",
+    };
+    fetch(DBG.ingest, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": DBG.sessionId },
+      body: JSON.stringify(row),
+    }).catch(function () {});
+    fetch(api("/api/focus/debug/log"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(row),
+    }).catch(function () {});
+  }
+  // #endregion
 
   function api(path) {
     if (!path) path = "/";
@@ -83,6 +209,11 @@
   }
 
   function json(path, opts) {
+    var btn = DBG.activeButton;
+    var method = (opts && opts.method) || "GET";
+    if (btn && path.indexOf("/api/focus/debug/log") < 0) {
+      dbgBtn(btn, "api_start", { path: path, method: method }, "API");
+    }
     return fetch(api(path), Object.assign({ cache: "no-store", credentials: "same-origin" }, opts || {}))
       .then(function (r) {
         return r.text().then(function (t) {
@@ -90,6 +221,16 @@
           try { j = t ? JSON.parse(t) : {}; } catch (e) { j = { ok: false, raw: t.slice(0, 400) }; }
           j._http_status = r.status;
           if (!r.ok && j.ok !== false) j.ok = false;
+          if (btn && path.indexOf("/api/focus/debug/log") < 0) {
+            dbgBtn(btn, "api_done", {
+              path: path,
+              method: method,
+              http: r.status,
+              ok: j.ok,
+              reason: j.reason || j.hint_it || null,
+              phase: j.phase || null,
+            }, "API");
+          }
           return j;
         });
       });
@@ -122,8 +263,54 @@
     return p;
   }
 
+  function jointFeedback() {
+    return json("/api/arm/servo_snapshot?_=" + Date.now()).then(function (j) {
+      if (j.ok && j.servo_deg) {
+        return { ok: true, servo_deg: j.servo_deg, _http_status: j._http_status };
+      }
+      return {
+        ok: false,
+        reason: j.reason || "no_feedback",
+        _http_status: j._http_status,
+      };
+    });
+  }
+
   function instruction() {
     return (($("teachInstruction") && $("teachInstruction").value) || "").trim();
+  }
+
+  function bindBtn(buttonId, fn) {
+    var el = $(buttonId);
+    if (!el) return;
+    el.addEventListener("click", function () {
+      DBG.activeButton = buttonId;
+      dbgBtn(buttonId, "click_start", {});
+      try {
+        var ret = fn.apply(null, arguments);
+        if (ret && typeof ret.then === "function") {
+          ret.then(function (j) {
+            dbgBtn(buttonId, "handler_done", {
+              ok: j && j.ok,
+              reason: (j && (j.reason || j.hint_it || j.phase)) || null,
+              http: j && j._http_status,
+            });
+            DBG.activeButton = null;
+            return j;
+          }).catch(function (e) {
+            dbgBtn(buttonId, "handler_error", { error: String(e) });
+            DBG.activeButton = null;
+          });
+        } else {
+          dbgBtn(buttonId, ret === undefined ? "handler_cancelled" : "handler_sync_done", {});
+          DBG.activeButton = null;
+        }
+      } catch (e) {
+        dbgBtn(buttonId, "handler_throw", { error: String(e) });
+        DBG.activeButton = null;
+        throw e;
+      }
+    });
   }
 
   function status() {
@@ -138,12 +325,19 @@
       var n = Number(samples.count || (focus.teach && focus.teach.count) || 0);
       var model = !!(samples.has_active_model || (focus.teach && focus.teach.has_active_model));
       var coupled = !!(arm.arm_coupled || (focus.arm && focus.arm.arm_coupled));
+      var teachWp = (samples.teach_model && samples.teach_model.scan_waypoint) || "";
+      var teachOn90 = /90/.test(String(teachWp));
+      var variantWarn = teachOn90 && activeVariant === "j90_left"
+        ? " ATTENZIONE: teach su «" + teachWp + "» → usa 90° a DESTRA, non sinistra."
+        : "";
       pill(coupled ? (model ? "pronto" : "modello assente") : "braccio libero", coupled && model ? "ok" : "warn");
       summary(
         "Braccio: " + (coupled ? "coppia ON" : "coppia OFF") +
         " | sample teach: " + n +
         " | modello: " + (model ? "attivo" : "da ricreare") +
-        " | flag lato: " + labelForVariant(activeVariant)
+        (teachWp ? " | teach scan: " + teachWp : "") +
+        " | flag lato: " + labelForVariant(activeVariant) +
+        variantWarn
       );
       if (model) setProgress(0, "Pronto - flag lato " + labelForVariant(activeVariant), "ok", null);
       else setProgress(n > 0 ? 65 : 0, n > 0 ? "Sample presenti, ricrea modello" : "In attesa teaching", "warn", n > 0 ? "teach" : null);
@@ -158,17 +352,24 @@
   function snapshot() {
     pill("foto...", "warn");
     setProgress(25, "Foto RGB manuale", "warn", "rgbd");
+    setSvcAck("detect", "run");
+    setSvcAck("depth", "run");
     log("Foto manuale RealSense polso + detect. Questo comando non muove il braccio.");
     return post("/api/pick/snapshot", {}).then(function (j) {
       log("snapshot completata", j, j.ok ? "info" : "warn");
       if (j.ok && j.detection_ok) {
-        var det = j.detection || {};
+        var det = j.detection || j.last_detection || {};
         pill("detect ok", "ok");
         setProgress(40, "Detect ok", "ok", "rgbd");
+        setSvcAck("detect", "ok");
+        setSvcAck("depth", "ok");
+        setExecutePhase("waiting");
         summary("Detect: " + (det.label || "oggetto") + " conf=" + (det.confidence != null ? Number(det.confidence).toFixed(3) : "-"));
       } else {
         pill("detect no", "warn");
         setProgress(25, "Detect non valido", "warn", "rgbd");
+        setSvcAck("detect", "err");
+        setSvcAck("depth", j.ok ? "err" : "idle");
         summary(j.hint_it || j.reason || "Oggetto non rilevato.");
       }
       return j;
@@ -184,13 +385,17 @@
     if (ask && !confirm("Muovere il braccio a " + labelForVariant(variant) + "? Questo non fa scan camera e non controlla il pezzo.")) return;
     pill("muovo " + labelForVariant(variant), "warn");
     setProgress(8, "Muovo a " + labelForVariant(variant), "warn", "move90");
+    setSvcAck("comando", "run");
+    setExecutePhase("waiting");
     log("POST /api/presets/scan/goto - solo movimento 90, nessun controllo camera/pezzo", { variant: variant });
     return post("/api/presets/scan/goto", { variant: variant }).then(function (j) {
       log("movimento 90 completato", j, j.ok ? "info" : "error");
       pill(j.ok ? "90 ok" : "90 err", kindFromOk(j.ok));
+      setSvcAck("comando", j.ok ? "ok" : "err");
       setProgress(j.ok ? 18 : 8, j.ok ? "Posizione " + labelForVariant(variant) + " raggiunta" : "Movimento 90 fallito", j.ok ? "ok" : "err", "move90");
       return j;
     }).catch(function (e) {
+      setSvcAck("comando", "err");
       pill("errore", "err");
       setProgress(8, "Movimento 90 fallito", "err", "move90");
       log(String(e), null, "error");
@@ -199,15 +404,36 @@
 
   function graspGoto(variant) {
     activeVariant = variant;
-    if (!confirm("Avvicinare alla presa da " + labelForVariant(variant) + "? La pinza resta aperta.")) return;
+    if (!confirm(
+      "Avvicinare alla presa da " + labelForVariant(variant) + "?\n\n" +
+      "Usa lo STESSO lato usato per Muovi 90° e per il teach (es. Punto SCANSIONE 90 = 90° a destra).\n" +
+      "La pinza resta aperta."
+    )) return;
     pill("avvicino...", "warn");
     setProgress(72, "Avvicinamento manuale", "warn", "execute");
+    setSvcAck("ik", "run");
+    setExecutePhase("running");
     return post("/api/pick/grasp/goto", { scan_variant: variant }).then(function (j) {
       log("avvicinamento completato", j, j.ok ? "info" : "error");
       pill(j.ok ? "avvicina ok" : "avvicina err", kindFromOk(j.ok));
-      setProgress(j.ok ? 82 : 72, j.ok ? "Sulla presa, pinza aperta" : "Avvicinamento fallito", j.ok ? "ok" : "err", "execute");
+      if (j.ok) {
+        setProgress(82, "Sulla presa, pinza aperta", "ok", "execute");
+        setSvcAck("ik", "ok");
+        setSvcAck("execute", "ok");
+        setExecutePhase("completed");
+      } else {
+        var failMsg = graspFailMessage(j);
+        setProgress(72, "Avvicinamento fallito: " + failMsg, "err", "execute");
+        setSvcAck("ik", "err");
+        setSvcAck("execute", "err");
+        setExecutePhase("failed");
+        summary(failMsg + (j.reason === "plane_busy:joint" ? " Chiudi tab «Braccio D1 · giunti» o premi «Annulla flusso»." : ""));
+      }
       return j;
     }).catch(function (e) {
+      setSvcAck("ik", "err");
+      setSvcAck("execute", "err");
+      setExecutePhase("failed");
       pill("errore", "err");
       setProgress(72, "Avvicinamento fallito", "err", "execute");
       log(String(e), null, "error");
@@ -222,31 +448,115 @@
     return "verify";
   }
 
+  function graspFailMessage(j) {
+    if (!j || j.ok) return "";
+    var ga = j.grasp_assessment || ((j.metric_plan || {}).grasp_assessment) || {};
+    if (ga.label_it) return String(ga.label_it);
+    var steps = j.steps;
+    if (Array.isArray(steps)) {
+      for (var i = steps.length - 1; i >= 0; i -= 1) {
+        var st = steps[i] || {};
+        var v = st.validation_ui || st.grasp_assessment || {};
+        if (v.label_it) return String(v.label_it);
+        if (st.reason) return String(st.reason);
+      }
+    }
+    if (j.hint_it) return String(j.hint_it);
+    return String(j.reason || j.phase || "errore");
+  }
+
   function startGrasp() {
-    var variant = activeVariant || "j90_left";
-    if (!confirm("Eseguire presa completa con flag " + labelForVariant(variant) + "?\n\nFlusso: muovi 90 -> RGB+depth -> IK -> esegui.")) return;
-    pill("presa...", "warn");
-    setProgress(5, "Presa: muovi 90", "warn", "move90");
-    log("Avvio presa completa", { scan_variant: variant, flow: "move90 -> rgb_depth -> ik -> execute" });
+    if (!executeAckReady()) {
+      summary("Prima: Muovi 90° → Foto+detect → Solo avvicina (ACK execute deve essere ✓).");
+      if (!confirm(
+        "ACK execute non verificato.\n\n" +
+        "Flusso consigliato:\n1) Muovi 90°\n2) Foto+detect\n3) Solo avvicina\n4) Inizia presa\n\n" +
+        "Continuare comunque (chiudi pinza + rialzo sulla posa attuale)?"
+      )) return;
+    } else if (!confirm(
+      "Chiudere pinza e rialzare il braccio?\n\n" +
+      "Usa solo dopo «Solo avvicina» riuscito (pinza aperta sul pezzo)."
+    )) return;
+    pill("chiudo...", "warn");
+    setProgress(88, "Chiusura pinza", "warn", "verify");
+    setExecutePhase("running");
+    log("Inizia presa: chiudi + rialzo (posa corrente)", { execute_ack: svcState.execute });
+    return post("/api/pick/grasp/close_and_lift", { lift: true }).then(function (j) {
+      log("close_and_lift", j, j.ok ? "info" : "error");
+      if (j.ok) {
+        pill("presa ok", "ok");
+        setProgress(100, "Presa completata (chiuso + rialzo)", "ok", "verify");
+        setExecutePhase("completed");
+        summary("Presa completata: pinza chiusa e braccio rialzato.");
+      } else {
+        pill("presa err", "err");
+        var msg = (j.lift && j.lift.reason) || (j.close && j.close.reason) || j.reason || "errore";
+        setProgress(88, "Presa fallita: " + msg, "err", "verify");
+        setExecutePhase("failed");
+        summary(j.hint_it || msg);
+      }
+      return j;
+    }).catch(function (e) {
+      setExecutePhase("failed");
+      pill("errore", "err");
+      log(String(e), null, "error");
+    });
+  }
+
+  function startAutoGrasp() {
+    var variant = activeVariant || "j90";
+    if (!confirm(
+      "Presa automatica completa (" + labelForVariant(variant) + ")?\n\n" +
+      "Rifà tutto: muovi 90 → foto+detect → avvicina → chiudi → rialzo.\n" +
+      "Per il flusso manuale usa i pulsanti separati + «Inizia presa»."
+    )) return;
+    pill("auto...", "warn");
+    setProgress(5, "Presa automatica: muovi 90", "warn", "move90");
+    resetSvcAck();
+    setSvcAck("comando", "run");
+    setExecutePhase("running");
+    log("Presa automatica", { scan_variant: variant, flow: "full_sequence" });
     return post("/api/pick/full_sequence", {
       scan_variant: variant,
       instruction: instruction(),
       execute: true,
       close: true,
+      lift: true,
     }).then(function (j) {
-      log("sequenza presa completata", j, j.ok ? "info" : "error");
+      log("presa automatica completata", j, j.ok ? "info" : "error");
+      applyFullSequenceSteps(j.steps);
       if (j.ok) {
-        pill("presa ok", "ok");
-        setProgress(100, "Presa completata", "ok", "verify");
+        pill("auto ok", "ok");
+        setProgress(100, "Presa automatica completata", "ok", "verify");
+        setExecutePhase("completed");
       } else {
-        pill("presa err", "err");
-        setProgress(70, "Presa fallita: " + (j.reason || j.phase || "errore"), "err", stepFromPhase(j.phase));
-        summary("Presa fallita. Puoi premere Presa fallita -> teaching o Teaching posizione presa.");
+        pill("auto err", "err");
+        var failMsg = graspFailMessage(j);
+        setProgress(70, "Presa automatica fallita: " + failMsg, "err", stepFromPhase(j.phase));
+        setExecutePhase("failed");
+        summary("Presa automatica fallita: " + failMsg);
       }
       return j;
     }).catch(function (e) {
+      setExecutePhase("failed");
       pill("errore", "err");
-      setProgress(70, "Presa fallita", "err", "verify");
+      setProgress(70, "Presa automatica fallita", "err", "verify");
+      log(String(e), null, "error");
+    });
+  }
+
+  function gripperCloseOnly() {
+    if (!confirm("Chiudere solo la pinza (senza rialzo) sulla posa attuale?")) return;
+    pill("chiudo...", "warn");
+    setProgress(90, "Chiusura pinza", "warn", "verify");
+    return post("/api/pick/gripper/close", {}).then(function (j) {
+      log("chiudi pinza", j, j.ok ? "info" : "error");
+      pill(j.ok ? "pinza chiusa" : "chiusura err", kindFromOk(j.ok));
+      setProgress(j.ok ? 92 : 90, j.ok ? "Pinza chiusa" : "Chiusura fallita", j.ok ? "ok" : "err", "verify");
+      if (!j.ok) summary(j.reason || "Chiusura pinza fallita.");
+      return j;
+    }).catch(function (e) {
+      pill("errore", "err");
       log(String(e), null, "error");
     });
   }
@@ -275,13 +585,13 @@
     return countdown(5, "Preparati al release", 18, "teach").then(function () {
       setProgress(30, "Release completo giunti", "warn", "teach");
       log("Release completo giunti braccio");
-      return post("/api/joints/release", {});
+      return post("/api/arm/joints/release", {});
     }).then(function (rel) {
       log("release giunti", rel, rel.ok ? "info" : "warn");
       return countdown(20, "Porta il braccio sulla presa", 55, "teach");
     }).then(function () {
       setProgress(70, "Leggo posizione insegnata", "warn", "teach");
-      return json("/api/joints/feedback?_=" + Date.now());
+      return jointFeedback();
     }).then(function (fb) {
       log("feedback posa insegnata", fb, fb.ok ? "info" : "error");
       if (!fb.ok || !fb.servo_deg) throw new Error(fb.reason || "feedback giunti non disponibile");
@@ -320,13 +630,13 @@
       return countdown(5, "Preparati al release", 35, "teach");
     }).then(function () {
       setProgress(42, "Release giunti", "warn", "teach");
-      return post("/api/joints/release", {});
+      return post("/api/arm/joints/release", {});
     }).then(function (rel) {
       log("release giunti", rel, rel.ok ? "info" : "warn");
       return countdown(20, "Muovi il braccio sulla presa", 55, "teach");
     }).then(function () {
       setProgress(70, "Leggo feedback giunti", "warn", "teach");
-      return json("/api/joints/feedback?_=" + Date.now());
+      return jointFeedback();
     }).then(function (fb) {
       if (!fb.ok || !fb.servo_deg) throw new Error(fb.reason || "feedback giunti non disponibile");
       return post("/api/pick/teach/finish", { vision_at_scan: visionAtScan, servo_deg: fb.servo_deg, scan_variant: activeVariant });
@@ -344,10 +654,45 @@
   function armCouple() {
     pill("coppia...", "warn");
     setProgress(5, "Attivo coppia braccio", "warn", null);
-    return post("/api/arm/couple", { with_power: true }).then(function (j) {
+    setSvcAck("comando", "run");
+    return post("/api/arm/joints/couple", { with_power: true }).then(function (j) {
       log("coppia braccio", j, j.ok ? "info" : "error");
       pill(j.ok ? "coppia on" : "coppia err", kindFromOk(j.ok));
+      setSvcAck("comando", j.ok ? "ok" : "err");
       return status();
+    });
+  }
+
+  function gotoHome() {
+    if (!confirm(
+      "Tornare alla posa Home?\n\n" +
+      "Il braccio si muove gradualmente (traiettoria interpolata), non un salto istantaneo.\n" +
+      "Target default: J0-J6 = 0° (config NX: D1_HOME_SERVO_DEG_7).\n\n" +
+      "Assicurati che l'area sia libera e che la coppia sia ON."
+    )) return;
+    pill("home...", "warn");
+    setProgress(15, "Movimento verso Home", "warn", null);
+    setSvcAck("comando", "run");
+    setExecutePhase("running");
+    return post("/api/arm/goto_home", { confirm: "ARM_GOTO_HOME" }).then(function (j) {
+      log("goto home completato", j, j.ok ? "info" : "error");
+      pill(j.ok ? "home ok" : "home err", kindFromOk(j.ok));
+      setSvcAck("comando", j.ok ? "ok" : "err");
+      setExecutePhase(j.ok ? "completed" : "failed");
+      if (j.ok) {
+        var home = j.home_servo_deg_7_config || j.target_servo_deg;
+        if (home) summary("Home raggiunta: [" + home.join(", ") + "] deg");
+        setProgress(100, "Posa Home raggiunta", "ok", null);
+      } else {
+        setProgress(15, "Home fallita: " + (j.hint_it || j.reason || "errore"), "err", null);
+        summary(j.hint_it || j.reason || "Movimento Home fallito.");
+      }
+      return j;
+    }).catch(function (e) {
+      setSvcAck("comando", "err");
+      setExecutePhase("failed");
+      pill("home err", "err");
+      log(String(e), null, "error");
     });
   }
 
@@ -355,7 +700,7 @@
     if (!confirm("Rilasciare i giunti del braccio? Il braccio sara' libero manualmente.")) return;
     pill("release...", "warn");
     setProgress(10, "Release giunti", "warn", "teach");
-    return post("/api/joints/release", {}).then(function (j) {
+    return post("/api/arm/joints/release", {}).then(function (j) {
       log("release manuale", j, j.ok ? "info" : "error");
       pill(j.ok ? "release ok" : "release err", kindFromOk(j.ok));
       return status();
@@ -371,24 +716,32 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    var btn;
-    btn = $("btnTeachStatus"); if (btn) btn.addEventListener("click", function () { status().then(function (s) { log("stato aggiornato", s); }); });
-    btn = $("btnSnapshot"); if (btn) btn.addEventListener("click", snapshot);
-    btn = $("btnScanLeft90"); if (btn) btn.addEventListener("click", function () { move90("j90_left", true); });
-    btn = $("btnScanRight90"); if (btn) btn.addEventListener("click", function () { move90("j90", true); });
-    btn = $("btnStartGrasp"); if (btn) btn.addEventListener("click", startGrasp);
-    btn = $("btnTeachPosition"); if (btn) btn.addEventListener("click", function () { teachPosition("teaching posizione da pulsante"); });
-    btn = $("btnMarkGraspFailed"); if (btn) btn.addEventListener("click", function () { teachPosition("operatore: presa fallita"); });
-    btn = $("btnGraspLeft"); if (btn) btn.addEventListener("click", function () { graspGoto("j90_left"); });
-    btn = $("btnGraspRight"); if (btn) btn.addEventListener("click", function () { graspGoto("j90"); });
-    btn = $("btnManualTeachLeft"); if (btn) btn.addEventListener("click", function () { manualTeach("j90_left"); });
-    btn = $("btnManualTeachRight"); if (btn) btn.addEventListener("click", function () { manualTeach("j90"); });
-    btn = $("btnBuildTeachModel"); if (btn) btn.addEventListener("click", buildTeachModel);
-    btn = $("btnTeachCancel"); if (btn) btn.addEventListener("click", cancel);
-    btn = $("btnArmCouple"); if (btn) btn.addEventListener("click", armCouple);
-    btn = $("btnArmRelease"); if (btn) btn.addEventListener("click", armRelease);
-    btn = $("btnClearLog"); if (btn) btn.addEventListener("click", function () { logLines = []; var el = $("teachLog"); if (el) el.textContent = "-"; });
-    log("Dashboard presa caricata");
+    bindBtn("btnTeachStatus", function () { return status().then(function (s) { log("stato aggiornato", s); return s; }); });
+    bindBtn("btnSnapshot", snapshot);
+    bindBtn("btnScanLeft90", function () { return move90("j90_left", true); });
+    bindBtn("btnScanRight90", function () { return move90("j90", true); });
+    bindBtn("btnStartGrasp", startGrasp);
+    bindBtn("btnAutoGrasp", startAutoGrasp);
+    bindBtn("btnGripperClose", gripperCloseOnly);
+    bindBtn("btnTeachPosition", function () { return teachPosition("teaching posizione da pulsante"); });
+    bindBtn("btnMarkGraspFailed", function () { return teachPosition("operatore: presa fallita"); });
+    bindBtn("btnGraspLeft", function () { return graspGoto("j90_left"); });
+    bindBtn("btnGraspRight", function () { return graspGoto("j90"); });
+    bindBtn("btnManualTeachLeft", function () { return manualTeach("j90_left"); });
+    bindBtn("btnManualTeachRight", function () { return manualTeach("j90"); });
+    bindBtn("btnBuildTeachModel", buildTeachModel);
+    bindBtn("btnTeachCancel", cancel);
+    bindBtn("btnArmCouple", armCouple);
+    bindBtn("btnArmRelease", armRelease);
+    bindBtn("btnGotoHome", gotoHome);
+    bindBtn("btnClearLog", function () {
+      logLines = [];
+      var el = $("teachLog");
+      if (el) el.textContent = "-";
+    });
+    dbgBtn("page", "dom_ready", { buttons: Object.keys(DBG.buttons) });
+    resetSvcAck();
+    log("Dashboard presa caricata (ACK servizi + Home attivi)");
     status();
     setInterval(status, 5000);
   });
