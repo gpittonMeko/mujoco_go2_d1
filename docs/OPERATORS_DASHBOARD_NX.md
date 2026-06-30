@@ -1,6 +1,6 @@
 # Dashboard operator (NX)
 
-Questo documento riguarda **solo** il processo **lite** su `GO2_DASHBOARD_PORT` (default **5052**): `scripts/serve_dashboard_lite.py` → `go2_dashboard.lite_app.create_operators_app()`. **Non** descrive la dashboard monolite (`diagnostics_dashboard` / `serve_dashboard_modular`, altra porta es. 5051), che monta migliaia di route legacy.
+Questo documento riguarda **solo** il processo **lite** su `GO2_DASHBOARD_PORT` (default **5052**): `scripts/serve_dashboard_lite.py` → `go2_dashboard.lite_app.create_operators_app()`. È la dashboard legacy. **La dashboard principale del robot/NX è invece `scripts/serve_focus_dashboard.py` su `:5056`**.
 
 ## Stato: cosa funziona e cosa no (porta 5052)
 

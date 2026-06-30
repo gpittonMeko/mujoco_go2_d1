@@ -10,7 +10,7 @@ cd unitree_mujoco/simulate_python && python3 unitree_mujoco.py
 python3 scripts/deploy_policy.py --model ts --vx 0.5
 ```
 
-**Robot / Jetson NX:** `python3 scripts/serve_dashboard_modular.py` con `GO2_LOCAL=1` — dettagli in [docs/localDogTest_jetson.md](docs/localDogTest_jetson.md).
+**Robot / Jetson NX:** `python3 scripts/serve_focus_dashboard.py` con `GO2_LOCAL=1` sulla porta **5056**. La `serve_dashboard_lite.py` è legacy su **5052**.
 
 ## Setup
 
