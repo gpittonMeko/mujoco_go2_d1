@@ -59,7 +59,7 @@
     <header class="teach-head">
       <div>
         <h1>Presa / Teach</h1>
-        <p class="muted">Dashboard autonoma 5056: RealSense polso, braccio D1, teaching locale.</p>
+        <p class="muted">Dashboard autonoma 5056: polso RGB, braccio D1, teaching locale.</p>
       </div>
       <span id="teachPill" class="pill warn">check...</span>
     </header>
@@ -79,8 +79,13 @@
       <article class="card">
         <h2>Camere</h2>
         <div class="teach-cams">
-          <div class="teach-cam"><span>Polso RealSense - log.0</span><img src="{{ script_root }}/stream/robot/camera/0.mjpg" alt="polso" /></div>
-          <div class="teach-cam"><span>Frontale RealSense - log.6</span><img src="{{ script_root }}/stream/robot/camera/6.mjpg" alt="frontale" /></div>
+          <div class="teach-cam"><span>Polso RGB - log.0</span><img src="{{ script_root }}/stream/robot/camera/0.mjpg" alt="polso rgb" /></div>
+          <div class="teach-cam"><span>Frontale RGB - log.6</span><img src="{{ script_root }}/stream/robot/camera/6.mjpg" alt="frontale rgb" /></div>
+        </div>
+        <div id="teachCamStatus" class="teach-note muted" style="margin-top:10px;">Controllo camere...</div>
+        <div class="muted small" style="margin-top:6px;line-height:1.4;">
+          Se il polso sembra grigio o IR, il nodo V4L è sbagliato: il feed giusto di <code>log.0</code> deve essere RGB.
+          In caso di dubbio, controlla <code>/api/cameras/status</code> oppure il tab Scene della dashboard operator.
         </div>
       </article>
     </section>

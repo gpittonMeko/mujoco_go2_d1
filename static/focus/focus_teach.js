@@ -318,13 +318,17 @@
       json("/api/focus/status?_=" + Date.now()).catch(function (e) { return { ok: false, error: String(e) }; }),
       json("/api/pick/teach/samples?_=" + Date.now()).catch(function (e) { return { ok: false, error: String(e) }; }),
       json("/api/arm/status?_=" + Date.now()).catch(function (e) { return { ok: false, error: String(e) }; }),
+      json("/api/cameras/status?_=" + Date.now()).catch(function (e) { return { ok: false, error: String(e) }; }),
     ]).then(function (rows) {
       var focus = rows[0];
       var samples = rows[1];
       var arm = rows[2];
+      var cams = rows[3];
       var n = Number(samples.count || (focus.teach && focus.teach.count) || 0);
       var model = !!(samples.has_active_model || (focus.teach && focus.teach.has_active_model));
       var coupled = !!(arm.arm_coupled || (focus.arm && focus.arm.arm_coupled));
+      var cam0 = cams && cams.cameras && cams.cameras["0"];
+      var cam6 = cams && cams.cameras && cams.cameras["6"];
       var teachWp = (samples.teach_model && samples.teach_model.scan_waypoint) || "";
       var teachOn90 = /90/.test(String(teachWp));
       var variantWarn = teachOn90 && activeVariant === "j90_left"
@@ -335,10 +339,17 @@
         "Braccio: " + (coupled ? "coppia ON" : "coppia OFF") +
         " | sample teach: " + n +
         " | modello: " + (model ? "attivo" : "da ricreare") +
+        (cam0 && cam6 ? " | cam0: " + (cam0.stream_kind || "?") + " / cam6: " + (cam6.stream_kind || "?") : "") +
         (teachWp ? " | teach scan: " + teachWp : "") +
         " | flag lato: " + labelForVariant(activeVariant) +
         variantWarn
       );
+      var camStatus = $("teachCamStatus");
+      if (camStatus) {
+        var cam0Txt = cam0 ? (cam0.stream_kind || "?") + " @ " + (cam0.device_path || "?") : "non disponibile";
+        var cam6Txt = cam6 ? (cam6.stream_kind || "?") + " @ " + (cam6.device_path || "?") : "non disponibile";
+        camStatus.textContent = "log.0: " + cam0Txt + " | log.6: " + cam6Txt;
+      }
       if (model) setProgress(0, "Pronto - flag lato " + labelForVariant(activeVariant), "ok", null);
       else setProgress(n > 0 ? 65 : 0, n > 0 ? "Sample presenti, ricrea modello" : "In attesa teaching", "warn", n > 0 ? "teach" : null);
       return { focus: focus, samples: samples, arm: arm };
