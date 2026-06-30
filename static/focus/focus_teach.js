@@ -19,6 +19,23 @@
     ik: "idle",
     execute: "idle",
   };
+  var SLOT_DEFS = [
+    { id: "wrist_rgb", camera: "wrist", kind: "rgb", label: "Polso RGB" },
+    { id: "wrist_depth", camera: "wrist", kind: "depth", label: "Polso Depth" },
+    { id: "wrist_ir", camera: "wrist", kind: "ir", label: "Polso IR1" },
+    { id: "wrist_meta", camera: "wrist", kind: "meta", label: "Polso IR2" },
+    { id: "front_rgb", camera: "front", kind: "rgb", label: "Frontale RGB" },
+    { id: "front_depth", camera: "front", kind: "depth", label: "Frontale Depth" },
+    { id: "front_ir", camera: "front", kind: "ir", label: "Frontale IR1" },
+    { id: "front_meta", camera: "front", kind: "meta", label: "Frontale IR2" },
+  ];
+  var STREAM_STATE_KEY = "focus.teach.streamGrid.v1";
+  var STREAM_CAROUSEL_KEY = "focus.teach.streamCarousel.v1";
+  var streamCatalog = null;
+  var streamState = loadStreamState();
+  var streamCarousel = loadCarouselState();
+  var TUNE_HISTORY_KEY = "focus.teach.tuningHistory.v1";
+  var tuneHistory = loadTuneHistory();
 
   function resetSvcAck() {
     Object.keys(SVC_LABELS).forEach(function (k) { setSvcAck(k, "idle"); });
@@ -140,6 +157,228 @@
 
   function $(id) { return document.getElementById(id); }
 
+  function escHtml(v) {
+    return String(v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function loadStreamState() {
+    var base = { slots: {} };
+    SLOT_DEFS.forEach(function (slot) {
+      base.slots[slot.id] = { label: slot.label, panel: null, camera: slot.camera, kind: slot.kind };
+    });
+    try {
+      var raw = localStorage.getItem(STREAM_STATE_KEY);
+      if (!raw) return base;
+      var parsed = JSON.parse(raw);
+      SLOT_DEFS.forEach(function (slot) {
+        if (parsed && parsed.slots && parsed.slots[slot.id]) {
+          base.slots[slot.id] = Object.assign({}, base.slots[slot.id], parsed.slots[slot.id]);
+        }
+      });
+      return base;
+    } catch (e) {
+      return base;
+    }
+  }
+
+  function saveStreamState() {
+    try { localStorage.setItem(STREAM_STATE_KEY, JSON.stringify(streamState)); } catch (e) {}
+  }
+
+  function loadCarouselState() {
+    var base = { wrist: 0, front: 0 };
+    try {
+      var raw = localStorage.getItem(STREAM_CAROUSEL_KEY);
+      if (!raw) return base;
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.wrist === "number") base.wrist = Math.max(0, parsed.wrist | 0);
+        if (typeof parsed.front === "number") base.front = Math.max(0, parsed.front | 0);
+      }
+      return base;
+    } catch (e) {
+      return base;
+    }
+  }
+
+  function saveCarouselState() {
+    try { localStorage.setItem(STREAM_CAROUSEL_KEY, JSON.stringify(streamCarousel)); } catch (e) {}
+  }
+
+  function loadTuneHistory() {
+    try {
+      var raw = localStorage.getItem(TUNE_HISTORY_KEY);
+      if (!raw) return [];
+      var rows = JSON.parse(raw);
+      return Array.isArray(rows) ? rows.slice(-40) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveTuneHistory() {
+    try { localStorage.setItem(TUNE_HISTORY_KEY, JSON.stringify(tuneHistory.slice(-40))); } catch (e) {}
+  }
+
+  function pushTuneHistory(row) {
+    tuneHistory.push(row);
+    if (tuneHistory.length > 40) tuneHistory = tuneHistory.slice(tuneHistory.length - 40);
+    saveTuneHistory();
+    renderTuneHistory();
+  }
+
+  function preferredPanel(kind, camera) {
+    var defaults = streamCatalog && streamCatalog.default_panels && streamCatalog.default_panels[camera || "wrist"];
+    if (defaults && defaults[kind]) return String(defaults[kind]);
+    return ({ rgb: "color", depth: "depth", ir: "ir1", meta: "ir2" }[kind]) || "color";
+  }
+
+  function streamUrl(panel, camera) {
+    return api(
+      "/api/pick/vision/stream.mjpg?panel=" + encodeURIComponent(panel || "color") +
+      "&camera=" + encodeURIComponent(camera || "wrist") +
+      "&_=" + Date.now()
+    );
+  }
+
+  function cameraLabel(role) {
+    return role === "front" ? "Frontale" : "Polso";
+  }
+
+  function currentDetectCamera() {
+    var el = $("focusDetectCamera");
+    return el && el.value === "front" ? "front" : "wrist";
+  }
+
+  function currentGraspCamera() {
+    var el = $("focusGraspCamera");
+    return el && el.value === "front" ? "front" : "wrist";
+  }
+
+  function applyCameraSelection(sel) {
+    var detect = sel && sel.detect_camera === "front" ? "front" : "wrist";
+    var grasp = sel && sel.grasp_camera === "front" ? "front" : "wrist";
+    var detEl = $("focusDetectCamera");
+    var graEl = $("focusGraspCamera");
+    if (detEl) detEl.value = detect;
+    if (graEl) graEl.value = grasp;
+  }
+
+  function saveCameraSelection() {
+    var body = { detect_camera: currentDetectCamera(), grasp_camera: currentGraspCamera() };
+    return post("/api/pick/camera/select", body).then(function (j) {
+      if (j && j.ok) applyCameraSelection(j);
+      return j;
+    });
+  }
+
+  function loadCameraSelection() {
+    return json("/api/pick/camera/select?_=" + Date.now()).then(function (j) {
+      if (j && j.ok) applyCameraSelection(j);
+      return j;
+    }).catch(function () { return { ok: false }; });
+  }
+
+  function renderStreamGrid() {
+    var grid = $("focusStreamGrid");
+    if (!grid) return;
+    var streams = streamCatalog && Array.isArray(streamCatalog.streams) ? streamCatalog.streams : [];
+    var cameras = ["wrist", "front"];
+    var html = cameras.map(function (cameraRole) {
+      var slots = SLOT_DEFS.filter(function (s) { return s.camera === cameraRole; });
+      var idx = streamCarousel[cameraRole] || 0;
+      if (idx >= slots.length) idx = 0;
+      streamCarousel[cameraRole] = idx;
+      var slotDef = slots[idx];
+      var slot = streamState.slots[slotDef.id] || { label: slotDef.label, panel: null, camera: slotDef.camera, kind: slotDef.kind };
+      var panel = slot.panel || preferredPanel(slotDef.kind, slotDef.camera);
+      var options = ['<option value="">Auto</option>'];
+      streams.forEach(function (s) {
+        var selected = panel === s.key ? ' selected' : '';
+        var txt = (s.label || s.key) + (s.description ? (" · " + s.description) : "");
+        options.push('<option value="' + escHtml(s.key) + '"' + selected + '>' + escHtml(txt) + '</option>');
+      });
+      var meta = "camera: " + cameraLabel(slotDef.camera) + " · source: " + (slot.panel || "auto") + " · label: " + (slot.label || slotDef.label);
+      return (
+        '<article class="focus-stream-card" data-slot="' + slotDef.id + '">' +
+          '<div class="focus-stream-top"><strong>' + escHtml(slot.label || slotDef.label) + '</strong><small>' + escHtml(cameraLabel(slotDef.camera) + " · " + slotDef.kind.toUpperCase()) + '</small></div>' +
+          '<img id="focusStreamImg-' + slotDef.id + '" alt="' + escHtml(slot.label || slotDef.label) + '" src="' + streamUrl(panel, slotDef.camera) + '" />' +
+          '<div class="focus-stream-controls">' +
+            '<div class="focus-stream-nav">' +
+              '<button type="button" data-stream-nav="prev" data-camera-role="' + slotDef.camera + '">&larr; precedente</button>' +
+              '<button type="button" data-stream-nav="next" data-camera-role="' + slotDef.camera + '">successivo &rarr;</button>' +
+            '</div>' +
+            '<label>Etichetta<input type="text" data-stream-label="' + slotDef.id + '" value="' + escHtml(slot.label || slotDef.label) + '" /></label>' +
+            '<label>Feed<select data-stream-panel="' + slotDef.id + '">' + options.join('') + '</select></label>' +
+            '<div class="focus-stream-meta" id="focusStreamMeta-' + slotDef.id + '">' + escHtml(meta) + '</div>' +
+          '</div>' +
+        '</article>'
+      );
+    }).join('');
+    grid.innerHTML = html;
+    saveCarouselState();
+
+    SLOT_DEFS.forEach(function (slotDef) {
+      var labelEl = grid.querySelector('[data-stream-label="' + slotDef.id + '"]');
+      var panelEl = grid.querySelector('[data-stream-panel="' + slotDef.id + '"]');
+      if (labelEl) {
+        labelEl.onchange = function () {
+          streamState.slots[slotDef.id] = streamState.slots[slotDef.id] || { camera: slotDef.camera, kind: slotDef.kind };
+          streamState.slots[slotDef.id].label = labelEl.value || slotDef.label;
+          saveStreamState();
+          renderStreamGrid();
+        };
+      }
+      if (panelEl) {
+        panelEl.onchange = function () {
+          streamState.slots[slotDef.id] = streamState.slots[slotDef.id] || { camera: slotDef.camera, kind: slotDef.kind };
+          streamState.slots[slotDef.id].panel = panelEl.value || null;
+          saveStreamState();
+          renderStreamGrid();
+        };
+      }
+    });
+
+    grid.querySelectorAll("[data-stream-nav]").forEach(function (btn) {
+      btn.onclick = function () {
+        var role = btn.getAttribute("data-camera-role") || "wrist";
+        var dir = btn.getAttribute("data-stream-nav") === "prev" ? -1 : 1;
+        var slots = SLOT_DEFS.filter(function (s) { return s.camera === role; });
+        var idx = streamCarousel[role] || 0;
+        idx = (idx + dir + slots.length) % slots.length;
+        streamCarousel[role] = idx;
+        saveCarouselState();
+        renderStreamGrid();
+      };
+    });
+  }
+
+  function refreshStreamCatalog() {
+    return json('/api/pick/vision/streams?_=' + Date.now()).then(function (j) {
+      if (!j || !j.ok) throw new Error((j && (j.reason || j.hint_it)) || 'stream catalog unavailable');
+      streamCatalog = j;
+      SLOT_DEFS.forEach(function (slotDef) {
+        streamState.slots[slotDef.id] = streamState.slots[slotDef.id] || { label: slotDef.label, panel: null, camera: slotDef.camera, kind: slotDef.kind };
+        if (!streamState.slots[slotDef.id].label) streamState.slots[slotDef.id].label = slotDef.label;
+        if (!streamState.slots[slotDef.id].panel) streamState.slots[slotDef.id].panel = preferredPanel(slotDef.kind, slotDef.camera);
+      });
+      saveStreamState();
+      renderStreamGrid();
+      return j;
+    }).catch(function (e) {
+      var grid = $("focusStreamGrid");
+      if (grid) {
+        grid.innerHTML = '<div class="focus-stream-card"><div class="focus-stream-top"><strong>Stream non disponibili</strong><small>5056</small></div><div class="focus-stream-controls"><div class="focus-stream-meta">' + escHtml(String(e)) + '</div></div></div>';
+      }
+      return { ok: false, error: String(e) };
+    });
+  }
+
   function now() {
     return new Date().toLocaleTimeString("it-IT", { hour12: false });
   }
@@ -206,6 +445,72 @@
   function summary(text) {
     var el = $("teachSummary");
     if (el) el.textContent = text;
+  }
+
+  function renderTuneHistory() {
+    var el = $("tuneHistory");
+    if (!el) return;
+    if (!tuneHistory.length) {
+      el.textContent = "Storico tuning vuoto.";
+      return;
+    }
+    el.textContent = tuneHistory.slice().reverse().map(function (r) {
+      var ts = r.ts || now();
+      var kind = r.kind || "info";
+      if (kind === "detect") {
+        return "[" + ts + "] detect ok=" + (!!r.detection_ok) + " conf=" + (r.confidence != null ? Number(r.confidence).toFixed(3) : "-") + " orient=" + (r.orientation_deg != null ? r.orientation_deg : "-");
+      }
+      if (kind === "nudge") {
+        return "[" + ts + "] nudge J" + r.joint + " delta=" + r.delta_deg + " ok=" + (!!r.ok);
+      }
+      return "[" + ts + "] " + JSON.stringify(r);
+    }).join("\n");
+  }
+
+  function loadPresetInfo() {
+    return json("/api/pick/preset?_=" + Date.now()).then(function (j) {
+      var el = $("tunePresetMeta");
+      if (el) {
+        var off = j.joint_offset_deg || [];
+        var txt = "offset: [" + off.map(function (v) { return Number(v).toFixed(2); }).join(", ") + "]";
+        if (j.manual_orient_offset_deg != null) txt += " | orient manuale: " + Number(j.manual_orient_offset_deg).toFixed(2);
+        el.textContent = txt;
+      }
+      return j;
+    });
+  }
+
+  function tuneCaptureFeedback() {
+    var cam = currentDetectCamera();
+    return post("/api/pick/snapshot", { detect_camera: cam }).then(function (j) {
+      var det = j.last_detection || j.detection || {};
+      var img = $("tuneDetectImg");
+      if (img) img.src = api((j.preview_url || "/api/pick/scene.jpg") + "&_=" + Date.now());
+      var meta = $("tuneDetectMeta");
+      if (meta) {
+        meta.textContent = "camera=" + cam + " | detect=" + (!!j.detection_ok) + " | conf=" + (det.confidence != null ? Number(det.confidence).toFixed(3) : "-") + " | orient=" + (det.orientation_deg != null ? det.orientation_deg : "-");
+      }
+      pushTuneHistory({
+        ts: now(),
+        kind: "detect",
+        detection_ok: !!j.detection_ok,
+        confidence: det.confidence,
+        orientation_deg: det.orientation_deg,
+      });
+      return j;
+    });
+  }
+
+  function tuneNudge(sign) {
+    var jointEl = $("tuneJoint");
+    var deltaEl = $("tuneDelta");
+    var joint = Number((jointEl && jointEl.value) || 0) || 0;
+    var baseDelta = Number((deltaEl && deltaEl.value) || 0.5) || 0.5;
+    var delta = Math.abs(baseDelta) * (sign < 0 ? -1 : 1);
+    return post("/api/pick/preset/nudge", { joint: joint, delta_deg: delta }).then(function (j) {
+      pushTuneHistory({ ts: now(), kind: "nudge", joint: joint, delta_deg: delta, ok: !!j.ok, reason: j.reason || null });
+      return loadPresetInfo().then(function () { return j; });
+    });
   }
 
   function json(path, opts) {
@@ -361,12 +666,13 @@
   }
 
   function snapshot() {
+    var detectCamera = currentDetectCamera();
     pill("foto...", "warn");
     setProgress(25, "Foto RGB manuale", "warn", "rgbd");
     setSvcAck("detect", "run");
     setSvcAck("depth", "run");
-    log("Foto manuale RealSense polso + detect. Questo comando non muove il braccio.");
-    return post("/api/pick/snapshot", {}).then(function (j) {
+    log("Foto manuale + detect", { detect_camera: detectCamera });
+    return post("/api/pick/snapshot", { detect_camera: detectCamera }).then(function (j) {
       log("snapshot completata", j, j.ok ? "info" : "warn");
       if (j.ok && j.detection_ok) {
         var det = j.detection || j.last_detection || {};
@@ -414,6 +720,7 @@
   }
 
   function graspGoto(variant) {
+    var graspCamera = currentGraspCamera();
     activeVariant = variant;
     if (!confirm(
       "Avvicinare alla presa da " + labelForVariant(variant) + "?\n\n" +
@@ -424,7 +731,7 @@
     setProgress(72, "Avvicinamento manuale", "warn", "execute");
     setSvcAck("ik", "run");
     setExecutePhase("running");
-    return post("/api/pick/grasp/goto", { scan_variant: variant }).then(function (j) {
+    return post("/api/pick/grasp/goto", { scan_variant: variant, grasp_camera: graspCamera }).then(function (j) {
       log("avvicinamento completato", j, j.ok ? "info" : "error");
       pill(j.ok ? "avvicina ok" : "avvicina err", kindFromOk(j.ok));
       if (j.ok) {
@@ -516,6 +823,8 @@
 
   function startAutoGrasp() {
     var variant = activeVariant || "j90";
+    var detectCamera = currentDetectCamera();
+    var graspCamera = currentGraspCamera();
     if (!confirm(
       "Presa automatica completa (" + labelForVariant(variant) + ")?\n\n" +
       "Rifà tutto: muovi 90 → foto+detect → avvicina → chiudi → rialzo.\n" +
@@ -533,6 +842,8 @@
       execute: true,
       close: true,
       lift: true,
+      detect_camera: detectCamera,
+      grasp_camera: graspCamera,
     }).then(function (j) {
       log("presa automatica completata", j, j.ok ? "info" : "error");
       applyFullSequenceSteps(j.steps);
@@ -625,6 +936,7 @@
   }
 
   function manualTeach(variant) {
+    var detectCamera = currentDetectCamera();
     activeVariant = variant;
     if (!confirm("Avviare teaching completo " + labelForVariant(variant) + "? Questo include movimento 90 e foto prima del release.")) return;
     var visionAtScan = null;
@@ -634,7 +946,7 @@
       log("move90 teaching", scan, scan.ok ? "info" : "error");
       if (!scan.ok) throw new Error(scan.reason || "movimento 90 fallito");
       setProgress(25, "Teaching: foto", "warn", "rgbd");
-      return post("/api/pick/snapshot", {});
+      return post("/api/pick/snapshot", { detect_camera: detectCamera });
     }).then(function (snap) {
       visionAtScan = snap.last_detection || snap.detection || null;
       log("snapshot teaching", snap, snap.ok ? "info" : "warn");
@@ -750,9 +1062,27 @@
       var el = $("teachLog");
       if (el) el.textContent = "-";
     });
+    var reloadBtn = $("btnFocusReloadStreams");
+    if (reloadBtn) reloadBtn.addEventListener("click", refreshStreamCatalog);
+    var detectSel = $("focusDetectCamera");
+    var graspSel = $("focusGraspCamera");
+    if (detectSel) detectSel.addEventListener("change", function () { saveCameraSelection(); });
+    if (graspSel) graspSel.addEventListener("change", function () { saveCameraSelection(); });
+    var btnTuneCap = $("btnTuneCapture");
+    if (btnTuneCap) btnTuneCap.addEventListener("click", tuneCaptureFeedback);
+    var btnTuneInfo = $("btnTunePresetInfo");
+    if (btnTuneInfo) btnTuneInfo.addEventListener("click", loadPresetInfo);
+    var btnTuneMinus = $("btnTuneNudgeMinus");
+    if (btnTuneMinus) btnTuneMinus.addEventListener("click", function () { tuneNudge(-1); });
+    var btnTunePlus = $("btnTuneNudgePlus");
+    if (btnTunePlus) btnTunePlus.addEventListener("click", function () { tuneNudge(1); });
     dbgBtn("page", "dom_ready", { buttons: Object.keys(DBG.buttons) });
     resetSvcAck();
     log("Dashboard presa caricata (ACK servizi + Home attivi)");
+    loadCameraSelection();
+    refreshStreamCatalog();
+    renderTuneHistory();
+    loadPresetInfo();
     status();
     setInterval(status, 5000);
   });

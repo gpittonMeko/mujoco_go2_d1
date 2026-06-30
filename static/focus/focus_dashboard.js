@@ -53,6 +53,15 @@
       if (mf && !mf.getAttribute("src")) mf.setAttribute("src", mf.getAttribute("data-src"));
     }
     if (name === "system") refreshAll();
+    try { window.location.hash = "tab-" + name; } catch (e) {}
+  }
+
+  function initialTabFromHash() {
+    var h = (window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
+    if (!h) return "teach";
+    if (h.indexOf("tab-") === 0) h = h.slice(4);
+    if (["teach", "motion", "motors", "hermes", "system"].indexOf(h) >= 0) return h;
+    return "teach";
   }
 
   function refreshHealth() {
@@ -104,18 +113,39 @@
 
   function sport(mode) {
     write("motionOut", "Invio " + mode + "...");
-    return jsonFetch("/api/base/accompany_mode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: mode, enable: true, sync: true }),
-    })
-      .then(function (j) {
-        write("motionOut", j);
-        sportLast();
-      })
-      .catch(function (e) {
-        write("motionOut", String(e));
+    var pre = Promise.resolve({});
+    if (mode === "crouch") {
+      pre = jsonFetch("/api/arm/true_zero", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "goto_zero" }),
+      }).then(function (jZero) {
+        return jsonFetch("/api/motor/thermal/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ recovery_stand_enabled: false }),
+        }).then(function (jThermal) {
+          return { arm_zero: jZero, thermal: jThermal };
+        }).catch(function (e) {
+          return { arm_zero: jZero, thermal: { ok: false, error: String(e) } };
+        });
+      }).catch(function (e) {
+        return { arm_zero: { ok: false, error: String(e) } };
       });
+    }
+
+    return pre.then(function (preOut) {
+      return jsonFetch("/api/base/accompany_mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: mode, enable: true, sync: true }),
+      }).then(function (j) {
+        write("motionOut", { pre: preOut, sport: j });
+        sportLast();
+      });
+    }).catch(function (e) {
+      write("motionOut", String(e));
+    });
   }
 
   function refreshAll() {
@@ -153,6 +183,7 @@
     if (btnSportLast) btnSportLast.addEventListener("click", sportLast);
     var btnRefreshAll = $("btnRefreshAll");
     if (btnRefreshAll) btnRefreshAll.addEventListener("click", refreshAll);
+    activateTab(initialTabFromHash());
     refreshHealth();
     refreshFocusStatus();
   });

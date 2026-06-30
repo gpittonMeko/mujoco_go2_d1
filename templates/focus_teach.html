@@ -10,6 +10,8 @@
     .teach-shell { padding: 14px; display: grid; gap: 14px; }
     .teach-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
     .teach-head h1 { margin: 0; font-size: 1.15rem; }
+    .teach-nav-mini { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .teach-nav-mini a { font-size: .75rem; padding: 5px 8px; border: 1px solid #2a3a4f; border-radius: 999px; color: #a8c2de; text-decoration: none; }
     .teach-grid { display: grid; grid-template-columns: minmax(300px, 440px) minmax(320px, 1fr); gap: 14px; }
     .teach-actions { display: grid; gap: 10px; }
     .teach-actions button { min-height: 50px; }
@@ -18,6 +20,35 @@
     .teach-cam { border: 1px solid #273241; border-radius: 8px; overflow: hidden; background: #070b10; }
     .teach-cam img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; }
     .teach-cam span { display: block; padding: 7px 9px; color: #93a2b4; font-size: 0.78rem; border-bottom: 1px solid #273241; }
+    .focus-stream-head { display: flex; justify-content: space-between; gap: 10px; align-items: end; margin-top: 10px; }
+    .focus-stream-head h3 { margin: 0; font-size: .92rem; }
+    .focus-stream-note { margin: 4px 0 0; color: #93a2b4; font-size: .78rem; }
+    .focus-camera-select { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .focus-camera-select label { display: grid; gap: 4px; color: #93a2b4; font-size: .75rem; }
+    .focus-camera-select select {
+      width: 100%; border: 1px solid #334154; border-radius: 7px; background: #0a1017; color: #e7edf5; padding: 8px 9px; font: inherit;
+    }
+    .focus-stream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .focus-stream-card { border: 1px solid #273241; border-radius: 8px; overflow: hidden; background: #070b10; }
+    .focus-stream-card img { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 220px; object-fit: cover; background: #05080d; }
+    .focus-stream-top { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #273241; }
+    .focus-stream-top strong { font-size: .82rem; }
+    .focus-stream-top small { color: #93a2b4; font-size: .72rem; }
+    .focus-stream-controls { display: grid; gap: 8px; padding: 8px 10px 10px; border-top: 1px solid #273241; background: #0d141d; }
+    .focus-stream-controls label { display: grid; gap: 4px; color: #93a2b4; font-size: .73rem; }
+    .focus-stream-controls input, .focus-stream-controls select {
+      width: 100%; border: 1px solid #334154; border-radius: 7px; background: #0a1017; color: #e7edf5; padding: 7px 9px; font: inherit;
+    }
+    .focus-stream-meta { color: #9fb0c3; font-size: .74rem; line-height: 1.3; }
+    .focus-stream-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; }
+    .focus-stream-nav button { min-height: 34px; font-size: .8rem; }
+    .tune-grid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 340px); gap: 12px; }
+    .tune-preview { border: 1px solid #2b394c; border-radius: 8px; overflow: hidden; background: #0a1017; }
+    .tune-preview img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; }
+    .tune-controls { display: grid; gap: 8px; }
+    .tune-controls .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .tune-controls select, .tune-controls input { width: 100%; border: 1px solid #334154; border-radius: 7px; background: #0a1017; color: #e7edf5; padding: 7px 9px; font: inherit; }
+    .tune-history { min-height: 110px; max-height: 180px; overflow: auto; border: 1px solid #2b394c; border-radius: 8px; padding: 8px; background: #0b121b; font-size: .74rem; }
     .teach-note { padding: 9px 10px; border: 1px solid #314055; border-radius: 8px; background: #0f151d; }
     #teachLog { min-height: 340px; max-height: calc(100vh - 250px); }
     .teach-primary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -51,7 +82,7 @@
     .btn-home { min-height: 50px; background: linear-gradient(135deg, rgba(59, 130, 246, .25), #121a26) !important; }
     @media (max-width: 900px) { .svc-ack-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     input[type="text"] { width: 100%; border: 1px solid #3a4656; border-radius: 8px; background: #0f151d; color: #e7edf5; padding: 10px 12px; font: inherit; }
-    @media (max-width: 900px) { .teach-grid, .teach-cams, .teach-row, .teach-primary, .teach-primary-4 { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { .teach-grid, .teach-cams, .teach-row, .teach-primary, .teach-primary-4, .focus-stream-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -60,6 +91,12 @@
       <div>
         <h1>Presa / Teach</h1>
         <p class="muted">Dashboard autonoma 5056: polso RGB, braccio D1, teaching locale.</p>
+        <div class="teach-nav-mini">
+          <a href="{{ script_root }}/#tab-teach">Dashboard tabs</a>
+          <a href="{{ script_root }}/#tab-motion">Movimento cane</a>
+          <a href="{{ script_root }}/#tab-motors">Motori</a>
+          <a href="{{ script_root }}/#tab-hermes">Hermes</a>
+        </div>
       </div>
       <span id="teachPill" class="pill warn">check...</span>
     </header>
@@ -83,6 +120,30 @@
           <div class="teach-cam"><span>Frontale RGB - log.6</span><img src="{{ script_root }}/stream/robot/camera/6.mjpg" alt="frontale rgb" /></div>
         </div>
         <div id="teachCamStatus" class="teach-note muted" style="margin-top:10px;">Controllo camere...</div>
+        <div class="focus-stream-head">
+          <div>
+            <h3>Stream compatti con scorrimento</h3>
+            <p class="focus-stream-note">Una vista per polso e una per frontale; usa frecce destra/sinistra per cambiare feed.</p>
+          </div>
+          <button id="btnFocusReloadStreams" type="button">Ricarica stream</button>
+        </div>
+        <div class="focus-camera-select">
+          <label>Camera detection
+            <select id="focusDetectCamera">
+              <option value="wrist">Polso (log.0)</option>
+              <option value="front">Frontale (log.6)</option>
+            </select>
+          </label>
+          <label>Camera presa
+            <select id="focusGraspCamera">
+              <option value="wrist">Polso (log.0)</option>
+              <option value="front">Frontale (log.6)</option>
+            </select>
+          </label>
+        </div>
+        <div class="focus-stream-grid" id="focusStreamGrid">
+          <div class="focus-stream-card"><div class="focus-stream-top"><strong>Carico...</strong><small>wait</small></div></div>
+        </div>
         <div class="muted small" style="margin-top:6px;line-height:1.4;">
           Se il polso sembra grigio o IR, il nodo V4L è sbagliato: il feed giusto di <code>log.0</code> deve essere RGB.
           In caso di dubbio, controlla <code>/api/cameras/status</code> oppure il tab Scene della dashboard operator.
@@ -131,6 +192,40 @@
         <button class="ok" id="btnGripperClose" type="button">Chiudi pinza</button>
         <button class="ok" id="btnGraspLeft" type="button">Solo avvicina sinistra</button>
         <button class="ok" id="btnGraspRight" type="button">Solo avvicina destra</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Tuning overshoot / undershoot</h2>
+      <p class="muted">Workflow rapido: snapshot con overlay detection, poi micro-nudge offset giunti e ritest presa. Lo storico mostra feedback detection e correzioni applicate.</p>
+      <div class="tune-grid" style="margin-top:10px;">
+        <div>
+          <div class="tune-preview">
+            <img id="tuneDetectImg" alt="overlay detection" src="{{ script_root }}/api/pick/scene.jpg" />
+          </div>
+          <div id="tuneDetectMeta" class="teach-note muted" style="margin-top:8px;">Nessun feedback detection.</div>
+          <button id="btnTuneCapture" type="button" style="margin-top:8px;">Aggiorna feedback detection</button>
+        </div>
+        <div class="tune-controls">
+          <div class="row">
+            <label>Giunto offset
+              <select id="tuneJoint">
+                <option value="0">J0</option><option value="1">J1</option><option value="2">J2</option>
+                <option value="3">J3</option><option value="4">J4</option><option value="5">J5</option>
+              </select>
+            </label>
+            <label>Delta (deg)
+              <input id="tuneDelta" type="number" step="0.1" value="0.5" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="btnTuneNudgeMinus" type="button">Nudge -</button>
+            <button id="btnTuneNudgePlus" type="button">Nudge +</button>
+          </div>
+          <button id="btnTunePresetInfo" type="button">Leggi offset attuali</button>
+          <div id="tunePresetMeta" class="teach-note muted">Offset non caricati.</div>
+          <div id="tuneHistory" class="tune-history">Storico tuning vuoto.</div>
+        </div>
       </div>
     </section>
 

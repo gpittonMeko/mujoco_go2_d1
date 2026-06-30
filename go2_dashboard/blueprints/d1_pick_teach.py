@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
+import threading
 import time
 from typing import Any
 
@@ -15,9 +19,58 @@ from go2_dashboard.d1_jog import (
     program_runner,
     program_store,
     service,
+    vision_streams,
 )
+from go2_dashboard.paths import PROJECT_ROOT
 
 bp = Blueprint("d1_pick_teach", __name__)
+
+_PICK_CAMERA_PREF: dict[str, str] = {
+    "detect_camera": (os.environ.get("D1_PICK_DETECT_CAMERA") or "wrist").strip().lower(),
+    "grasp_camera": (os.environ.get("D1_PICK_GRASP_CAMERA") or "wrist").strip().lower(),
+}
+_PICK_CAMERA_PREF_LOCK = threading.Lock()
+_RS_PANEL_LOCK = threading.Lock()
+_RS_PANEL_CACHE: dict[str, dict[str, Any]] = {
+    "wrist": {"ts": 0.0, "panels": {}},
+    "front": {"ts": 0.0, "panels": {}},
+}
+
+
+def _normalize_camera_role(raw: Any) -> str:
+    s = str(raw or "").strip().lower()
+    if s in {"0", "wrist", "polso", "camera0", "cam0"}:
+        return "wrist"
+    if s in {"6", "front", "frontal", "frontale", "camera6", "cam6"}:
+        return "front"
+    return "wrist"
+
+
+def _logical_for_role(role: str) -> int:
+    return 0 if _normalize_camera_role(role) == "wrist" else 6
+
+
+def _camera_pref() -> dict[str, Any]:
+    with _PICK_CAMERA_PREF_LOCK:
+        detect = _normalize_camera_role(_PICK_CAMERA_PREF.get("detect_camera", "wrist"))
+        grasp = _normalize_camera_role(_PICK_CAMERA_PREF.get("grasp_camera", "wrist"))
+        _PICK_CAMERA_PREF["detect_camera"] = detect
+        _PICK_CAMERA_PREF["grasp_camera"] = grasp
+        return {
+            "detect_camera": detect,
+            "grasp_camera": grasp,
+            "detect_logical": _logical_for_role(detect),
+            "grasp_logical": _logical_for_role(grasp),
+        }
+
+
+def _upsert_camera_pref(body: dict[str, Any]) -> dict[str, Any]:
+    with _PICK_CAMERA_PREF_LOCK:
+        if "detect_camera" in body:
+            _PICK_CAMERA_PREF["detect_camera"] = _normalize_camera_role(body.get("detect_camera"))
+        if "grasp_camera" in body:
+            _PICK_CAMERA_PREF["grasp_camera"] = _normalize_camera_role(body.get("grasp_camera"))
+    return _camera_pref()
 
 
 def _servo_deg_from_body(body: dict) -> tuple[list[float] | None, str | None]:
@@ -61,6 +114,136 @@ def _pick_scene_jpeg() -> Response:
     if not path.is_file():
         return jsonify({"ok": False, "reason": "no_scene_overlay"}), 404
     return send_file(path, mimetype="image/jpeg", max_age=0)
+
+
+def _detect_on_logical_camera(logical: int) -> dict[str, Any]:
+    try:
+        import cv2
+        import numpy as np
+        from go2_dashboard import cameras as cameras_mod
+    except Exception as exc:
+        return {"ok": False, "reason": "camera_backend_unavailable", "error": repr(exc)}
+
+    logical = int(logical)
+    if logical not in {0, 6}:
+        return {"ok": False, "reason": "bad_logical_camera", "logical_camera": logical}
+
+    try:
+        cameras_mod.CAMERA_CACHE.start(logical)
+        jpg = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=2.5)
+    except Exception as exc:
+        return {"ok": False, "reason": "camera_frame_error", "error": repr(exc), "logical_camera": logical}
+    if not jpg:
+        return {"ok": False, "reason": "no_frame", "logical_camera": logical}
+    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return {"ok": False, "reason": "jpeg_decode_failed", "logical_camera": logical}
+
+    scripts_dir = str(PROJECT_ROOT / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from box_object_detector import detect_box_object, detector_status
+
+    det = pick_preset.stabilize_detection_orientation(detect_box_object(frame))
+    overlay = frame.copy()
+    if hasattr(pick_vision, "_draw_detection"):
+        try:
+            overlay = pick_vision._draw_detection(overlay, det)
+        except Exception:
+            overlay = frame
+    ok_enc, buf = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), int(os.environ.get("D1_ORBBEC_JPEG_QUALITY", "88"))])
+    if ok_enc and buf is not None:
+        pick_vision.scene_overlay_path().parent.mkdir(parents=True, exist_ok=True)
+        pick_vision.scene_overlay_path().write_bytes(buf.tobytes())
+
+    ts = int(time.time())
+    last_detection = pick_preset.stabilize_detection_orientation(
+        {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "backend": det.get("backend"),
+            "label": det.get("label"),
+            "confidence": det.get("confidence"),
+            "grip_center_px": det.get("grip_center_px"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "norm": det.get("norm"),
+            "orientation_deg": det.get("orientation_deg"),
+            "orient_axis_px": det.get("orient_axis_px"),
+            "orient_box_px": det.get("orient_box_px"),
+            "grip_align_deg": det.get("grip_align_deg"),
+            "grip_align_axis_px": det.get("grip_align_axis_px"),
+            "detect_method": det.get("detect_method"),
+            "detected": bool(det.get("ok")),
+            "logical_camera": logical,
+        }
+    )
+    return {
+        "ok": True,
+        "detection_ok": bool(det.get("ok")),
+        "detection": det,
+        "last_detection": last_detection,
+        "detector_status": detector_status(),
+        "preview_url": f"/api/pick/scene.jpg?t={ts}",
+        "image_url": f"/api/robot/camera/{logical}.jpg?t={ts}",
+        "logical_camera": logical,
+        "hint_it": (
+            "Oggetto rilevato dalla camera selezionata."
+            if det.get("ok")
+            else "Nessuna detection valida dalla camera selezionata."
+        ),
+    }
+
+
+def _capture_and_detect_isolated() -> dict[str, Any]:
+    """Esegue il capture/detect in un processo isolato per evitare crash del server."""
+    timeout_s = float(os.environ.get("D1_PICK_SNAPSHOT_TIMEOUT_S", "90"))
+    code = (
+        "import json; "
+        "from go2_dashboard.d1_jog import pick_vision; "
+        "out = pick_vision.capture_and_detect(); "
+        "print('RESULT:' + json.dumps(out, ensure_ascii=False))"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "reason": "pick_snapshot_timeout",
+            "hint": "Capture D1 troppo lento: riprova o controlla il backend camera.",
+        }
+
+    result_line = None
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith("RESULT:"):
+            result_line = line[len("RESULT:") :]
+            break
+    if result_line is not None:
+        try:
+            return json.loads(result_line)
+        except json.JSONDecodeError:
+            pass
+
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "reason": "pick_snapshot_subprocess_failed",
+            "returncode": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-800:],
+            "stderr_tail": (proc.stderr or "")[-800:],
+            "hint": "Il worker camera ha fallito senza chiudere Flask; riprova o controlla il log del backend.",
+        }
+
+    return {
+        "ok": False,
+        "reason": "pick_snapshot_no_result",
+        "stdout_tail": (proc.stdout or "")[-800:],
+        "stderr_tail": (proc.stderr or "")[-800:],
+    }
 
 
 def _pick_gripper_move(j6_target: float, *, action: str) -> tuple[Response, int]:
@@ -217,6 +400,177 @@ def orbbec_live_mjpeg() -> Response:
         stream_with_context(orbbec_capture.generate_rgb_mjpeg_stream()),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@bp.route("/api/orbbec/streams", methods=["GET"])
+def orbbec_streams() -> Response:
+    return jsonify(orbbec_capture.orbbec_stream_catalog())
+
+
+@bp.route("/api/orbbec/stream.mjpg")
+def orbbec_stream_mjpeg() -> Response:
+    kind = request.args.get("kind", "rgb")
+    idx_raw = request.args.get("index", "").strip()
+    try:
+        idx = int(idx_raw) if idx_raw else None
+    except ValueError:
+        idx = None
+    return Response(
+        stream_with_context(orbbec_capture.generate_orbbec_stream_mjpeg(kind, index=idx)),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@bp.route("/api/pick/vision/streams", methods=["GET"])
+def api_pick_vision_streams() -> Response:
+    pref = _camera_pref()
+    return jsonify(
+        {
+            "ok": True,
+            "cameras": [
+                {"key": "wrist", "label": "Polso", "logical": 0, "description": "Camera polso log.0"},
+                {"key": "front", "label": "Frontale", "logical": 6, "description": "Camera frontale log.6"},
+            ],
+            "streams": [
+                {"key": "color", "label": "Color", "description": "RGB"},
+                {"key": "depth", "label": "Depth", "description": "Mappa profondità"},
+                {"key": "ir1", "label": "IR1", "description": "Infrarosso sinistro"},
+                {"key": "ir2", "label": "IR2", "description": "Infrarosso destro"},
+                {"key": "grid", "label": "Grid", "description": "Quadro riassuntivo"},
+            ],
+            "default_panels": {
+                "wrist": {"rgb": "color", "depth": "depth", "ir": "ir1", "meta": "ir2"},
+                "front": {"rgb": "color", "depth": "depth", "ir": "ir1", "meta": "ir2"},
+            },
+            "selection": pref,
+        }
+    )
+
+
+def _panel_placeholder_jpeg(cv2: Any, *, camera_role: str, panel: str) -> bytes:
+    cam_it = "polso" if camera_role == "wrist" else "frontale"
+    ph = vision_streams.placeholder_bgr(cv2, title=f"{cam_it.upper()} {panel.upper()}", subtitle="attesa stream…")
+    return vision_streams.encode_jpeg(ph, cv2) or b""
+
+
+def _read_color_jpeg_from_cache(cameras_mod: Any, *, camera_role: str) -> bytes | None:
+    logical = _logical_for_role(camera_role)
+    try:
+        cameras_mod.CAMERA_CACHE.start(logical)
+        stats = cameras_mod.CAMERA_CACHE.stats().get(str(logical), {})
+        fresh = bool(stats.get("available"))
+        jpg = cameras_mod.CAMERA_CACHE.peek_jpeg(logical) if fresh else None
+        if jpg is None:
+            jpg = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=0.8)
+        return jpg
+    except Exception:
+        return None
+
+
+def _refresh_realsense_panels(camera_role: str, *, cv2: Any) -> dict[str, bytes | None]:
+    try:
+        from go2_dashboard import realsense_pyrs as rp
+    except Exception:
+        rp = None
+
+    panels: dict[str, bytes | None] = {"color": None, "depth": None, "ir1": None, "ir2": None, "grid": None}
+    role = _normalize_camera_role(camera_role)
+
+    if rp is not None and role == "wrist":
+        try:
+            peek = rp.peek_bundle()
+            if isinstance(peek, dict) and peek.get("color") is not None:
+                wrist = vision_streams.bundle_preview_jpegs(peek, cv2)
+                for k in panels:
+                    panels[k] = wrist.get(k)
+                return panels
+        except Exception:
+            pass
+
+    if rp is None:
+        return panels
+
+    cap = rp.capture_aligned_on_demand(role=role, fast=True, include_ir=True)
+    if not cap.get("ok"):
+        return panels
+    color = cap.get("color_bgr")
+    depth = cap.get("depth_u16")
+    ir = cap.get("ir_u8")
+    ir2 = cap.get("ir2_u8")
+    bundle = {
+        "color": color,
+        "depth_mm": depth,
+        "ir": ir,
+        "ir1": ir,
+        "ir2": ir2,
+    }
+    return vision_streams.bundle_preview_jpegs(bundle, cv2)
+
+
+def _cached_panel_jpeg(camera_role: str, panel: str, *, cv2: Any) -> bytes | None:
+    role = _normalize_camera_role(camera_role)
+    with _RS_PANEL_LOCK:
+        cache = _RS_PANEL_CACHE.setdefault(role, {"ts": 0.0, "panels": {}})
+        ts = float(cache.get("ts") or 0.0)
+        if time.time() - ts > float(os.environ.get("D1_PICK_STREAM_REFRESH_S", "0.9")):
+            cache["panels"] = _refresh_realsense_panels(role, cv2=cv2)
+            cache["ts"] = time.time()
+        panels = cache.get("panels") or {}
+        return panels.get(panel)
+
+
+def _pick_vision_stream_generator(panel: str, *, camera_role: str = "wrist"):
+    import cv2
+
+    role = _normalize_camera_role(camera_role)
+    panel = (panel or "color").strip().lower()
+    if panel not in {"color", "depth", "ir1", "ir2", "grid"}:
+        panel = "color"
+    period = float(os.environ.get("VISION_STREAM_MJPEG_PERIOD_S", "0.08"))
+    last_out: bytes | None = _panel_placeholder_jpeg(cv2, camera_role=role, panel=panel)
+
+    try:
+        from go2_dashboard import cameras as cameras_mod
+    except Exception:
+        cameras_mod = None
+
+    while True:
+        try:
+            jpg: bytes | None = None
+            if panel == "color" and cameras_mod is not None:
+                jpg = _read_color_jpeg_from_cache(cameras_mod, camera_role=role)
+                if jpg is None:
+                    # Fallback robusto: cattura on-demand RealSense (evita frame stale/pausa cache).
+                    jpg = _cached_panel_jpeg(role, "color", cv2=cv2)
+            else:
+                jpg = _cached_panel_jpeg(role, panel, cv2=cv2)
+            if jpg:
+                last_out = jpg
+            out = last_out or _panel_placeholder_jpeg(cv2, camera_role=role, panel=panel)
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + out + b"\r\n"
+        except Exception:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + (last_out or b"") + b"\r\n"
+        time.sleep(period)
+
+
+@bp.route("/api/pick/vision/stream.mjpg")
+def api_pick_vision_stream_mjpg() -> Response:
+    panel = request.args.get("panel", "color")
+    camera_role = request.args.get("camera", request.args.get("role", "wrist"))
+    return Response(
+        stream_with_context(_pick_vision_stream_generator(panel, camera_role=camera_role)),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@bp.route("/api/pick/camera/select", methods=["GET", "POST"])
+def api_pick_camera_select() -> Response:
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        return jsonify({"ok": True, **_upsert_camera_pref(body)})
+    return jsonify({"ok": True, **_camera_pref()})
 
 @bp.route("/api/orbbec/last.jpg")
 def orbbec_last_jpeg() -> Response:
@@ -474,8 +828,27 @@ def pick_vision_crop_preview() -> Response:
 
 @bp.route("/api/pick/snapshot", methods=["POST"])
 def pick_snapshot() -> Response:
+    body = request.get_json(silent=True) or {}
+    pref = _camera_pref()
+    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    logical = _logical_for_role(detect_role)
     try:
-        out = pick_vision.capture_and_detect()
+        if logical == 0:
+            out = _capture_and_detect_isolated()
+            cap = out.get("capture") if isinstance(out, dict) else None
+            cap_reason = cap.get("reason") if isinstance(cap, dict) else None
+            if not out.get("ok") and (
+                out.get("reason") in {"capture_failed", "pick_snapshot_no_result", "pick_snapshot_subprocess_failed"}
+                or cap_reason == "realsense_wrist_capture_failed"
+            ):
+                # Fallback anti-contenzione: retry nello stesso processo del server.
+                out = pick_vision.capture_and_detect()
+                out["snapshot_mode"] = "inprocess_retry"
+            out["logical_camera"] = 0
+            out["detect_camera"] = "wrist"
+        else:
+            out = _detect_on_logical_camera(logical)
+            out["detect_camera"] = "front"
         _apply_pick_detection_to_preset(out)
     except Exception as exc:
         return jsonify(
@@ -492,10 +865,20 @@ def pick_snapshot() -> Response:
 @bp.route("/api/pick/detect", methods=["POST"])
 def pick_detect() -> Response:
     body = request.get_json(silent=True) or {}
-    if body.get("capture_if_missing", True):
+    pref = _camera_pref()
+    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    logical = _logical_for_role(detect_role)
+    if logical == 0 and body.get("capture_if_missing", True):
         out = pick_vision.capture_and_detect()
-    else:
+        out["logical_camera"] = 0
+        out["detect_camera"] = "wrist"
+    elif logical == 0:
         out = pick_vision.detect_on_latest_snapshot(capture_if_missing=False)
+        out["logical_camera"] = 0
+        out["detect_camera"] = "wrist"
+    else:
+        out = _detect_on_logical_camera(logical)
+        out["detect_camera"] = "front"
     _apply_pick_detection_to_preset(out)
     code = 200 if out.get("ok") else 502
     return jsonify(out), code
@@ -536,6 +919,9 @@ def pick_detect_jpeg() -> Response:
 @bp.route("/api/pick/grasp/goto", methods=["POST"])
 def pick_grasp_goto() -> Response:
     body = request.get_json(silent=True) or {}
+    pref = _camera_pref()
+    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    grasp_role = _normalize_camera_role(body.get("grasp_camera") or pref.get("grasp_camera"))
     scan_variant = str(body.get("scan_variant") or body.get("variant") or "").strip().lower() or None
     found = program_store.find_scan_waypoint(variant=scan_variant)
     if found is None:
@@ -620,6 +1006,13 @@ def pick_grasp_goto() -> Response:
         out["manual_orient_offset_deg"] = float(manual_orient)
     out["joint_offset_deg_effective"] = off
     out["target_servo_deg"] = target
+    out["grasp_camera"] = grasp_role
+    out["grasp_logical"] = _logical_for_role(grasp_role)
+    if grasp_role != "wrist":
+        out["warning_it"] = (
+            "Camera frontale selezionata per presa: questo step usa comunque l'approccio da preset. "
+            "Usa Presa automatica per validazione camera frontale."
+        )
     try:
         from go2_dashboard.d1_jog import pick_teach_model
 
@@ -665,6 +1058,43 @@ def pick_gripper_close() -> Response:
     close_j6 = pick_preset.gripper_close_j6_deg(scan_sd)
     resp, code = _pick_gripper_move(close_j6, action="gripper_close")
     return resp, code
+
+
+@bp.route("/api/pick/grasp/close_and_lift", methods=["POST"])
+def pick_grasp_close_and_lift() -> Response:
+    body = request.get_json(silent=True) or {}
+    lift_enabled = body.get("lift", True) is not False
+
+    found = program_store.find_scan_waypoint()
+    if found is None:
+        return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404
+    _program_id, wp = found
+    raw = wp.get("servo_deg")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "reason": "invalid_scan_waypoint"}), 400
+    scan_sd = service.clamp_servo_deg([float(x) for x in raw[:7]])
+    close_j6 = pick_preset.gripper_close_j6_deg(scan_sd)
+
+    close_resp, close_code = _pick_gripper_move(close_j6, action="gripper_close")
+    close_out = close_resp.get_json(silent=True) or {"ok": False, "reason": "close_decode_failed"}
+    if close_code >= 400 or not close_out.get("ok"):
+        return (
+            jsonify({"ok": False, "reason": str(close_out.get("reason") or "gripper_close_failed"), "close": close_out}),
+            502,
+        )
+
+    lift_out: dict[str, Any] | None = None
+    if lift_enabled:
+        try:
+            from go2_dashboard.d1_arm_publish_lite import goto_home_servo_deg
+
+            lift_out = dict(goto_home_servo_deg(delay_ms=None))
+        except Exception as exc:
+            lift_out = {"ok": False, "reason": "lift_exception", "error": str(exc)}
+        if not lift_out.get("ok"):
+            return jsonify({"ok": False, "reason": str(lift_out.get("reason") or "lift_failed"), "close": close_out, "lift": lift_out}), 502
+
+    return jsonify({"ok": True, "close": close_out, "lift": lift_out, "lift_enabled": lift_enabled})
 
 
 @bp.route("/api/pick/left/sequence", methods=["POST"])
@@ -870,6 +1300,9 @@ def pick_full_sequence() -> Response:
     5. se fallisce, la UI puo' avviare il teaching posizione.
     """
     body = request.get_json(silent=True) or {}
+    pref = _camera_pref()
+    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    grasp_role = _normalize_camera_role(body.get("grasp_camera") or pref.get("grasp_camera"))
     scan_variant = _scan_variant_from_body(body, default="j90_left")
     instruction = str(body.get("instruction") or "prendi il pezzo").strip()
     close_enabled = body.get("close", True) is not False
@@ -882,6 +1315,10 @@ def pick_full_sequence() -> Response:
             "phase": phase,
             "reason": reason,
             "scan_variant": scan_variant,
+            "detect_camera": detect_role,
+            "detect_logical": _logical_for_role(detect_role),
+            "grasp_camera": grasp_role,
+            "grasp_logical": _logical_for_role(grasp_role),
             "steps": steps,
             "operator_can_teach": True,
             "manual_teach_next": {
@@ -924,15 +1361,37 @@ def pick_full_sequence() -> Response:
         return fail("move_90", str(move_90.get("reason") or "move_90_failed"), code=502)
 
     metric_plan: dict[str, Any]
-    try:
-        from go2_dashboard.operator_plan_cache import set_last_grasp_plan
-        from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
+    if detect_role == "front":
+        front_det = _detect_on_logical_camera(6)
+        metric_plan = {
+            "ok": bool(front_det.get("ok") and front_det.get("detection_ok")),
+            "backend": "front_camera_2d",
+            "reason": None if front_det.get("detection_ok") else (front_det.get("reason") or "front_detection_failed"),
+            "detection": front_det.get("detection"),
+            "validation_ui": {
+                "ok": bool(front_det.get("detection_ok")),
+                "banner_it": (
+                    "Validazione frontale 2D OK"
+                    if front_det.get("detection_ok")
+                    else "Validazione frontale 2D fallita"
+                ),
+            },
+            "grasp_assessment": {
+                "execution_allowed": bool(front_det.get("detection_ok")),
+                "label_it": "front_2d" if front_det.get("detection_ok") else "front_2d_failed",
+            },
+            "logical_camera_device": 6,
+        }
+    else:
+        try:
+            from go2_dashboard.operator_plan_cache import set_last_grasp_plan
+            from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
 
-        metric_plan = plan_wrist_grasp_metric(scan_sd, instruction=instruction, fast_capture=False)
-        if metric_plan.get("ok"):
-            set_last_grasp_plan(metric_plan)
-    except Exception as exc:
-        metric_plan = {"ok": False, "reason": "metric_3d_exception", "error": str(exc)}
+            metric_plan = plan_wrist_grasp_metric(scan_sd, instruction=instruction, fast_capture=False)
+            if metric_plan.get("ok"):
+                set_last_grasp_plan(metric_plan)
+        except Exception as exc:
+            metric_plan = {"ok": False, "reason": "metric_3d_exception", "error": str(exc)}
 
     metric_ok = bool(
         metric_plan.get("ok")
@@ -943,6 +1402,8 @@ def pick_full_sequence() -> Response:
         {
             "step": "rgbd_scan_ik",
             "ok": metric_ok,
+            "detect_camera": detect_role,
+            "grasp_camera": grasp_role,
             "reason": metric_plan.get("reason"),
             "backend": metric_plan.get("backend"),
             "target": metric_plan.get("target"),
@@ -986,6 +1447,10 @@ def pick_full_sequence() -> Response:
         {
             "ok": True,
             "scan_variant": scan_variant,
+            "detect_camera": detect_role,
+            "detect_logical": _logical_for_role(detect_role),
+            "grasp_camera": grasp_role,
+            "grasp_logical": _logical_for_role(grasp_role),
             "steps": steps,
             "metric_plan": metric_plan,
             "execute": execute_out,
