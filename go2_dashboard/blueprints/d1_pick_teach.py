@@ -41,7 +41,9 @@ _TUNING_CYCLES_PATH = PROJECT_ROOT / "data" / "pick_tuning_cycles.jsonl"
 def _color_stream_source_setting(camera_role: str) -> str:
     role = _normalize_camera_role(camera_role)
     env_key = "D1_PICK_WRIST_COLOR_SOURCE" if role == "wrist" else "D1_PICK_FRONT_COLOR_SOURCE"
-    default = "realsense_first" if role == "wrist" else "cache_first"
+    # A D456 V4L node can expose IR or false-color depth. Those frames may
+    # still pass chroma diagnostics, so the wrist RGB panel uses SDK color only.
+    default = "realsense_only" if role == "wrist" else "cache_first"
     val = str(os.environ.get(env_key, default) or default).strip().lower()
     if val not in {"cache_first", "realsense_first", "cache_only", "realsense_only"}:
         val = default
@@ -499,6 +501,33 @@ def arm_status() -> Response:
     return jsonify({"ok": True, "arm_coupled": service.arm_coupled()})
 
 
+@bp.route("/api/arm/motion/reset", methods=["POST"])
+def arm_motion_reset() -> Response:
+    """Clear a stale software motion lock without releasing motor torque."""
+    body = request.get_json(silent=True) or {}
+    if str(body.get("confirm") or "").strip().upper() != "RESET_ARM_MOTION":
+        return jsonify({"ok": False, "reason": "confirm_required"}), 403
+
+    from go2_dashboard.d1_jog.motion_guard import force_idle, status as motion_status
+
+    before = motion_status()
+    stop = program_runner.request_stop()
+    service._halt_cartesian_stream(wait_idle=True)
+    force_idle()
+    after = motion_status()
+    return jsonify(
+        {
+            "ok": True,
+            "action": "arm_motion_reset",
+            "torque_released": False,
+            "funcode5_required_on_next_motion": True,
+            "before": before,
+            "after": after,
+            "program_stop": stop,
+        }
+    )
+
+
 @bp.route("/api/arm/couple", methods=["POST"])
 def arm_couple() -> Response:
     body = request.get_json(silent=True) or {}
@@ -602,7 +631,12 @@ def _read_color_jpeg_from_cache(cameras_mod: Any, *, camera_role: str) -> bytes 
         return None
 
 
-def _refresh_realsense_panels(camera_role: str, *, cv2: Any) -> dict[str, bytes | None]:
+def _refresh_realsense_panels(
+    camera_role: str,
+    *,
+    cv2: Any,
+    include_ir: bool = False,
+) -> dict[str, bytes | None]:
     try:
         from go2_dashboard import realsense_pyrs as rp
     except Exception:
@@ -625,7 +659,12 @@ def _refresh_realsense_panels(camera_role: str, *, cv2: Any) -> dict[str, bytes 
     if rp is None:
         return panels
 
-    cap = rp.capture_aligned_on_demand(role=role, fast=True, include_ir=True)
+    cap = rp.capture_aligned_on_demand(
+        role=role,
+        fast=False,
+        force_full=True,
+        include_ir=include_ir,
+    )
     if not cap.get("ok"):
         return panels
     color = cap.get("color_bgr")
@@ -648,7 +687,11 @@ def _cached_panel_jpeg(camera_role: str, panel: str, *, cv2: Any) -> bytes | Non
         cache = _RS_PANEL_CACHE.setdefault(role, {"ts": 0.0, "panels": {}})
         ts = float(cache.get("ts") or 0.0)
         if time.time() - ts > float(os.environ.get("D1_PICK_STREAM_REFRESH_S", "0.9")):
-            cache["panels"] = _refresh_realsense_panels(role, cv2=cv2)
+            cache["panels"] = _refresh_realsense_panels(
+                role,
+                cv2=cv2,
+                include_ir=panel in {"ir1", "ir2", "grid"},
+            )
             cache["ts"] = time.time()
         panels = cache.get("panels") or {}
         return panels.get(panel)
@@ -755,21 +798,55 @@ def api_pick_vision_realsense_reset() -> Response:
     except Exception:
         pass
     time.sleep(float(os.environ.get("D1_PICK_RS_RESET_PAUSE_S", "0.45")))
-    cap = rp.capture_aligned_on_demand(role=role, fast=False, include_ir=True)
+    cap = rp.capture_aligned_on_demand(
+        role=role,
+        fast=False,
+        force_full=True,
+        include_ir=False,
+    )
 
-    try:
-        from go2_dashboard import cameras as cameras_mod
+    panels: dict[str, bytes | None] = {}
+    if cap.get("ok"):
+        try:
+            import cv2
 
-        cameras_mod.CAMERA_CACHE.start(logical)
-        _ = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=0.8)
-    except Exception:
-        pass
+            bundle = {
+                "color": cap.get("color_bgr"),
+                "depth_mm": cap.get("depth_u16"),
+                "ir": cap.get("ir_u8"),
+                "ir1": cap.get("ir_u8"),
+                "ir2": cap.get("ir2_u8"),
+            }
+            panels = vision_streams.bundle_preview_jpegs(bundle, cv2)
+        except Exception:
+            panels = {}
 
     with _RS_PANEL_LOCK:
-        _RS_PANEL_CACHE[role] = {"ts": 0.0, "panels": {}}
+        _RS_PANEL_CACHE[role] = {"ts": time.time() if panels else 0.0, "panels": panels}
+
+    capture_summary = {
+        k: v
+        for k, v in cap.items()
+        if k not in {"color_bgr", "depth_u16", "ir_u8", "ir2_u8"}
+    }
+    capture_summary.update(
+        {
+            "has_color": cap.get("color_bgr") is not None,
+            "has_depth": cap.get("depth_u16") is not None,
+            "has_ir1": cap.get("ir_u8") is not None,
+            "has_ir2": cap.get("ir2_u8") is not None,
+        }
+    )
 
     code = 200 if cap.get("ok") else 503
-    return jsonify({"ok": bool(cap.get("ok")), "camera": role, "logical": logical, "capture": cap}), code
+    return jsonify(
+        {
+            "ok": bool(cap.get("ok")),
+            "camera": role,
+            "logical": logical,
+            "capture": capture_summary,
+        }
+    ), code
 
 
 @bp.route("/api/pick/camera/select", methods=["GET", "POST"])

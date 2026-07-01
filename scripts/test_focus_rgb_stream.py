@@ -13,6 +13,10 @@ from go2_dashboard.blueprints import d1_pick_teach
 
 
 class FocusRgbStreamTests(unittest.TestCase):
+    def test_wrist_defaults_to_sdk_color_only(self) -> None:
+        self.assertEqual(d1_pick_teach._color_stream_source_setting("wrist"), "realsense_only")
+        self.assertEqual(d1_pick_teach._color_stream_source_order("wrist"), ["realsense"])
+
     def test_accepts_only_available_confirmed_rgb(self) -> None:
         self.assertTrue(
             d1_pick_teach._cache_stats_rgb_usable(

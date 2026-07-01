@@ -606,7 +606,7 @@ def _detect_color_box_core(frame: np.ndarray, profile: dict[str, Any] | None = N
     best_score = -1.0
     best_solidity = 0.0
     max_cy_frac = _parse_float_env("D1_COLOR_BOX_MAX_CY_FRAC", 0.68)
-    max_bbox_h_frac = float((profile or {}).get("max_bbox_h_frac", _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.34)))
+    max_bbox_h_frac = float((profile or {}).get("max_bbox_h_frac", _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.45)))
     for cnt in cnts:
         area = float(cv2.contourArea(cnt))
         if area < min_area or area > max_area:

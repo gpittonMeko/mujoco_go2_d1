@@ -388,7 +388,11 @@ def capture_aligned_on_demand(
     try:
         from go2_dashboard.cameras import CAMERA_CACHE
 
-        CAMERA_CACHE.request_pause(logical, duration_s=pause_s + _env_float("GO2_REALSENSE_CAPTURE_PAUSE_GUARD_S", 0.8))
+        # A RealSense pipeline can need more than one second to negotiate its
+        # first frame. Keep the competing V4L cache paused for the whole SDK
+        # startup window, otherwise it reopens the device while wait_for_frames
+        # is still running and the wrist color stream never starts.
+        CAMERA_CACHE.request_pause(logical, duration_s=pause_s + _env_float("GO2_REALSENSE_CAPTURE_PAUSE_GUARD_S", 4.0))
     except Exception:
         pass
     stop()
@@ -449,7 +453,10 @@ def capture_aligned_on_demand(
         if use_fast:
             warmup = int(_env_float("GO2_REALSENSE_CAPTURE_FAST_WARMUP_DISCARD", 1))
         else:
-            warmup = int(_env_float("GO2_REALSENSE_CAPTURE_WARMUP_DISCARD", 4))
+            # Let D456 RGB auto-exposure converge before selecting the frame.
+            # Four frames produced a nearly black wrist image in normal indoor
+            # light even though later frames from the same sensor were usable.
+            warmup = int(_env_float("GO2_REALSENSE_CAPTURE_WARMUP_DISCARD", 20))
         for _ in range(max(0, warmup)):
             try:
                 pipe.wait_for_frames(200)

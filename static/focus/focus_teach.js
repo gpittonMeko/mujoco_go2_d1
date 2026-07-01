@@ -21,13 +21,7 @@
   };
   var SLOT_DEFS = [
     { id: "wrist_rgb", camera: "wrist", kind: "rgb", label: "Polso RGB" },
-    { id: "wrist_depth", camera: "wrist", kind: "depth", label: "Polso Depth" },
-    { id: "wrist_ir", camera: "wrist", kind: "ir", label: "Polso IR1" },
-    { id: "wrist_meta", camera: "wrist", kind: "meta", label: "Polso IR2" },
     { id: "front_rgb", camera: "front", kind: "rgb", label: "Frontale RGB" },
-    { id: "front_depth", camera: "front", kind: "depth", label: "Frontale Depth" },
-    { id: "front_ir", camera: "front", kind: "ir", label: "Frontale IR1" },
-    { id: "front_meta", camera: "front", kind: "meta", label: "Frontale IR2" },
   ];
   var STREAM_STATE_KEY = "focus.teach.streamGrid.v1";
   var STREAM_CAROUSEL_KEY = "focus.teach.streamCarousel.v1";
@@ -351,6 +345,18 @@
   function renderStreamGrid() {
     var grid = $("focusStreamGrid");
     if (!grid) return;
+    grid.innerHTML =
+      '<article class="focus-stream-card" data-slot="wrist_rgb">' +
+        '<div class="focus-stream-top"><strong>Polso RGB</strong><small>D456 - solo colore SDK</small></div>' +
+        '<img id="focusStreamImg-wrist_rgb" alt="Polso RGB" src="' + streamUrl("color", "wrist") + '" />' +
+        '<div class="focus-stream-controls"><div class="focus-stream-meta">Detection e presa: solo camera polso.</div></div>' +
+      '</article>' +
+      '<article class="focus-stream-card" data-slot="front_rgb">' +
+        '<div class="focus-stream-top"><strong>Frontale RGB</strong><small>D435i - monitor</small></div>' +
+        '<img id="focusStreamImg-front_rgb" alt="Frontale RGB" src="' + streamUrl("color", "front") + '" />' +
+        '<div class="focus-stream-controls"><div class="focus-stream-meta">Solo monitor: esclusa dalla detection presa.</div></div>' +
+      '</article>';
+    return;
     var streams = streamCatalog && Array.isArray(streamCatalog.streams) ? streamCatalog.streams : [];
     var cameras = ["wrist", "front"];
     var html = cameras.map(function (cameraRole) {
@@ -1195,7 +1201,11 @@
   }
 
   function cancel() {
-    return post("/api/grasp/teach_cancel", { reason_it: "annullato da focus dashboard" }).then(function (j) {
+    return Promise.all([
+      post("/api/grasp/teach_cancel", { reason_it: "annullato da focus dashboard" }),
+      post("/api/arm/motion/reset", { confirm: "RESET_ARM_MOTION" }),
+    ]).then(function (rows) {
+      var j = { teach: rows[0], motion: rows[1], ok: !!(rows[0] && rows[0].ok && rows[1] && rows[1].ok) };
       pill("annullato", "warn");
       setProgress(0, "Flusso annullato", "warn", null);
       log("annulla flusso", j, j.ok ? "info" : "warn");
@@ -1208,7 +1218,7 @@
     bindBtn("btnScanLeft90", function () { return move90("j90_left", true); });
     bindBtn("btnScanRight90", function () { return move90("j90", true); });
     bindBtn("btnStartGrasp", startGrasp);
-    bindBtn("btnAutoGrasp", startAutoGrasp);
+    bindBtn("btnAutoGrasp", function () { activeVariant = "j90_left"; return startAutoGrasp(); });
     bindBtn("btnGripperClose", gripperCloseOnly);
     bindBtn("btnSafeCycle", runSafeCycle);
     bindBtn("btnTeachPosition", function () { return teachPosition("teaching posizione da pulsante"); });

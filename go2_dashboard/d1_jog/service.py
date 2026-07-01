@@ -493,7 +493,7 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
     Prima di movimenti programmati (scan, waypoint): non chiedere Coppia ON se il
     feedback giunti ├¿ gi├á valido; non reinviare funcode 5 se gi├á in coppia.
     """
-    global _arm_coupled
+    global _arm_coupled, _couple_last_ts
     force_before_motion = os.environ.get("GO2_ENFORCE_FUNCODE5_BEFORE_MOTION", "1").strip().lower() in {
         "1",
         "true",
@@ -507,7 +507,25 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
         "on",
     }
     if force_before_motion:
-        out = ensure_coupled(with_power=power_before_motion, force=True)
+        guard = motion_guard_status()
+        motion_kind = str(guard.get("kind") or "idle")
+        if motion_kind not in {"idle", "admin"}:
+            # The caller already owns the program/joint/cartesian motion lock.
+            # Acquiring the admin lock here would self-deadlock with
+            # ``motion_busy:program``. Keep funcode 5 mandatory, but publish it
+            # directly through the DDS daemon owned by the current motion.
+            if power_before_motion and not _arm_coupled:
+                seq = int(time.time()) % 100000
+                out = _publish_messages(_couple_messages(with_power=True, seq=seq), delay_ms=100)
+                if out.get("ok") or out.get("skipped"):
+                    _arm_coupled = True
+                    _couple_last_ts = time.time()
+            else:
+                out = arm_couple_once(force=True)
+            out["motion_context"] = motion_kind
+            out["admin_lock_skipped"] = True
+        else:
+            out = ensure_coupled(with_power=power_before_motion, force=True)
         out["action"] = "ensure_coupled_for_motion"
         out["forced_couple"] = True
         return out

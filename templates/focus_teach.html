@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="{{ script_root }}/static/focus/focus_dashboard.css?v={{ asset_ver }}" />
   <style>
     body { margin: 0; background: #0b0f14; color: #e7edf5; font-family: Inter, system-ui, sans-serif; }
+    .teach-shell [hidden] { display: none !important; }
     .teach-shell { padding: 14px; display: grid; gap: 14px; }
     .teach-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
     .teach-head h1 { margin: 0; font-size: 1.15rem; }
@@ -91,10 +92,8 @@
     <header class="teach-head">
       <div>
         <h1>Presa / Teach</h1>
-        <p class="muted">Dashboard autonoma 5056: polso RGB, braccio D1, teaching locale.</p>
+        <p class="muted">Presa sinistra, riconoscimento RGB e teaching locale.</p>
         <div class="teach-nav-mini">
-          <a href="{{ script_root }}/#tab-teach">Dashboard tabs</a>
-          <a href="{{ script_root }}/#tab-motion">Movimento cane</a>
           <a href="{{ script_root }}/#tab-motors">Motori</a>
           <a href="{{ script_root }}/#tab-hermes">Hermes</a>
         </div>
@@ -104,9 +103,9 @@
 
     <section class="teach-grid">
       <article class="card">
-        <h2>Oggetto</h2>
+        <h2>1. Oggetto e riconoscimento</h2>
         <label class="muted">Istruzione</label>
-        <input id="teachInstruction" type="text" value="prendi il pezzo" />
+        <input id="teachInstruction" type="text" value="prendi il pezzo a sinistra" />
         <div class="teach-row" style="margin-top:10px;">
           <button id="btnTeachStatus" type="button">Aggiorna stato</button>
           <button id="btnSnapshot" type="button">Foto + detect</button>
@@ -115,28 +114,14 @@
       </article>
 
       <article class="card">
-        <h2>Camere</h2>
+        <h2>Camere RGB</h2>
         <div id="teachCamStatus" class="teach-note muted" style="margin-top:10px;">Controllo camere...</div>
         <div class="focus-stream-head">
           <div>
-            <h3>Stream compatti con scorrimento</h3>
-            <p class="focus-stream-note">Una vista per polso e una per frontale; usa frecce destra/sinistra per cambiare feed.</p>
+            <h3>Polso + frontale</h3>
+            <p class="focus-stream-note">Entrambe visibili; detection e presa usano esclusivamente il polso D456.</p>
           </div>
           <button id="btnFocusReloadStreams" type="button">Ricarica stream</button>
-        </div>
-        <div class="focus-camera-select">
-          <label>Camera detection
-            <select id="focusDetectCamera">
-              <option value="wrist">Polso (log.0)</option>
-              <option value="front">Frontale (log.6)</option>
-            </select>
-          </label>
-          <label>Camera presa
-            <select id="focusGraspCamera">
-              <option value="wrist">Polso (log.0)</option>
-              <option value="front">Frontale (log.6)</option>
-            </select>
-          </label>
         </div>
         <div class="focus-stream-grid" id="focusStreamGrid">
           <div class="focus-stream-card"><div class="focus-stream-top"><strong>Carico...</strong><small>wait</small></div></div>
@@ -179,7 +164,7 @@
       </div>
     </section>
 
-    <section class="card svc-ack-card">
+    <section class="card svc-ack-card" hidden>
       <h2>ACK servizi</h2>
       <div class="svc-ack-rail" id="svcAckRail">
         <span class="svc-ack" data-svc="comando" id="svcAckComando">[ ] comando</span>
@@ -192,21 +177,16 @@
     </section>
 
     <section class="card">
-      <h2>Movimento presa</h2>
-      <p class="muted">Flusso consigliato: Muovi 90° → Foto+detect → Solo avvicina → <strong>Inizia presa</strong> (chiude + rialza). «Presa automatica» rifà tutto in sequenza.</p>
+      <h2>2. Presa sinistra</h2>
+      <p class="muted">Il polso si sposta sulla posa sinistra, riconosce l'oggetto e usa il teach per avvicinarsi. Usa il ciclo automatico solo con area libera.</p>
       <div class="teach-primary" style="margin-top:12px;">
-        <button class="warn" id="btnScanLeft90" type="button">Muovi a 90&deg; a sinistra</button>
-        <button class="warn" id="btnScanRight90" type="button">Muovi a 90&deg; a destra</button>
-        <button class="ok" id="btnStartGrasp" type="button">Inizia presa</button>
-      </div>
-      <div class="teach-primary-4">
-        <button id="btnAutoGrasp" type="button">Presa automatica</button>
-        <button class="ok" id="btnGripperClose" type="button">Chiudi pinza</button>
-        <button class="ok" id="btnGraspLeft" type="button">Solo avvicina sinistra</button>
-        <button class="ok" id="btnGraspRight" type="button">Solo avvicina destra</button>
+        <button class="warn" id="btnScanLeft90" type="button">1. Scansione sinistra</button>
+        <button class="ok" id="btnGraspLeft" type="button">2. Avvicina sinistra</button>
+        <button class="ok" id="btnStartGrasp" type="button">3. Chiudi + rialza</button>
       </div>
       <div class="teach-row" style="margin-top:10px;">
-        <button id="btnSafeCycle" type="button">Test ciclo sicuro (scan+detect+goto)</button>
+        <button class="ok" id="btnAutoGrasp" type="button">Ciclo automatico sinistra</button>
+        <button class="danger" id="btnTeachCancel" type="button">STOP / Annulla</button>
       </div>
     </section>
 
@@ -276,19 +256,16 @@
           <button class="warn" id="btnTeachPosition" type="button">Teaching posizione presa</button>
           <button class="warn" id="btnMarkGraspFailed" type="button">Presa fallita &rarr; teaching</button>
           <button id="btnManualTeachLeft" type="button">Teaching completo sinistra</button>
-          <button id="btnManualTeachRight" type="button">Teaching completo destra</button>
           <button class="ok" id="btnBuildTeachModel" type="button">Ricrea modello teach</button>
-          <button class="danger" id="btnTeachCancel" type="button">Annulla flusso</button>
         </div>
       </article>
 
       <article class="card">
-        <h2>Test movimento</h2>
-        <p class="muted">Comandi di servizio braccio. La presa passo-passo usa i pulsanti nella sezione «Movimento presa».</p>
+        <h2>Sicurezza braccio</h2>
+        <p class="muted">Home e coppia manuale. Il release è escluso dalla dashboard per evitare cedimenti accidentali.</p>
         <div class="teach-actions" style="margin-top:12px;">
           <button class="ok btn-home" id="btnGotoHome" type="button">&#127968; Torna Home</button>
           <button id="btnArmCouple" type="button">Coppia ON</button>
-          <button class="danger" id="btnArmRelease" type="button">Release giunti</button>
         </div>
       </article>
     </section>

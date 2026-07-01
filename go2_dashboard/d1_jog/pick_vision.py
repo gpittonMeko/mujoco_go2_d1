@@ -245,30 +245,54 @@ def capture_and_detect() -> dict[str, Any]:
 
 def _capture_wrist_rgb_jpeg() -> dict[str, Any]:
     try:
-        from go2_dashboard.cameras import CAMERA_CACHE, wrist_depth_backend
+        from go2_dashboard.cameras import wrist_depth_backend
     except Exception:
         return orbbec_capture.capture_orbbec_jpeg()
 
     if wrist_depth_backend() != "realsense":
         return orbbec_capture.capture_orbbec_jpeg()
 
-    CAMERA_CACHE.start(0)
-    jpg = CAMERA_CACHE.get_jpeg(0, wait_s=float(os.environ.get("D1_PICK_REALSENSE_WAIT_S", "3.0")))
-    if not jpg:
+    try:
+        import cv2
+
+        from go2_dashboard import realsense_pyrs as rp
+
+        cap = rp.capture_aligned_on_demand(
+            role="wrist",
+            fast=False,
+            force_full=True,
+            include_ir=False,
+        )
+    except Exception as exc:
+        cap = {"ok": False, "reason": "realsense_sdk_exception", "detail": repr(exc)}
+    color = cap.get("color_bgr") if isinstance(cap, dict) else None
+    if not cap.get("ok") or color is None:
         return {
             "ok": False,
             "reason": "realsense_wrist_capture_failed",
-            "hint": "Nessun frame RGB dalla RealSense D456 polso (logical 0). Controlla /api/cameras/status.",
+            "hint": "Nessun frame colore SDK dalla RealSense D456 polso.",
+            "capture": {
+                k: v
+                for k, v in (cap.items() if isinstance(cap, dict) else [])
+                if k not in {"color_bgr", "depth_u16", "ir_u8", "ir2_u8"}
+            },
             "stream_kind": "rgb",
-            "via": "camera_cache_logical_0",
+            "via": "pyrealsense2_sdk",
         }
+    quality = int(os.environ.get("D1_ORBBEC_JPEG_QUALITY", "88"))
+    ok_enc, buf = cv2.imencode(".jpg", color, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok_enc or buf is None:
+        return {"ok": False, "reason": "realsense_rgb_encode_failed", "via": "pyrealsense2_sdk"}
     return orbbec_capture._save_jpeg(
-        jpg,
-        source="camera_cache:logical0:wrist_realsense_d456",
+        buf.tobytes(),
+        source="pyrealsense2:wrist_d456_color",
         extra={
-            "via": "camera_cache_logical_0",
+            "via": "pyrealsense2_sdk",
             "camera_backend": "realsense",
-            "stream_kind": "rgb_cache",
+            "stream_kind": "rgb_sdk",
+            "serial": cap.get("serial"),
+            "capture_ms": cap.get("capture_ms"),
+            "depth_nonzero_px": cap.get("depth_nonzero_px"),
         },
     )
 

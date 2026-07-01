@@ -459,6 +459,8 @@ export GO2_WRIST_REALSENSE_USB_PID=0b5c
 export GO2_FRONT_REALSENSE_USB_PID=0b3a
 export GO2_REALSENSE_COLOR_BACKEND=pyrealsense
 export GO2_REALSENSE_STREAMS=color,depth
+export GO2_REALSENSE_RGB_AUTO_EXPOSURE=1
+export GO2_REALSENSE_CAPTURE_WARMUP_DISCARD=20
 export GO2_REALSENSE_CAPTURE_SETTLE_S=0.5
 export GO2_REALSENSE_CAPTURE_PAUSE_EXTRA_S=0.35
 export GO2_REALSENSE_CAPTURE_WARMUP_DISCARD=4
@@ -609,7 +611,7 @@ export D1_PICK_BOTTOM_CROP_FRAC=0.30
 export D1_PICK_GRIPPER_EXCLUDE_BOTTOM_FRAC=0.20
 export D1_PICK_GRIPPER_EXCLUDE_WIDTH_FRAC=0.62
 export D1_COLOR_BOX_MAX_CY_FRAC=0.68
-export D1_COLOR_BOX_MAX_BBOX_H_FRAC=0.34
+export D1_COLOR_BOX_MAX_BBOX_H_FRAC=0.45
 export D1_COLOR_BOX_MAX_BOTTOM_Y_FRAC=0.72
 export GO2_GRASP_FOLD_SETTLE_MS=500
 export GO2_GRASP_START_SETTLE_MS=900
@@ -813,6 +815,15 @@ def _nx_start_dashboard_sh(host: str) -> str:
 set -e
 cd {REMOTE_BASE} || exit 1
 source "{REMOTE_BASE}/scripts/nx_dashboard_env.sh"
+# Never kill the Flask-owned DDS publisher while the D1 arm is coupled. Even a
+# short writer gap drops torque. Maintenance can override only explicitly.
+if [ "${{GO2_ALLOW_ARM_COUPLED_RESTART:-0}}" != "1" ]; then
+  ARM_COUPLED="$(curl -fsS --max-time 2 "http://127.0.0.1:${{GO2_FOCUS_PORT:-{DEPLOY_PORT}}}/api/arm/status" 2>/dev/null | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("arm_coupled") else 0)' 2>/dev/null || echo 0)"
+  if [ "$ARM_COUPLED" = "1" ]; then
+    echo "REFUSE_RESTART_ARM_COUPLED: DDS publisher/hold must stay alive" >&2
+    exit 42
+  fi
+fi
 # Solo questa istanza: libera la porta configurata e ferma il supervisore dedicato.
 fuser -k "${{GO2_DASHBOARD_PORT}}"/tcp 2>/dev/null || true
 pkill -f "{sup}" 2>/dev/null || true

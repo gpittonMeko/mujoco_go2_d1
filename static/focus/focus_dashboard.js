@@ -52,7 +52,6 @@
       var mf = $("motorsFrame");
       if (mf && !mf.getAttribute("src")) mf.setAttribute("src", mf.getAttribute("data-src"));
     }
-    if (name === "system") refreshAll();
     try { window.location.hash = "tab-" + name; } catch (e) {}
   }
 
@@ -60,7 +59,7 @@
     var h = (window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
     if (!h) return "teach";
     if (h.indexOf("tab-") === 0) h = h.slice(4);
-    if (["teach", "motion", "motors", "hermes", "system"].indexOf(h) >= 0) return h;
+    if (["teach", "motors", "hermes"].indexOf(h) >= 0) return h;
     return "teach";
   }
 
@@ -174,15 +173,6 @@
     document.querySelectorAll(".focus-tabs button").forEach(function (b) {
       b.addEventListener("click", function () { activateTab(b.getAttribute("data-tab")); });
     });
-    document.querySelectorAll("[data-sport]").forEach(function (b) {
-      b.addEventListener("click", function () { sport(b.getAttribute("data-sport")); });
-    });
-    var btnDds = $("btnDds");
-    if (btnDds) btnDds.addEventListener("click", ddsProbe);
-    var btnSportLast = $("btnSportLast");
-    if (btnSportLast) btnSportLast.addEventListener("click", sportLast);
-    var btnRefreshAll = $("btnRefreshAll");
-    if (btnRefreshAll) btnRefreshAll.addEventListener("click", refreshAll);
     activateTab(initialTabFromHash());
     refreshHealth();
     refreshFocusStatus();
