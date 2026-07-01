@@ -97,6 +97,42 @@ def _upsert_camera_pref(body: dict[str, Any]) -> dict[str, Any]:
     return _camera_pref()
 
 
+def _force_wrist_detect_enabled() -> bool:
+    return os.environ.get("GO2_PICK_FORCE_WRIST_DETECT", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _resolve_detect_role(body: dict[str, Any], pref: dict[str, Any]) -> str:
+    role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    if _force_wrist_detect_enabled():
+        return "wrist"
+    return role
+
+
+def _reset_motion_lock_for_pick() -> None:
+    if os.environ.get("GO2_PICK_FORCE_IDLE_BEFORE_AUTOMOVE", "1").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    try:
+        from go2_dashboard import d1_arm_motion
+
+        d1_arm_motion.end_live_session(skip_hold=True)
+    except Exception:
+        pass
+    try:
+        service.motion_force_idle()
+    except Exception:
+        pass
+
+
 def _servo_deg_from_body(body: dict) -> tuple[list[float] | None, str | None]:
     raw = body.get("servo_deg")
     if isinstance(raw, list) and len(raw) >= 6:
@@ -153,6 +189,33 @@ def _last_detection_payload() -> dict[str, Any]:
         "preview_url": f"/api/pick/scene.jpg?t={ts}" if overlay.is_file() else None,
         "camera_select": _camera_pref(),
     }
+
+
+def _recent_valid_wrist_detection() -> tuple[bool, str, dict[str, Any] | None]:
+    preset = pick_preset.load_preset()
+    ld = preset.get("last_detection") if isinstance(preset, dict) else None
+    if not isinstance(ld, dict):
+        return False, "missing_last_detection", None
+    if not bool(ld.get("detected")):
+        return False, "last_detection_not_detected", ld
+    logical = ld.get("logical_camera")
+    if logical is not None:
+        try:
+            if int(logical) != 0:
+                return False, "last_detection_not_wrist", ld
+        except Exception:
+            return False, "last_detection_bad_logical", ld
+    ts_raw = str(ld.get("at") or "").strip()
+    if ts_raw:
+        try:
+            ts = time.mktime(time.strptime(ts_raw, "%Y-%m-%dT%H:%M:%S"))
+            age_s = max(0.0, time.time() - ts)
+            max_age_s = float(os.environ.get("GO2_PICK_MAX_DETECTION_AGE_S", "6.0"))
+            if age_s > max_age_s:
+                return False, "last_detection_stale", ld
+        except Exception:
+            pass
+    return True, "ok", ld
 
 
 def _detect_on_logical_camera(logical: int) -> dict[str, Any]:
@@ -1128,7 +1191,7 @@ def pick_vision_crop_preview() -> Response:
 def pick_snapshot() -> Response:
     body = request.get_json(silent=True) or {}
     pref = _camera_pref()
-    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    detect_role = _resolve_detect_role(body, pref)
     logical = _logical_for_role(detect_role)
     try:
         if logical == 0:
@@ -1164,7 +1227,7 @@ def pick_snapshot() -> Response:
 def pick_detect() -> Response:
     body = request.get_json(silent=True) or {}
     pref = _camera_pref()
-    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    detect_role = _resolve_detect_role(body, pref)
     logical = _logical_for_role(detect_role)
     if logical == 0 and body.get("capture_if_missing", True):
         out = pick_vision.capture_and_detect()
@@ -1223,7 +1286,7 @@ def pick_detect_jpeg() -> Response:
 def pick_grasp_goto() -> Response:
     body = request.get_json(silent=True) or {}
     pref = _camera_pref()
-    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    detect_role = _resolve_detect_role(body, pref)
     grasp_role = _normalize_camera_role(body.get("grasp_camera") or pref.get("grasp_camera"))
     scan_variant = str(body.get("scan_variant") or body.get("variant") or "").strip().lower() or None
     found = program_store.find_scan_waypoint(variant=scan_variant)
@@ -1255,6 +1318,27 @@ def pick_grasp_goto() -> Response:
     )
     if target is None:
         return jsonify({"ok": False, "reason": "grasp_target_invalid"}), 400
+
+    require_det = os.environ.get("GO2_PICK_REQUIRE_VALID_WRIST_DETECTION", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if require_det:
+        det_ok, det_reason, det = _recent_valid_wrist_detection()
+        if not det_ok:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "grasp_requires_valid_wrist_detection",
+                    "detail": det_reason,
+                    "hint_it": "Fai prima 'Foto + detect' col polso e verifica detection_ok=true, poi riprova avvicinamento.",
+                    "last_detection": det,
+                }
+            ), 409
+
+    _reset_motion_lock_for_pick()
     service._halt_cartesian_stream(wait_idle=True)
     couple = service.ensure_coupled_for_motion()
     if not couple.get("ok"):
@@ -1604,7 +1688,7 @@ def pick_full_sequence() -> Response:
     """
     body = request.get_json(silent=True) or {}
     pref = _camera_pref()
-    detect_role = _normalize_camera_role(body.get("detect_camera") or pref.get("detect_camera"))
+    detect_role = _resolve_detect_role(body, pref)
     grasp_role = _normalize_camera_role(body.get("grasp_camera") or pref.get("grasp_camera"))
     scan_variant = _scan_variant_from_body(body, default="j90_left")
     instruction = str(body.get("instruction") or "prendi il pezzo").strip()
@@ -1643,6 +1727,7 @@ def pick_full_sequence() -> Response:
         return fail("move_90", "invalid_scan_waypoint", code=400, waypoint_name=wp.get("name"))
     scan_sd = service.clamp_servo_deg([float(x) for x in raw[:7]])
 
+    _reset_motion_lock_for_pick()
     service._halt_cartesian_stream(wait_idle=True)
     couple = service.ensure_coupled_for_motion()
     if not couple.get("ok"):
@@ -1825,6 +1910,7 @@ def preset_scan_goto() -> Response:
     if not isinstance(raw, list) or len(raw) < 6:
         return jsonify({"ok": False, "reason": "invalid_waypoint"}), 400
     servo = service.clamp_servo_deg([float(x) for x in raw[:7]])
+    _reset_motion_lock_for_pick()
     service._halt_cartesian_stream(wait_idle=True)
     couple = service.ensure_coupled_for_motion()
     if not couple.get("ok"):

@@ -408,6 +408,42 @@ def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
     return _apply_gripper_exclude_crop(mask)
 
 
+def _low_light_compensate(frame: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
+    """Compensa luce bassa per mantenere stabile la detection colore.
+
+    Applica gain + CLAHE solo quando la luminanza mediana e' bassa.
+    """
+    if _parse_int_env("D1_COLOR_BOX_AUTO_EXPOSURE_COMP", 1) <= 0:
+        return frame, {"applied": False, "reason": "disabled"}
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    v = hsv[:, :, 2]
+    v_med = float(np.median(v))
+    v_target = float(_parse_float_env("D1_COLOR_BOX_COMP_TARGET_V_MED", 92.0))
+    if v_med >= v_target:
+        return frame, {"applied": False, "reason": "bright_enough", "v_med": round(v_med, 2)}
+
+    max_gain = float(_parse_float_env("D1_COLOR_BOX_COMP_MAX_GAIN", 2.4))
+    gain = min(max(v_target / max(v_med, 1.0), 1.0), max_gain)
+    beta = int(_parse_int_env("D1_COLOR_BOX_COMP_BETA", 6))
+    boosted = cv2.convertScaleAbs(frame, alpha=gain, beta=beta)
+
+    lab = cv2.cvtColor(boosted, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clip = float(_parse_float_env("D1_COLOR_BOX_COMP_CLAHE_CLIP", 2.2))
+    tile = max(4, _parse_int_env("D1_COLOR_BOX_COMP_CLAHE_TILE", 8))
+    clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(tile, tile))
+    l2 = clahe.apply(l)
+    out = cv2.cvtColor(cv2.merge((l2, a, b)), cv2.COLOR_LAB2BGR)
+    return out, {
+        "applied": True,
+        "v_med": round(v_med, 2),
+        "gain": round(float(gain), 3),
+        "beta": int(beta),
+        "clahe_clip": round(float(clip), 2),
+        "clahe_tile": int(tile),
+    }
+
+
 def _color_box_hsv_mask(frame: np.ndarray, profile: dict[str, Any] | None = None) -> np.ndarray:
     """Maschera HSV per scatoletta colorata (tunable via env o color_profiles.json)."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -663,10 +699,27 @@ def _detect_color_box(frame: np.ndarray, profile: dict[str, Any] | None = None) 
     det = _detect_color_box_core(frame, profile=profile)
     if det.get("ok"):
         return det
+    reason = str(det.get("reason") or "")
+    if reason in ("no_blue_contour", "blue_contour_filtered"):
+        comp_frame, comp_diag = _low_light_compensate(frame)
+        if comp_diag.get("applied"):
+            det2 = _detect_color_box_core(comp_frame, profile=profile)
+            if det2.get("ok"):
+                out = dict(det2)
+                out["light_comp_fallback"] = True
+                out["light_comp"] = comp_diag
+                out["reason_prev"] = reason
+                out["hint_it"] = (
+                    "Detection recuperata con compensazione luce/contrasto automatica. "
+                    "Valuta luce ambiente o calibrazione colore."
+                )
+                return out
+            det = dict(det)
+            det["light_comp"] = comp_diag
     cal = _load_color_calib()
     if not cal:
         return det
-    reason = str(det.get("reason") or "")
+    reason = str(det.get("reason") or reason)
     if reason not in ("no_blue_contour", "blue_contour_filtered"):
         return det
     try:

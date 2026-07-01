@@ -106,7 +106,7 @@
       btnGraspRight: { label: "Solo avvicina destra", apis: ["POST /api/pick/grasp/goto scan_variant=j90"] },
       btnArmCouple: { label: "Coppia ON", apis: ["POST /api/arm/joints/couple"] },
       btnArmRelease: { label: "Release giunti", apis: ["POST /api/arm/joints/release"] },
-      btnGotoHome: { label: "Torna Home", apis: ["POST /api/arm/goto_home"] },
+      btnGotoHome: { label: "Torna Folded (ZERO)", apis: ["POST /api/arm/goto_true_zero"] },
       btnClearLog: { label: "Pulisci log", apis: [] },
     },
   };
@@ -1158,33 +1158,33 @@
 
   function gotoHome() {
     if (!confirm(
-      "Tornare alla posa Home?\n\n" +
+      "Tornare alla posa Folded calibrata (ZERO file)?\n\n" +
       "Il braccio si muove gradualmente (traiettoria interpolata), non un salto istantaneo.\n" +
-      "Target default: J0-J6 = 0° (config NX: D1_HOME_SERVO_DEG_7).\n\n" +
+      "Target: data/true_zero_pose.json (non la Home 0°).\n\n" +
       "Assicurati che l'area sia libera e che la coppia sia ON."
     )) return;
-    pill("home...", "warn");
-    setProgress(15, "Movimento verso Home", "warn", null);
+    pill("folded...", "warn");
+    setProgress(15, "Movimento verso Folded", "warn", null);
     setSvcAck("comando", "run");
     setExecutePhase("running");
-    return post("/api/arm/goto_home", { confirm: "ARM_GOTO_HOME" }).then(function (j) {
-      log("goto home completato", j, j.ok ? "info" : "error");
-      pill(j.ok ? "home ok" : "home err", kindFromOk(j.ok));
+    return post("/api/arm/goto_true_zero", { confirm: "ARM_GOTO_TRUE_ZERO" }).then(function (j) {
+      log("goto folded (true_zero) completato", j, j.ok ? "info" : "error");
+      pill(j.ok ? "folded ok" : "folded err", kindFromOk(j.ok));
       setSvcAck("comando", j.ok ? "ok" : "err");
       setExecutePhase(j.ok ? "completed" : "failed");
       if (j.ok) {
-        var home = j.home_servo_deg_7_config || j.target_servo_deg;
-        if (home) summary("Home raggiunta: [" + home.join(", ") + "] deg");
-        setProgress(100, "Posa Home raggiunta", "ok", null);
+        var folded = j.target_servo_deg_7 || j.target_servo_deg;
+        if (folded) summary("Folded ZERO raggiunta: [" + folded.join(", ") + "] deg");
+        setProgress(100, "Posa Folded raggiunta", "ok", null);
       } else {
-        setProgress(15, "Home fallita: " + (j.hint_it || j.reason || "errore"), "err", null);
-        summary(j.hint_it || j.reason || "Movimento Home fallito.");
+        setProgress(15, "Folded fallita: " + (j.hint_it || j.reason || "errore"), "err", null);
+        summary(j.hint_it || j.reason || "Movimento Folded fallito.");
       }
       return j;
     }).catch(function (e) {
       setSvcAck("comando", "err");
       setExecutePhase("failed");
-      pill("home err", "err");
+      pill("folded err", "err");
       log(String(e), null, "error");
     });
   }
