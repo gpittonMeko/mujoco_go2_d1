@@ -79,6 +79,7 @@ def create_d1_jog_app() -> Flask:
     @app.route("/api/health")
     def health() -> Response:
         st = service.binaries_status()
+        hold = service.hold_daemon_status()
         return jsonify(
             {
                 "ok": st["command_ok"] and st["feedback_ok"],
@@ -88,6 +89,8 @@ def create_d1_jog_app() -> Flask:
                 "dds_domain": int(os.environ.get("D1_DDS_DOMAIN", os.environ.get("GO2_DDS_DOMAIN", "0"))),
                 "dds_interface": (os.environ.get("GO2_DDS_INTERFACE") or os.environ.get("D1_DDS_INTERFACE") or "eth0"),
                 "cyclonedds_uri_set": bool((os.environ.get("CYCLONEDDS_URI") or "").strip()),
+                "hold": hold,
+                "hold_active": bool(hold.get("hold_active")),
             }
         )
 

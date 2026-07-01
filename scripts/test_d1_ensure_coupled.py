@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from go2_dashboard import d1_arm_motion, operator_arm_motion
 from go2_dashboard.d1_jog import service
 
 
@@ -59,6 +60,39 @@ class EnsureCoupledForMotionTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["motion_context"], "program")
         self.assertTrue(out["admin_lock_skipped"])
+
+    def test_d1_arm_motion_delegates_to_jog_service_guard(self) -> None:
+        with patch.object(
+            d1_arm_motion,
+            "prefer_sdk_backend",
+            return_value=True,
+        ), patch.object(
+            service,
+            "ensure_coupled_for_motion",
+            return_value={"ok": True, "forced_couple": True, "action": "ensure_coupled_for_motion"},
+        ) as guard:
+            out = d1_arm_motion.ensure_coupled_for_motion()
+
+        guard.assert_called_once_with()
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["forced_couple"])
+
+    def test_operator_session_uses_motion_guard_not_plain_ensure(self) -> None:
+        with patch.object(
+            service,
+            "ensure_coupled_for_motion",
+            return_value={"ok": True, "forced_couple": True},
+        ) as guard, patch.object(
+            d1_arm_motion,
+            "begin_live_session",
+            return_value={"ok": True},
+        ) as begin_live:
+            out = operator_arm_motion.begin_operator_arm_session()
+
+        guard.assert_called_once_with()
+        begin_live.assert_called_once_with(servo_deg=None)
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["action"], "operator_arm_session")
 
 
 if __name__ == "__main__":

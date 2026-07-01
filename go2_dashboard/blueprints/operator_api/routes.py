@@ -222,6 +222,9 @@ def _webrtc_beep_expire_stale_running() -> None:
 def api_health() -> Any:
     gl = go2_local()
     cv2_ok = cv2 is not None
+    from go2_dashboard.d1_jog import service as d1_service
+
+    hold = d1_service.hold_daemon_status()
     return jsonify(
         {
             "ok": True,
@@ -247,6 +250,8 @@ def api_health() -> Any:
             ),
             "d1_arm_motion_backend": d1_arm_motion.motion_backend_name(),
             "d1_arm_command_ready": d1_arm_motion.command_binary_ready(),
+            "d1_hold": hold,
+            "d1_hold_active": bool(hold.get("hold_active")),
         }
     )
 

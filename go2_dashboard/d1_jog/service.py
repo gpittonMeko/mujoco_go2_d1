@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any
 
+from go2_dashboard import d1_hold_client
 from go2_dashboard.d1_jog.motion_guard import (
     claim_plane as motion_claim_plane,
     force_idle as motion_force_idle,
@@ -181,7 +182,6 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
         base["stderr_tail"] = (result.stderr or "")[-500:]
     else:
         set_servo_cache(angles)
-        mark_coupled_from_feedback()
     return base
 
 
@@ -214,6 +214,8 @@ def ensure_command_daemon(delay_ms: int | None = None) -> bool:
     global _cmd_daemon_proc, _cmd_daemon_delay_ms
     if not _real_arm_enabled():
         return True
+    if d1_hold_client.external_hold_enabled():
+        return bool(d1_hold_client.status().get("ok"))
     # Ignora delay_ms per-call: un solo daemon evita cedimento motori tra jog giunti/TCP.
     dm = motion_profile.daemon_delay_ms()
     _ = delay_ms
@@ -233,6 +235,8 @@ def ensure_command_daemon(delay_ms: int | None = None) -> bool:
 
 
 def stop_command_daemon() -> None:
+    if d1_hold_client.external_hold_enabled():
+        return
     global _cmd_daemon_proc, _cmd_daemon_delay_ms
     with _cmd_daemon_lock:
         proc = _cmd_daemon_proc
@@ -260,6 +264,11 @@ def publish_messages_stream(
         return {"ok": True, "count": 0}
     if not _real_arm_enabled():
         return {"ok": True, "skipped": True, "reason": "dry_run", "count": len(messages)}
+    if d1_hold_client.external_hold_enabled():
+        out = d1_hold_client.publish(messages, delay_ms=int(delay_ms or 0))
+        out.setdefault("count", len(messages) if out.get("ok") else 0)
+        out["external_hold_daemon"] = True
+        return out
     if not ensure_command_daemon(delay_ms):
         return {"ok": False, "reason": "daemon_start_failed"}
     with _cmd_daemon_lock:
@@ -324,7 +333,7 @@ def hold_pose_stream(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
         if cached is None:
             return {"ok": True, "skipped": True, "reason": "no_pose", "action": "hold_pose"}
         sd = cached
-    if not _arm_coupled:
+    if not arm_coupled():
         return {"ok": True, "skipped": True, "reason": "not_coupled", "action": "hold_pose"}
     out = _stream_pose_hold(sd, repeats=1)
     out["action"] = "hold_pose"
@@ -353,6 +362,8 @@ def _publish_messages(messages: list[dict[str, Any]], *, delay_ms: int) -> dict[
     _halt_cartesian_stream(wait_idle=True)
     if not _real_arm_enabled():
         return {"ok": True, "skipped": True, "reason": "dry_run", "messages": messages}
+    if d1_hold_client.external_hold_enabled():
+        return publish_messages_stream(messages, delay_ms=delay_ms)
     cmd_bin = D1_SDK_COMMAND_BIN
     if not cmd_bin.is_file():
         return {"ok": False, "reason": "missing_command_bin", "hint": binaries_status()["build_hint"]}
@@ -381,11 +392,33 @@ _arm_coupled: bool = False
 
 
 def arm_coupled() -> bool:
+    global _arm_coupled
+    if d1_hold_client.external_hold_enabled() and _real_arm_enabled():
+        _arm_coupled = bool(d1_hold_client.status().get("hold_active"))
     return bool(_arm_coupled)
 
 
+def hold_daemon_status() -> dict[str, Any]:
+    """Return evidence of the writer and heartbeat, not inferred servo state."""
+    if d1_hold_client.external_hold_enabled():
+        out = d1_hold_client.status()
+        out["external"] = True
+        return out
+    with _cmd_daemon_lock:
+        alive = _cmd_daemon_proc is not None and _cmd_daemon_proc.poll() is None
+        pid = _cmd_daemon_proc.pid if alive and _cmd_daemon_proc is not None else None
+    return {
+        "ok": True,
+        "external": False,
+        "publisher_alive": alive,
+        "publisher_pid": pid,
+        "desired_coupled": bool(_arm_coupled),
+        "hold_active": bool(alive and _arm_coupled),
+    }
+
+
 def _infer_coupled_on_feedback_enabled() -> bool:
-    return os.environ.get("D1_INFER_COUPLED_ON_FEEDBACK", "1").strip().lower() not in (
+    return os.environ.get("D1_INFER_COUPLED_ON_FEEDBACK", "0").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -417,6 +450,13 @@ def get_servo_cache() -> list[float] | None:
     return list(_servo_cache) if _servo_cache is not None else None
 
 
+def _fresh_pose_for_safe_hold() -> list[float] | None:
+    """Coupling must target measured current joints, never a stale cached pose."""
+    fb = read_servo_deg(fast=True)
+    pose = fb.get("servo_deg") if fb.get("ok") else None
+    return clamp_servo_deg(pose) if isinstance(pose, list) and len(pose) >= 7 else None
+
+
 def merge_single_joint_jog(servo_deg: list[float], joint_index: int) -> list[float]:
     """Un solo giunto muove ÔÇö base dalla cache, mai feedback DDS nel hot path."""
     ji = int(joint_index)
@@ -432,7 +472,7 @@ def merge_single_joint_jog(servo_deg: list[float], joint_index: int) -> list[flo
 def arm_couple_once(*, force: bool = False) -> dict[str, Any]:
     """Una sola volta funcode 5 mode 1 sul daemon (modello drag_follow)."""
     global _arm_coupled, _couple_last_ts
-    if _arm_coupled and not force:
+    if arm_coupled() and not force:
         return {"ok": True, "skipped": True, "reason": "already_coupled", "action": "arm_couple_once"}
     from go2_dashboard.d1_jog import motion_profile
 
@@ -442,7 +482,13 @@ def arm_couple_once(*, force: bool = False) -> dict[str, Any]:
     delay_ms = motion_profile.daemon_delay_ms()
     if not ensure_command_daemon(delay_ms):
         return {"ok": False, "reason": "daemon_start_failed", "action": "arm_couple_once"}
-    out = publish_messages_stream([_couple_enable_message()], delay_ms=delay_ms)
+    pose = _fresh_pose_for_safe_hold()
+    if pose is None:
+        return {"ok": False, "reason": "no_pose_for_safe_hold", "action": "arm_couple_once"}
+    out = publish_messages_stream(
+        [_couple_enable_message(), _pose_message(pose)],
+        delay_ms=delay_ms,
+    )
     if out.get("ok") or out.get("skipped"):
         _arm_coupled = True
         _couple_last_ts = time.time()
@@ -461,7 +507,7 @@ def _couple_messages(*, with_power: bool, seq: int) -> list[dict[str, Any]]:
 def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str, Any]:
     """Coppia ON esplicita ÔÇö funcode 5 mode 1 solo se serve; mai release automatico."""
     global _arm_coupled, _couple_last_ts
-    if _arm_coupled and not force:
+    if arm_coupled() and not force:
         return {
             "ok": True,
             "skipped": True,
@@ -473,16 +519,27 @@ def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str
     if not ok:
         return {"ok": False, "reason": busy, "action": "ensure_coupled"}
     try:
-        if with_power and not _arm_coupled:
+        if with_power and not arm_coupled():
             seq = int(time.time()) % 100000
-            out = _publish_messages(_couple_messages(with_power=True, seq=seq), delay_ms=100)
+            pose = _fresh_pose_for_safe_hold()
+            if pose is None:
+                return {
+                    "ok": False,
+                    "reason": "no_pose_for_safe_hold",
+                    "action": "ensure_coupled",
+                    "arm_coupled": False,
+                }
+            messages = _couple_messages(with_power=True, seq=seq)
+            messages.append(_pose_message(pose, seq=seq + len(messages)))
+            out = _publish_messages(messages, delay_ms=100)
             if out.get("ok") or out.get("skipped"):
                 _arm_coupled = True
                 _couple_last_ts = time.time()
         else:
             out = arm_couple_once(force=force)
         out["action"] = "ensure_coupled"
-        out["arm_coupled"] = bool(_arm_coupled)
+        out["arm_coupled"] = arm_coupled()
+        out["hold_daemon"] = hold_daemon_status()
         return out
     finally:
         motion_release("admin")
@@ -514,9 +571,15 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
             # Acquiring the admin lock here would self-deadlock with
             # ``motion_busy:program``. Keep funcode 5 mandatory, but publish it
             # directly through the DDS daemon owned by the current motion.
-            if power_before_motion and not _arm_coupled:
+            if power_before_motion and not arm_coupled():
                 seq = int(time.time()) % 100000
-                out = _publish_messages(_couple_messages(with_power=True, seq=seq), delay_ms=100)
+                pose = _fresh_pose_for_safe_hold()
+                if pose is None:
+                    out = {"ok": False, "reason": "no_pose_for_safe_hold"}
+                else:
+                    messages = _couple_messages(with_power=True, seq=seq)
+                    messages.append(_pose_message(pose, seq=seq + len(messages)))
+                    out = _publish_messages(messages, delay_ms=100)
                 if out.get("ok") or out.get("skipped"):
                     _arm_coupled = True
                     _couple_last_ts = time.time()
@@ -529,7 +592,7 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
         out["action"] = "ensure_coupled_for_motion"
         out["forced_couple"] = True
         return out
-    if _arm_coupled:
+    if arm_coupled():
         return {
             "ok": True,
             "skipped": True,
@@ -538,17 +601,10 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
         }
     fb = read_servo_deg(fast=True)
     if fb.get("ok") and fb.get("servo_deg"):
-        mark_coupled_from_feedback()
         from go2_dashboard.d1_jog import motion_profile
 
         ensure_command_daemon(motion_profile.daemon_delay_ms())
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "inferred_from_feedback",
-            "action": "ensure_coupled_for_motion",
-            "arm_coupled": True,
-        }
+        return ensure_coupled(with_power=False, force=False)
     return ensure_coupled(with_power=False, force=False)
 
 
@@ -741,6 +797,14 @@ def _hold_current_pose_impl(
 
 def go_zero() -> dict[str, Any]:
     """Solo funcode 7, attesa, poi hold ÔÇö nessun altro comando durante il movimento."""
+    if d1_hold_client.external_hold_enabled():
+        return {
+            "ok": False,
+            "reason": "funcode7_forbidden_with_continuous_hold",
+            "hint": "Use an explicit funcode-2 joint trajectory to the configured compact pose.",
+            "safety_interlock": True,
+            "action": "go_zero",
+        }
     ok, busy = motion_try_acquire("zero")
     if not ok:
         return {"ok": False, "reason": busy, "action": "go_zero"}
@@ -802,7 +866,7 @@ def jog_pose_deg(
         sd = clamp_servo_deg(servo_deg)
         from go2_dashboard.d1_jog import motion_profile
 
-        if not _arm_coupled:
+        if not arm_coupled():
             return {"ok": False, "reason": "not_coupled", "hint": "Premi Coppia ON", "action": "jog_pose"}
         msgs = [_pose_message(sd)]
         delay_ms = motion_profile.joint_cmd_delay_ms()
@@ -851,7 +915,7 @@ def joint_control_end(*, skip_hold: bool = False) -> dict[str, Any]:
     hold: dict[str, Any] = {"ok": True, "skipped": True, "reason": "skip_hold"}
     if not skip_hold:
         sd = get_servo_cache()
-        if sd is not None and _arm_coupled:
+        if sd is not None and arm_coupled():
             hold = _stream_pose_hold(sd, repeats=1)
     return {"ok": True, "action": "joint_end", "hold": hold, "skip_hold": bool(skip_hold)}
 
@@ -885,7 +949,7 @@ def cartesian_begin_jog(**kwargs: Any) -> dict[str, Any]:
             sd = fb["servo_deg"]
             set_servo_cache(sd)
             kwargs["servo_deg"] = sd
-    if not _arm_coupled:
+    if not arm_coupled():
         motion_release("cartesian")
         motion_release_plane("cartesian")
         return {
@@ -936,7 +1000,7 @@ def cartesian_end_jog(*, hold_after: bool = False) -> dict[str, Any]:
     sd = st.get("servo_deg") or get_servo_cache()
     if sd is not None:
         out["post_hold"] = hold_pose_stream(servo_deg=sd)
-    out["coupling_maintained"] = bool(_arm_coupled)
+    out["coupling_maintained"] = arm_coupled()
     motion_release("cartesian")
     motion_release_plane("cartesian")
     out["action"] = "cartesian_jog_stop"

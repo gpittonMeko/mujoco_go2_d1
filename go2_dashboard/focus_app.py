@@ -90,7 +90,14 @@ def create_focus_app() -> Flask:
 
     @app.route("/api/arm/status")
     def focus_arm_status() -> Response:
-        return jsonify({"ok": True, "arm_coupled": d1_service.arm_coupled()})
+        hold = d1_service.hold_daemon_status()
+        return jsonify(
+            {
+                "ok": bool(hold.get("ok")),
+                "arm_coupled": bool(hold.get("hold_active")),
+                "hold": hold,
+            }
+        )
 
     @app.route("/focus/pick")
     def focus_pick() -> Response:
@@ -153,7 +160,12 @@ def create_focus_app() -> Flask:
         try:
             from go2_dashboard.d1_jog import service
 
-            payload["arm"] = {"ok": True, "arm_coupled": service.arm_coupled()}
+            hold = service.hold_daemon_status()
+            payload["arm"] = {
+                "ok": bool(hold.get("ok")),
+                "arm_coupled": bool(hold.get("hold_active")),
+                "hold": hold,
+            }
         except Exception as exc:  # noqa: BLE001
             payload["arm"] = {"ok": False, "error": repr(exc)}
         try:

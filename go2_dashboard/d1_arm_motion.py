@@ -80,7 +80,7 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
         return {"ok": True, "skipped": True, "reason": "already_coupled"}
     if not _auto_couple_enabled():
         return {"ok": False, "reason": "not_coupled", "hint_it": "Abilita D1_AUTO_COUPLE_ON_MOVE=1 o usa Coppia ON (porta 5053)."}
-    return jog_svc.arm_couple_once(force=False)
+    return jog_svc.ensure_coupled_for_motion()
 
 
 def ensure_grasp_motion_worker() -> dict[str, Any]:
@@ -123,6 +123,15 @@ def end_live_session(*, skip_hold: bool = False) -> dict[str, Any]:
 
 
 def kill_command_processes() -> dict[str, Any]:
+    from go2_dashboard import d1_hold_client
+
+    if d1_hold_client.external_hold_enabled():
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "external_hold_daemon_owns_writer",
+            "safety_interlock": True,
+        }
     if os.name == "nt":
         return {"ok": True, "skipped": True, "reason": "pkill_unavailable_on_windows"}
     if prefer_sdk_backend():

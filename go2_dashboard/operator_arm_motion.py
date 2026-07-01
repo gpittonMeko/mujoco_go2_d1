@@ -34,9 +34,12 @@ def _reconcile_dds_if_enabled() -> dict[str, Any] | None:
     # (che funziona) non fa mai questo kill. Vedi .cursor/rules/d1-arm-funcode-hold.mdc.
     if os.environ.get("GO2_GRASP_RECONCILE_DDS", "0").lower() not in {"1", "true", "yes", "on"}:
         return None
-    from go2_dashboard.d1_jog import service as jog_svc
-
-    return jog_svc.reconcile_d1_sdk_daemons()
+    return {
+        "ok": False,
+        "skipped": True,
+        "reason": "dds_reconcile_removed_external_hold_owner",
+        "safety_interlock": True,
+    }
 
 
 def _operator_live_tick_after_session() -> dict[str, Any]:
@@ -66,13 +69,13 @@ def begin_operator_arm_session(*, servo_deg: list[float] | None = None) -> dict[
     from go2_dashboard.d1_jog import service as jog_svc
 
     recon = _reconcile_dds_if_enabled()
-    couple = jog_svc.ensure_coupled(with_power=False)
+    couple = jog_svc.ensure_coupled_for_motion()
     if not (couple.get("ok") or couple.get("skipped")):
         return {**couple, "action": "operator_arm_session"}
 
     out = d1_arm_motion.begin_live_session(servo_deg=servo_deg)
     if not out.get("ok") and out.get("reason") == "not_coupled":
-        jog_svc.ensure_coupled(with_power=False, force=True)
+        jog_svc.ensure_coupled_for_motion()
         out = d1_arm_motion.begin_live_session(servo_deg=servo_deg)
     out["action"] = "operator_arm_session"
     out["live_session"] = bool(d1_arm_motion.is_live_session_active())

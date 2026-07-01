@@ -15,13 +15,19 @@ export GO2_FOCUS_PORT="${GO2_FOCUS_PORT:-5056}"
 export GO2_DASHBOARD_PORT="$GO2_FOCUS_PORT"
 export GO2_FOCUS_PICK_YOLO="${GO2_FOCUS_PICK_YOLO:-0}"
 
-# Non interrompere il writer DDS del D1 mentre il braccio è in coppia: il
-# daemon è figlio di Flask e un restart crea una finestra senza hold.
+# Independent sole DDS writer. Starting it is idempotent and never stops an
+# already-running hold process.
+bash scripts/nx_start_d1_hold_daemon.sh
+
+# Migration guard: a coupled arm may be restarted only when the independent
+# daemon proves that its heartbeat is active.
 if [ "${GO2_ALLOW_ARM_COUPLED_RESTART:-0}" != "1" ]; then
   ARM_COUPLED="$(curl -fsS --max-time 2 "http://127.0.0.1:${GO2_FOCUS_PORT}/api/arm/status" 2>/dev/null | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("arm_coupled") else 0)' 2>/dev/null || echo 0)"
   if [ "$ARM_COUPLED" = "1" ]; then
-    echo "REFUSE_RESTART_ARM_COUPLED: DDS publisher/hold must stay alive" >&2
-    exit 42
+    if ! python3 -c 'from go2_dashboard.d1_hold_client import status; s=status(); raise SystemExit(0 if s.get("hold_active") else 1)'; then
+      echo "REFUSE_RESTART_ARM_COUPLED_WITHOUT_EXTERNAL_HOLD" >&2
+      exit 42
+    fi
   fi
 fi
 

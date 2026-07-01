@@ -60,6 +60,25 @@ DEPLOY_OFFLINE = os.environ.get("GO2_DEPLOY_OFFLINE", "1").strip().lower() in {
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _run_d1_hold_safety_gate() -> None:
+    """Refuse every NX deploy when the arm-hold regression suite is not green."""
+    tests = (
+        "scripts/test_d1_hold_daemon.py",
+        "scripts/test_d1_hold_service_guards.py",
+        "scripts/test_d1_ensure_coupled.py",
+        "scripts/test_d1_motion_path_guards.py",
+    )
+    print("[deploy] D1 hold safety gate …")
+    for rel in tests:
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            raise SystemExit(f"REFUSE_DEPLOY_MISSING_D1_SAFETY_TEST: {rel}")
+        result = subprocess.run([sys.executable, str(path)], cwd=str(REPO_ROOT), check=False)
+        if result.returncode != 0:
+            raise SystemExit(f"REFUSE_DEPLOY_D1_SAFETY_TEST_FAILED: {rel}")
+    print("[deploy] D1 hold safety gate OK")
+
+
 def _supervise_script() -> str:
     return "nx_dashboard_dev_supervise.sh" if DEPLOY_INSTANCE == "dev" else "nx_dashboard_supervise.sh"
 
@@ -100,6 +119,7 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/d1_servo_feedback.py",
     "go2_dashboard/d1_arm_publish_lite.py",
     "go2_dashboard/d1_arm_motion.py",
+    "go2_dashboard/d1_hold_client.py",
     "go2_dashboard/operator_arm_motion.py",
     "go2_dashboard/sport_lane.py",
     "go2_dashboard/go2_voice_playback.py",
@@ -178,6 +198,10 @@ REMOTE_PUSH_FILES = [
     "scripts/serve_dashboard_modular.py",
     "scripts/serve_dashboard_lite.py",
     "scripts/serve_focus_dashboard.py",
+    "scripts/d1_hold_daemon.py",
+    "scripts/nx_d1_hold_supervise.sh",
+    "scripts/nx_start_d1_hold_daemon.sh",
+    "scripts/go2-d1-hold.service",
     "scripts/serve_go2_motor_health.py",
     "scripts/deploy_integrated_stack_to_nx.py",
     "scripts/deploy_d1_jog_to_nx.py",
@@ -743,6 +767,13 @@ def _nx_dashboard_env_sh() -> str:
         f"export GO2_DASHBOARD_PORT={DEPLOY_PORT}",
     )
     exports += f"\nexport GO2_DASHBOARD_INSTANCE={DEPLOY_INSTANCE}\n"
+    exports += "\n# D1 safety: process-independent sole DDS writer + funcode-2 heartbeat.\n"
+    exports += "export D1_HOLD_DAEMON_EXTERNAL=1\n"
+    exports += "export D1_HOLD_SOCKET=/tmp/go2_d1_hold.sock\n"
+    exports += "export D1_HOLD_STATE=/tmp/go2_d1_hold_state.json\n"
+    exports += "export D1_HOLD_LOCK=/tmp/go2_d1_hold.lock\n"
+    exports += "export D1_HOLD_HEARTBEAT_MS=100\n"
+    exports += "export D1_INFER_COUPLED_ON_FEEDBACK=0\n"
     # Dev: nessun indice V4L fisso — auto-probe USB (Orbbec/RealSense si rinumerano spesso).
     if DEPLOY_INSTANCE == "dev":
         exports = exports.replace(
@@ -815,13 +846,16 @@ def _nx_start_dashboard_sh(host: str) -> str:
 set -e
 cd {REMOTE_BASE} || exit 1
 source "{REMOTE_BASE}/scripts/nx_dashboard_env.sh"
-# Never kill the Flask-owned DDS publisher while the D1 arm is coupled. Even a
-# short writer gap drops torque. Maintenance can override only explicitly.
+bash "{REMOTE_BASE}/scripts/nx_start_d1_hold_daemon.sh"
+# Migration guard: when the old dashboard reports coupled, require proof that
+# the process-independent heartbeat is already active before killing Flask.
 if [ "${{GO2_ALLOW_ARM_COUPLED_RESTART:-0}}" != "1" ]; then
   ARM_COUPLED="$(curl -fsS --max-time 2 "http://127.0.0.1:${{GO2_FOCUS_PORT:-{DEPLOY_PORT}}}/api/arm/status" 2>/dev/null | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("arm_coupled") else 0)' 2>/dev/null || echo 0)"
   if [ "$ARM_COUPLED" = "1" ]; then
-    echo "REFUSE_RESTART_ARM_COUPLED: DDS publisher/hold must stay alive" >&2
-    exit 42
+    if ! python3 -c 'from go2_dashboard.d1_hold_client import status; s=status(); raise SystemExit(0 if s.get("hold_active") else 1)'; then
+      echo "REFUSE_RESTART_ARM_COUPLED_WITHOUT_EXTERNAL_HOLD" >&2
+      exit 42
+    fi
   fi
 fi
 # Solo questa istanza: libera la porta configurata e ferma il supervisore dedicato.
@@ -868,6 +902,7 @@ LOG="{log}"
     echo "env_source_fail"
     exit 0
   fi
+  bash "{REMOTE_BASE}/scripts/nx_start_d1_hold_daemon.sh" || echo "D1_HOLD_DAEMON_START_FAILED"
   pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
   pkill -f nx_focus_dashboard_supervise.sh 2>/dev/null || true
   pkill -f diagnostics_dashboard 2>/dev/null || true
@@ -901,10 +936,12 @@ exit 0
 def _remote_install_crontab(ssh: paramiko.SSHClient) -> None:
     marker = "GO2_DASHBOARD_AUTOSTART"
     reboot_line = f"@reboot /bin/bash {REMOTE_BASE}/scripts/nx_boot_dashboard_wrapper.sh"
+    hold_line = f"@reboot /bin/bash {REMOTE_BASE}/scripts/nx_start_d1_hold_daemon.sh"
     script = f"""set +e
 TMP=$(mktemp)
-( crontab -l 2>/dev/null | grep -v '{marker}' | grep -v nx_boot_dashboard_wrapper.sh || true
+( crontab -l 2>/dev/null | grep -v '{marker}' | grep -v nx_boot_dashboard_wrapper.sh | grep -v nx_start_focus_dashboard.sh | grep -v nx_start_d1_hold_daemon.sh || true
   echo '# {marker}'
+  echo '{hold_line}'
   echo '{reboot_line}'
 ) > "$TMP"
 crontab "$TMP"
@@ -926,10 +963,11 @@ def _remote_install_systemd_user_optional(ssh: paramiko.SSHClient) -> None:
     script = f"""set +e
 mkdir -p "$HOME/.config/systemd/user"
 cp -f "{REMOTE_BASE}/scripts/go2-visual-dashboard.service" "$HOME/.config/systemd/user/go2-visual-dashboard.service"
+cp -f "{REMOTE_BASE}/scripts/go2-d1-hold.service" "$HOME/.config/systemd/user/go2-d1-hold.service"
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
   systemctl --user daemon-reload 2>/dev/null
-  echo "SYSTEMD_USER: unit in ~/.config/systemd/user (opzionale: systemctl --user enable --now go2-visual-dashboard; prima disabilita cron se doppio avvio)"
+  echo "SYSTEMD_USER: dashboard + D1 hold units copied; cron remains the active boot path"
 else
   echo "SYSTEMD_USER: unit copiata; niente dbus session — usa cron @reboot o loginctl enable-linger"
 fi
@@ -1280,6 +1318,8 @@ def main() -> None:
     if args.skip_meshes:
         os.environ["GO2_DEPLOY_SKIP_MESHES"] = "1"
 
+    _run_d1_hold_safety_gate()
+
     host = nx_host()
     skip_m = os.environ.get("GO2_DEPLOY_SKIP_MESHES", "").strip().lower() in ("1", "true", "yes", "on")
     inst_tag = f" instance={DEPLOY_INSTANCE} port={DEPLOY_PORT} dir={REMOTE_BASE}"
@@ -1410,6 +1450,9 @@ def main() -> None:
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_peripheral_probe.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_print_cyclone_diag.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_install_go2_audio_deps.sh", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/d1_hold_daemon.py", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/nx_d1_hold_supervise.sh", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/nx_start_d1_hold_daemon.sh", 0o755)
     # Checkout Windows può lasciare CRLF negli .sh — bash sulla NX si rompe (set: +\r).
     strip_stdin, strip_stdout, strip_stderr = ssh.exec_command(
         f"bash -lc \"sed -i 's/\\\\r$//' {REMOTE_BASE}/scripts/*.sh {REMOTE_BASE}/external/openvla_worker/*.sh 2>/dev/null || true\""
