@@ -15,7 +15,7 @@ def _cam_summary(cameras: dict[str, Any]) -> str:
         st = cams.get(key) or cams.get(int(key)) if isinstance(cams, dict) else None
         if not isinstance(st, dict):
             continue
-        label = "RealSense D456 polso" if key == "0" else "RealSense frontale"
+        label = "polso Orbbec" if key == "0" else "RealSense frontale"
         if st.get("error"):
             parts.append(f"{label}: errore {st.get('error')}")
         elif st.get("available") or st.get("jpg"):
@@ -54,7 +54,7 @@ def local_reply(user_message: str, ctx: dict[str, Any]) -> str:
         if op_ok:
             return _cam_summary(cameras)
         return (
-            "Hermes usa la RealSense D456 del polso (dashboard D1 :5053) e la frontale RealSense "
+            "Hermes usa la camera Orbbec del polso (dashboard D1 :5053) e la frontale RealSense "
             "senza la operator :5052. Chiedimi «cosa vedi» o «guarda davanti»."
         )
     if re.search(r"\b(braccio|giunt|servo|joint|tcp)\b", q):

@@ -1,4 +1,4 @@
-"""Riconoscimento oggetto su snapshot camera polso (RealSense D456 o Orbbec legacy)."""
+"""Riconoscimento oggetto su snapshot Orbbec (solo indicazione centro presa — non muove il braccio)."""
 
 from __future__ import annotations
 
@@ -220,7 +220,7 @@ def _detect_on_frame(frame: Any, *, snapshot_name: str) -> dict[str, Any]:
 
 def capture_and_detect() -> dict[str, Any]:
     """Nuova foto RGB + rilevamento sulla stessa immagine (una sola operazione)."""
-    cap = _capture_wrist_rgb_jpeg()
+    cap = orbbec_capture.capture_orbbec_jpeg()
     if not cap.get("ok"):
         return {
             "ok": False,
@@ -241,60 +241,6 @@ def capture_and_detect() -> dict[str, Any]:
     out["capture"] = cap
     out["image_url"] = cap.get("image_url")
     return out
-
-
-def _capture_wrist_rgb_jpeg() -> dict[str, Any]:
-    try:
-        from go2_dashboard.cameras import wrist_depth_backend
-    except Exception:
-        return orbbec_capture.capture_orbbec_jpeg()
-
-    if wrist_depth_backend() != "realsense":
-        return orbbec_capture.capture_orbbec_jpeg()
-
-    try:
-        import cv2
-
-        from go2_dashboard import realsense_pyrs as rp
-
-        cap = rp.capture_aligned_on_demand(
-            role="wrist",
-            fast=False,
-            force_full=True,
-            include_ir=False,
-        )
-    except Exception as exc:
-        cap = {"ok": False, "reason": "realsense_sdk_exception", "detail": repr(exc)}
-    color = cap.get("color_bgr") if isinstance(cap, dict) else None
-    if not cap.get("ok") or color is None:
-        return {
-            "ok": False,
-            "reason": "realsense_wrist_capture_failed",
-            "hint": "Nessun frame colore SDK dalla RealSense D456 polso.",
-            "capture": {
-                k: v
-                for k, v in (cap.items() if isinstance(cap, dict) else [])
-                if k not in {"color_bgr", "depth_u16", "ir_u8", "ir2_u8"}
-            },
-            "stream_kind": "rgb",
-            "via": "pyrealsense2_sdk",
-        }
-    quality = int(os.environ.get("D1_ORBBEC_JPEG_QUALITY", "88"))
-    ok_enc, buf = cv2.imencode(".jpg", color, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-    if not ok_enc or buf is None:
-        return {"ok": False, "reason": "realsense_rgb_encode_failed", "via": "pyrealsense2_sdk"}
-    return orbbec_capture._save_jpeg(
-        buf.tobytes(),
-        source="pyrealsense2:wrist_d456_color",
-        extra={
-            "via": "pyrealsense2_sdk",
-            "camera_backend": "realsense",
-            "stream_kind": "rgb_sdk",
-            "serial": cap.get("serial"),
-            "capture_ms": cap.get("capture_ms"),
-            "depth_nonzero_px": cap.get("depth_nonzero_px"),
-        },
-    )
 
 
 def detect_on_latest_snapshot(*, capture_if_missing: bool = True) -> dict[str, Any]:

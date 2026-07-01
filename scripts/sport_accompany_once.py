@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from go2_accompany import dds_unitree_motion_ping, sport_accompany, sport_move, sport_simple_action
+from go2_accompany import sport_accompany, sport_move, sport_simple_action
 
 
 def main() -> None:
@@ -33,13 +33,7 @@ def main() -> None:
     domain = int(os.environ.get("GO2_DDS_DOMAIN", "0"))
     mode = str(args.mode).strip().lower()
 
-    if mode == "dds_ping":
-        out = dds_unitree_motion_ping(
-            project_root=ROOT,
-            domain=domain,
-            iface=iface,
-        )
-    elif mode == "move":
+    if mode == "move":
         out = sport_move(
             project_root=ROOT,
             domain=domain,

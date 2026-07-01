@@ -35,8 +35,6 @@ PUSH_FILES = [
     "go2_dashboard/d1_jog/tcp_motion.py",
     "go2_dashboard/d1_jog/jog_stream.py",
     "go2_dashboard/d1_jog/cartesian.py",
-    "go2_dashboard/orbbec_lock.py",
-    "go2_dashboard/blueprints/d1_pick_teach.py",
     "go2_dashboard/d1_jog/orbbec_capture.py",
     "go2_dashboard/d1_jog/pick_preset.py",
     "go2_dashboard/d1_jog/pick_teach_model.py",

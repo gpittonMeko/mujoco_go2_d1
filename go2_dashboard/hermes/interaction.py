@@ -192,7 +192,7 @@ def _camera_device_for_query(q: str) -> int:
 
 
 def _camera_label(device: int) -> str:
-    return "RealSense D456 polso" if device == 0 else "RealSense frontale"
+    return "polso Orbbec" if device == 0 else "RealSense frontale"
 
 
 def _vision_speak_enabled() -> bool:
@@ -292,7 +292,7 @@ def handle_vision(q: str) -> dict[str, Any]:
         return {
             "reply": (
                 f"Non riesco a leggere la camera {label}. "
-                "Controlla che la D1 jog (:5053) sia attiva per la RealSense D456 del polso."
+                "Controlla che la D1 jog (:5053) sia attiva per il polso Orbbec."
             ),
             "action": "vision",
             "camera": cam_meta,

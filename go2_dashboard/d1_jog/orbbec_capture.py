@@ -37,115 +37,6 @@ _resolved_rgb_idx: int | None = None
 _live_cap: Any | None = None
 _live_cap_idx: int | None = None
 _live_ffmpeg_proc: subprocess.Popen[bytes] | None = None
-_steal_lease: Any = None
-_steal_lock = threading.Lock()
-
-
-def _steal_settle_s() -> float:
-    try:
-        return float(os.environ.get("D1_ORBBEC_STEAL_SETTLE_S", "0.8"))
-    except ValueError:
-        return 0.8
-
-
-def _steal_timeout_s() -> float:
-    try:
-        return float(os.environ.get("D1_ORBBEC_STEAL_TIMEOUT_S", "14"))
-    except ValueError:
-        return 14.0
-
-
-def we_hold_steal_lease() -> bool:
-    """True se «Ruba Orbbec» / teach flow tiene già il flock esclusivo."""
-    with _steal_lock:
-        return _steal_lease is not None and bool(getattr(_steal_lease, "acquired", False))
-
-
-def orbbec_lock_status() -> dict[str, Any]:
-    from go2_dashboard import orbbec_lock
-
-    with _steal_lock:
-        we_hold = we_hold_steal_lease()
-    return {
-        "ok": True,
-        "lock_enabled": orbbec_lock.enabled(),
-        "we_hold": we_hold,
-        "holder": orbbec_lock.holder_info(),
-        "preempt_active": orbbec_lock.preempt_requested(),
-    }
-
-
-def steal_orbbec() -> dict[str, Any]:
-    """Prelazione cooperativa + lock esclusivo per Pick teach (cede Scene/grasp)."""
-    from go2_dashboard import orbbec_lock
-
-    global _steal_lease
-    with _steal_lock:
-        if _steal_lease is not None and _steal_lease.acquired:
-            return {
-                "ok": True,
-                "already": True,
-                "we_hold": True,
-                "holder": orbbec_lock.holder_info(),
-                "hint": "Orbbec già in uso esclusivo da Pick teach.",
-            }
-        previous_holder = orbbec_lock.holder_info()
-
-    # Solo stop live locale: prepare_camera_for_snapshot() può fare fuser -k → kill Flask.
-    _stop_live_only(settle_s=0.15)
-
-    with _steal_lock:
-        orbbec_lock.request_preempt("pick_teach_steal")
-        time.sleep(_steal_settle_s())
-        lease = orbbec_lock.acquire(
-            "pick_teach_steal",
-            blocking=True,
-            timeout_s=_steal_timeout_s(),
-        )
-        if lease is None:
-            orbbec_lock.clear_preempt()
-            holder = orbbec_lock.holder_info()
-            return {
-                "ok": False,
-                "reason": "orbbec_busy",
-                "holder": holder,
-                "previous_holder": previous_holder,
-                "hint": (
-                    "Orbbec ancora occupata"
-                    + (f" da {holder}" if holder else "")
-                    + ". Chiudi anteprima Scene (log.0) o attendi fine grasp, poi riprova."
-                ),
-            }
-        _steal_lease = lease
-        _live_stop.clear()
-        return {
-            "ok": True,
-            "we_hold": True,
-            "holder": "pick_teach_steal",
-            "previous_holder": previous_holder,
-            "lock_enabled": orbbec_lock.enabled(),
-            "hint": "Orbbec rubata — Scene/grasp hanno ceduto. Avvia live o fai foto.",
-        }
-
-
-def release_orbbec_steal() -> dict[str, Any]:
-    from go2_dashboard import orbbec_lock
-
-    global _steal_lease
-    _live_stop.set()
-    with _cap_lock:
-        _release_live_cap()
-    with _steal_lock:
-        held = _steal_lease is not None and _steal_lease.acquired
-        if _steal_lease is not None:
-            orbbec_lock.release(_steal_lease)
-            _steal_lease = None
-        orbbec_lock.clear_preempt()
-        return {
-            "ok": True,
-            "released": held,
-            "hint": "Orbbec ceduta — Scene può riprendere lo stream.",
-        }
 
 
 def _orbbec_frame_diagnostics(frame: Any, *, v4l_index: int | None = None) -> dict[str, Any]:
@@ -277,9 +168,7 @@ def _jpeg_passes_rgb_gate(jpeg: bytes, *, v4l_index: int | None = None) -> bool:
 
 
 def _reset_before_capture_enabled() -> bool:
-    # Default off: reset con fuser -k + modprobe uvcvideo uccide Flask se MJPEG Scene/pick
-    # girano nello stesso processo (5052 integrato) → browser «Failed to fetch».
-    return os.environ.get("D1_ORBBEC_RESET_BEFORE_CAPTURE", "0").strip().lower() not in (
+    return os.environ.get("D1_ORBBEC_RESET_BEFORE_CAPTURE", "1").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -361,23 +250,17 @@ def reset_orbbec_camera(*, reload_uvc: bool | None = None) -> bool:
     return bool(orbbec_all_v4l_indices())
 
 
-def _stop_live_only(*, settle_s: float | None = None) -> None:
-    """Ferma solo il live MJPEG locale — niente fuser/modprobe (non uccide il server)."""
-    _live_stop.set()
-    with _cap_lock:
-        _release_live_cap()
-    if settle_s is None:
-        settle_s = float(os.environ.get("D1_ORBBEC_SNAPSHOT_SETTLE_S", "0.35"))
-    if settle_s > 0:
-        time.sleep(settle_s)
-
-
 def prepare_camera_for_snapshot() -> None:
     """Ferma il live MJPEG; se abilitato, reset completo camera prima della foto."""
     if _reset_before_capture_enabled():
         reset_orbbec_camera()
         return
-    _stop_live_only()
+    _live_stop.set()
+    with _cap_lock:
+        _release_live_cap()
+    settle = float(os.environ.get("D1_ORBBEC_SNAPSHOT_SETTLE_S", "0.35"))
+    if settle > 0:
+        time.sleep(settle)
 
 
 def _operator_base() -> str:
@@ -977,75 +860,6 @@ def _operator_pipeline_enabled() -> bool:
     return _use_operator_http() or _operator_http_fallback()
 
 
-def _use_operator_camera_cache() -> bool:
-    """Pick su dashboard 5052: riusa CameraCache log.0 — evita secondo open V4L (crash Flask)."""
-    explicit = (os.environ.get("D1_ORBBEC_USE_OPERATOR_CACHE") or "").strip().lower()
-    if explicit in {"1", "true", "yes", "on"}:
-        return True
-    if explicit in {"0", "false", "no", "off"}:
-        return False
-    try:
-        from go2_dashboard.operator_stack import go2_local
-
-        if not go2_local():
-            return False
-    except Exception:
-        return False
-    port = (os.environ.get("GO2_DASHBOARD_PORT") or "5052").strip()
-    inst = (os.environ.get("GO2_DASHBOARD_INSTANCE") or "main").strip()
-    return port in {"5052", ""} and inst == "main"
-
-
-def _from_operator_camera_cache(*, tried: list[str]) -> dict[str, Any] | None:
-    if not _use_operator_camera_cache():
-        return None
-    try:
-        from go2_dashboard import orbbec_lock
-        from go2_dashboard.cameras import CAMERA_CACHE
-
-        orbbec_lock.request_preempt("pick_snapshot_cache")
-        settle = float(os.environ.get("D1_ORBBEC_SNAPSHOT_SETTLE_S", "0.35"))
-        if settle > 0:
-            time.sleep(settle)
-        wait_s = float(os.environ.get("D1_ORBBEC_CACHE_WAIT_S", "2.5"))
-        jpg = CAMERA_CACHE.get_jpeg(0, wait_s=wait_s)
-        if jpg and len(jpg) >= 400:
-            tried.append("operator_cache:log0")
-            return _save_jpeg(
-                jpg,
-                source="operator_cache:log0",
-                extra={"via": "operator_camera_cache", "stream_kind": "rgb"},
-            )
-        tried.append("operator_cache:log0_empty")
-    except Exception as exc:
-        tried.append(f"operator_cache_error:{exc!r}")
-
-    # Stesso processo Flask: JPEG da route cache (no secondo open V4L).
-    port = (os.environ.get("GO2_DASHBOARD_PORT") or "5052").strip()
-    url = f"http://127.0.0.1:{port}/api/robot/camera/0.jpg?_={int(time.time())}"
-    tried.append(url)
-    data = _fetch_jpeg(url, timeout_s=float(os.environ.get("D1_ORBBEC_CACHE_HTTP_TIMEOUT_S", "8")))
-    if data:
-        return _save_jpeg(
-            data,
-            source=url,
-            extra={"via": "operator_cache_http", "stream_kind": "rgb_http"},
-        )
-    return None
-
-
-def _allow_v4l_direct_capture() -> bool:
-    """Su 5052 integrato: mai open V4L parallelo a CameraCache (segfault / kill Flask)."""
-    if _use_operator_camera_cache():
-        return False
-    return os.environ.get("D1_ORBBEC_V4L_DIRECT", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
 def _candidate_http_urls() -> list[str]:
     """Solo preview V4L RGB espliciti — mai camera/0 (spesso IR su operator)."""
     base = _operator_base()
@@ -1129,9 +943,12 @@ def _save_jpeg(data: bytes, *, source: str, extra: dict[str, Any] | None = None)
 
 
 def _try_capture_once(*, tried: list[str], operator_up: bool) -> dict[str, Any] | None:
-    cache_mode = _use_operator_camera_cache()
-    allow_direct = _allow_v4l_direct_capture()
-
+    allow_direct = os.environ.get("D1_ORBBEC_V4L_DIRECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     def _from_v4l() -> dict[str, Any] | None:
         if not allow_direct:
             return None
@@ -1157,16 +974,6 @@ def _try_capture_once(*, tried: list[str], operator_up: bool) -> dict[str, Any] 
                 )
         return None
 
-    if cache_mode:
-        got_cache = _from_operator_camera_cache(tried=tried)
-        if got_cache is not None:
-            return got_cache
-        return None
-
-    got_cache = _from_operator_camera_cache(tried=tried)
-    if got_cache is not None:
-        return got_cache
-
     got = _from_v4l()
     if got is not None:
         return got
@@ -1175,19 +982,22 @@ def _try_capture_once(*, tried: list[str], operator_up: bool) -> dict[str, Any] 
     return None
 
 
-def _capture_orbbec_jpeg_impl() -> dict[str, Any]:
-    """Cattura RGB Orbbec (chiamata solo sotto lock Orbbec se abilitato)."""
+def capture_orbbec_jpeg() -> dict[str, Any]:
+    """Un frame Orbbec RGB — reset camera prima di ogni tentativo (stabile su NX)."""
     global _resolved_rgb_idx
     _SNAP_DIR.mkdir(parents=True, exist_ok=True)
     tried: list[str] = []
     operator_up = _operator_reachable() if _operator_pipeline_enabled() else False
     retries = max(1, int(os.environ.get("D1_ORBBEC_CAPTURE_RETRIES", "6")))
-    allow_direct = _allow_v4l_direct_capture()
-    cache_mode = _use_operator_camera_cache()
-    reset_each = _reset_before_capture_enabled()
+    allow_direct = os.environ.get("D1_ORBBEC_V4L_DIRECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     for attempt in range(retries):
         _resolved_rgb_idx = None
-        if reset_each:
+        if _reset_before_capture_enabled():
             reset_orbbec_camera(reload_uvc=True)
         else:
             prepare_camera_for_snapshot()
@@ -1195,7 +1005,7 @@ def _capture_orbbec_jpeg_impl() -> dict[str, Any]:
             time.sleep(float(os.environ.get("D1_ORBBEC_CAPTURE_RETRY_DELAY_S", "0.8")))
         got = _try_capture_once(tried=tried, operator_up=operator_up)
         if got is not None and got.get("ok"):
-            got["camera_reset"] = reset_each
+            got["camera_reset"] = True
             if attempt > 0:
                 got["capture_attempt"] = attempt + 1
             return got
@@ -1214,11 +1024,7 @@ def _capture_orbbec_jpeg_impl() -> dict[str, Any]:
             + (", ".join(f"/dev/video{i}" for i in orbbec_nodes) if orbbec_nodes else "nessuno — controlla USB/cavo")
             + ".",
         ]
-    if cache_mode:
-        hint_parts.append(
-            "Dashboard 5052: apri tab Scene (stream log.0 attivo) o premi «Ruba Orbbec», poi riprova."
-        )
-    elif not allow_direct:
+    if not allow_direct:
         hint_parts.append("Abilita D1_ORBBEC_V4L_DIRECT=1.")
     else:
         hint_parts.append(
@@ -1237,36 +1043,6 @@ def _capture_orbbec_jpeg_impl() -> dict[str, Any]:
         err["operator"] = _operator_base()
         err["operator_reachable"] = operator_up
     return err
-
-
-def capture_orbbec_jpeg() -> dict[str, Any]:
-    """Un frame Orbbec RGB — prelazione lock cooperativa (Scene/MJPEG cede senza fuser sul server)."""
-    from go2_dashboard import orbbec_lock
-
-    if not orbbec_lock.enabled():
-        return _capture_orbbec_jpeg_impl()
-    if we_hold_steal_lease():
-        return _capture_orbbec_jpeg_impl()
-    lock_timeout = float(os.environ.get("GO2_ORBBEC_LOCK_TIMEOUT_S", "18"))
-    with orbbec_lock.orbbec_guard(
-        "pick_snapshot",
-        blocking=True,
-        timeout_s=lock_timeout,
-        preempt=True,
-    ) as lk:
-        if not lk.acquired:
-            holder = lk.holder or orbbec_lock.holder_info()
-            return {
-                "ok": False,
-                "reason": "orbbec_busy",
-                "holder": holder,
-                "hint": (
-                    "Orbbec occupato"
-                    + (f" ({holder})" if holder else "")
-                    + ". Chiudi anteprima live o premi «Ruba Orbbec», poi riprova."
-                ),
-            }
-        return _capture_orbbec_jpeg_impl()
 
 
 def latest_snapshot_path() -> Path | None:
@@ -1436,247 +1212,3 @@ def generate_rgb_mjpeg_stream() -> Generator[bytes, None, None]:
     finally:
         with _cap_lock:
             _release_live_cap()
-
-
-_ORBBEC_STREAM_KINDS = ("rgb", "depth", "ir", "meta")
-
-
-def _normalize_stream_kind(kind: str | None) -> str:
-    k = (kind or "rgb").strip().lower()
-    if k in {"color", "colour"}:
-        return "rgb"
-    if k in {"ir1", "infra1", "infrared1"}:
-        return "ir"
-    if k in {"ir2", "infra2", "infrared2"}:
-        return "ir"
-    if k not in _ORBBEC_STREAM_KINDS:
-        return "rgb"
-    return k
-
-
-def _stream_kind_label(kind: str) -> str:
-    if kind == "rgb":
-        return "RGB"
-    if kind == "depth":
-        return "Depth"
-    if kind == "ir":
-        return "IR"
-    if kind == "meta":
-        return "Meta"
-    return kind.upper()
-
-
-def _stream_kind_uvc_index(kind: str) -> int:
-    if kind == "depth":
-        return 0
-    if kind == "ir":
-        return 1
-    if kind == "rgb":
-        return 2
-    if kind == "meta":
-        return 3
-    return 2
-
-
-def _stream_kind_score(kind: str, idx: int) -> float:
-    uvc = _v4l_sysfs_uvc_index(idx)
-    name = _v4l_sysfs_card_name(idx).lower()
-    score = 0.0
-    preferred = _stream_kind_uvc_index(kind)
-    if uvc == preferred:
-        score += 1000.0
-    if uvc >= 0:
-        score -= abs(uvc - preferred) * 35.0
-    if kind == "rgb":
-        if _verify_v4l_index_is_orbbec_rgb(idx):
-            score += 3000.0
-        if "rgb" in name or "color" in name or "colour" in name:
-            score += 700.0
-    elif kind == "depth":
-        if "depth" in name:
-            score += 700.0
-    elif kind == "ir":
-        if "ir" in name or "infra" in name:
-            score += 700.0
-    elif kind == "meta":
-        if "meta" in name:
-            score += 700.0
-    if "orbbec" in name or "gemini" in name:
-        score += 120.0
-    return score
-
-
-def _select_orbbec_stream_index(kind: str, explicit_index: int | None = None) -> int | None:
-    kind = _normalize_stream_kind(kind)
-    if explicit_index is not None:
-        idx = int(explicit_index)
-        if _v4l_device_exists(idx) and _v4l_index_is_orbbec_device(idx) and not _v4l_index_is_realsense_device(idx):
-            return idx
-        return None
-    candidates = orbbec_all_v4l_indices()
-    if not candidates:
-        return None
-    best_idx: int | None = None
-    best_score = -1e9
-    for idx in candidates:
-        if not _v4l_device_exists(idx):
-            continue
-        if not _v4l_index_is_orbbec_device(idx) or _v4l_index_is_realsense_device(idx):
-            continue
-        score = _stream_kind_score(kind, idx)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-    return best_idx
-
-
-def orbbec_stream_catalog() -> dict[str, Any]:
-    """Catalogo stream polso: nodi V4L disponibili + slot consigliati per preview."""
-    devices: list[dict[str, Any]] = []
-    for idx in orbbec_all_v4l_indices():
-        devices.append(
-            {
-                "index": int(idx),
-                "sysfs_name": _v4l_sysfs_card_name(idx),
-                "uvc_index": _v4l_sysfs_uvc_index(idx),
-                "stream_kind": _stream_kind_label(_normalize_stream_kind(_stream_kind_from_index(idx))),
-            }
-        )
-    slots: list[dict[str, Any]] = []
-    for kind in _ORBBEC_STREAM_KINDS:
-        idx = _select_orbbec_stream_index(kind)
-        dev = next((d for d in devices if d["index"] == idx), None) if idx is not None else None
-        slots.append(
-            {
-                "key": kind,
-                "label": _stream_kind_label(kind),
-                "uvc_index": _stream_kind_uvc_index(kind),
-                "index": idx,
-                "sysfs_name": dev.get("sysfs_name") if dev else None,
-                "available": idx is not None,
-            }
-        )
-    return {"ok": True, "slots": slots, "devices": devices}
-
-
-def _stream_kind_from_index(idx: int) -> str:
-    uvc = _v4l_sysfs_uvc_index(idx)
-    if uvc == 0:
-        return "depth"
-    if uvc == 1:
-        return "ir"
-    if uvc == 2:
-        return "rgb"
-    if uvc == 3:
-        return "meta"
-    name = _v4l_sysfs_card_name(idx).lower()
-    if "depth" in name:
-        return "depth"
-    if "ir" in name or "infra" in name:
-        return "ir"
-    if "meta" in name:
-        return "meta"
-    return "rgb"
-
-
-def _ensure_bgr_frame(frame: Any, *, cv2: Any, idx: int, kind: str) -> Any | None:
-    if frame is None or not getattr(frame, "size", 0):
-        return None
-    if len(frame.shape) == 2:
-        if getattr(frame, "dtype", None) is not None and str(frame.dtype) != "uint8":
-            frame = cv2.convertScaleAbs(frame)
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    elif len(frame.shape) == 3 and int(frame.shape[2]) == 1:
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    elif len(frame.shape) == 3 and int(frame.shape[2]) == 4:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-    if len(frame.shape) == 3 and int(frame.shape[2]) == 3:
-        return frame
-    return None
-
-
-def _placeholder_stream_frame(cv2: Any, *, title: str, subtitle: str) -> Any:
-    import numpy as np
-
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
-    img[:] = (24, 28, 38)
-    cv2.rectangle(img, (0, 0), (639, 479), (64, 74, 94), 2)
-    cv2.putText(img, title, (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (235, 241, 245), 2, cv2.LINE_AA)
-    cv2.putText(img, subtitle, (24, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (148, 163, 184), 1, cv2.LINE_AA)
-    return img
-
-
-def generate_orbbec_stream_mjpeg(kind: str, *, index: int | None = None) -> Generator[bytes, None, None]:
-    """MJPEG live generico dei nodi Orbbec: RGB, depth, IR, metadata."""
-    if platform.system().lower() != "linux":
-        return
-    try:
-        import cv2
-    except ImportError:
-        return
-    import numpy as np
-
-    stream_kind = _normalize_stream_kind(kind)
-    frame_period = max(0.18, min(1.0, float(os.environ.get("D1_ORBBEC_STREAM_PERIOD_S", "0.28"))))
-    jpeg_quality = int(os.environ.get("D1_ORBBEC_JPEG_QUALITY", "98"))
-    boundary = b"--frame\r\n"
-    idx = _select_orbbec_stream_index(stream_kind, explicit_index=index)
-    cap = None
-    last_placeholder = cv2.imencode(
-        ".jpg",
-        _placeholder_stream_frame(cv2, title=_stream_kind_label(stream_kind), subtitle="attesa stream..."),
-        [int(cv2.IMWRITE_JPEG_QUALITY), 85],
-    )[1]
-    placeholder = last_placeholder.tobytes() if last_placeholder is not None else b""
-    try:
-        while True:
-            if idx is None:
-                yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n"
-                time.sleep(frame_period)
-                idx = _select_orbbec_stream_index(stream_kind, explicit_index=index)
-                continue
-            if cap is None:
-                cap = _open_v4l_cap(cv2, idx)
-                if cap is None:
-                    idx = None
-                    continue
-            ok, frame = cap.read()
-            if not ok or frame is None or not getattr(frame, "size", 0):
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-                cap = None
-                idx = _select_orbbec_stream_index(stream_kind, explicit_index=index)
-                continue
-            frame = _ensure_bgr_frame(frame, cv2=cv2, idx=idx, kind=stream_kind)
-            if frame is None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-                cap = None
-                idx = None
-                continue
-            overlay = frame.copy()
-            title = f"{_stream_kind_label(stream_kind)} /dev/video{idx}"
-            subtitle = _v4l_sysfs_card_name(idx) or f"uvc={_v4l_sysfs_uvc_index(idx)}"
-            cv2.rectangle(overlay, (0, 0), (overlay.shape[1] - 1, overlay.shape[0] - 1), (0, 0, 0), 1)
-            cv2.putText(overlay, title, (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(overlay, subtitle, (14, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (185, 200, 220), 1, cv2.LINE_AA)
-            ok_enc, buf = cv2.imencode(
-                ".jpg",
-                overlay,
-                [int(cv2.IMWRITE_JPEG_QUALITY), max(40, min(98, jpeg_quality))],
-            )
-            if not ok_enc or buf is None:
-                yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + placeholder + b"\r\n"
-            else:
-                yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-            time.sleep(frame_period)
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass

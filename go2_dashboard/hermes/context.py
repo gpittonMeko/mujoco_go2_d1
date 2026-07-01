@@ -1,4 +1,4 @@
-"""Lettura contesto robot — integrato su :5052 o standalone :5054 → operator locale."""
+"""Lettura contesto robot — operator :5052 opzionale (Hermes standalone su :5054)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,6 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
-
-
-def integrated_on_operator_dashboard() -> bool:
-    return os.environ.get("GO2_HERMES_INTEGRATED", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def operator_base() -> str:
@@ -37,13 +28,6 @@ def operator_required() -> bool:
 
 def operator_reachable_quick(*, timeout_s: float = 2.5) -> bool:
     """True se la dashboard operator :5052 risponde (opzionale per Hermes)."""
-    if integrated_on_operator_dashboard():
-        try:
-            from go2_dashboard.operator_stack import go2_local
-
-            return go2_local()
-        except Exception:
-            return True
     data = _fetch_json("/api/health", timeout_s=timeout_s)
     return bool(data.get("ok"))
 
@@ -61,17 +45,6 @@ def hermes_capabilities() -> dict[str, Any]:
 
 
 def _fetch_json(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
-    if integrated_on_operator_dashboard():
-        try:
-            from flask import current_app
-
-            resp = current_app.test_client().get(path)
-            data = resp.get_json(silent=True)
-            if isinstance(data, dict):
-                return data
-            return {"ok": False, "path": path, "error": "non_json"}
-        except Exception as exc:
-            return {"ok": False, "path": path, "error": repr(exc)}
     url = operator_base() + path
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:

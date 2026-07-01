@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, render_template, request
 
 from go2_dashboard.hermes.agent import hermes_reply
 from go2_dashboard.hermes.context import build_robot_context, hermes_capabilities, operator_base
@@ -18,21 +18,12 @@ _CHAT_HISTORY: list[dict[str, Any]] = []
 _MAX_HISTORY = int(os.environ.get("HERMES_CHAT_HISTORY_MAX", "40"))
 
 
-def _standalone_service() -> bool:
-    return os.environ.get("GO2_HERMES_STANDALONE", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _dashboard_port() -> int:
-    return int(os.environ.get("GO2_DASHBOARD_PORT", os.environ.get("HERMES_PORT", "5052")))
-
-
-# NON registrare GET / su questo blueprint: è montato anche su :5052 (lite_app).
-# La home standalone sta in create_hermes_app().
+@bp.route("/")
+def index() -> str:
+    return render_template(
+        "hermes.html",
+        port=int(os.environ.get("HERMES_PORT", os.environ.get("GO2_HERMES_PORT", "5054"))),
+    )
 
 
 @bp.route("/api/hermes/health", methods=["GET"])
@@ -40,29 +31,17 @@ def health() -> Response:
     from go2_dashboard.hermes.speech import last_speak_status, list_canned_status
     from go2_dashboard.hermes.tts_local import tts_status
 
-    from go2_dashboard.hermes.context import integrated_on_operator_dashboard
-
     ctx = build_robot_context()
     caps = hermes_capabilities()
-    host = os.environ.get("GO2_HOST", "127.0.0.1").strip()
-    port = _dashboard_port()
-    if integrated_on_operator_dashboard():
-        dash_url = f"http://{host}:{port}/operators/hermes"
-    elif _standalone_service():
-        dash_url = f"http://{host}:{int(os.environ.get('HERMES_PORT', '5054'))}/"
-    else:
-        dash_url = f"http://{host}:{port}/operators/hermes"
     return jsonify(
         {
             "ok": True,
             "service": "hermes",
-            "integrated": integrated_on_operator_dashboard(),
-            "standalone": _standalone_service() and not integrated_on_operator_dashboard(),
-            "dashboard_url": dash_url,
+            "dashboard_url": f"http://{os.environ.get('GO2_HOST', '127.0.0.1')}:5054/",
             "operator_url": operator_base(),
             "operator_reachable": ctx.get("operator_reachable"),
             "operator_required": caps.get("operator_required"),
-            "standalone_mode": caps.get("standalone"),
+            "standalone": caps.get("standalone"),
             "capabilities": caps,
             "tts": tts_status(),
             "interaction_voice": os.environ.get("HERMES_INTERACTION_VOICE", "1"),

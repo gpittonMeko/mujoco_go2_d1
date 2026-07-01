@@ -61,54 +61,19 @@
     .teach-sample-item button { padding: 6px 12px; font-size: 0.78rem; background: #7f1d1d; color: #fecaca; }
     .teach-model-status { font-size: 0.85rem; color: var(--ok); margin: 8px 0; }
     .teach-model-status.inactive { color: var(--muted); }
-    .orbbec-streams-head {
-      display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-top: 14px; margin-bottom: 10px;
-    }
-    .orbbec-streams-head h4 { margin: 0; font-size: 0.95rem; color: var(--text); }
-    .orbbec-stream-note { margin: 4px 0 0; font-size: 0.8rem; color: var(--muted); }
-    .orbbec-stream-grid {
-      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 8px;
-    }
-    .orbbec-stream-card {
-      border: 1px solid var(--border); border-radius: 12px; background: #0f131b; overflow: hidden;
-    }
-    .orbbec-stream-card header {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 12px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02);
-    }
-    .orbbec-stream-card header strong { font-size: 0.88rem; }
-    .orbbec-stream-card header small { color: var(--muted); }
-    .orbbec-stream-controls {
-      display: grid; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--border); background: #111722;
-    }
-    .orbbec-stream-controls label { display: grid; gap: 4px; font-size: 0.78rem; color: var(--muted); }
-    .orbbec-stream-controls input[type="text"], .orbbec-stream-controls select {
-      width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #0b0f16; color: var(--text); padding: 8px 10px;
-      font: inherit;
-    }
-    .orbbec-stream-view {
-      display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0b0f16;
-    }
-    .orbbec-stream-meta { font-size: 0.77rem; color: var(--muted); line-height: 1.35; }
-    @media (max-width: 860px) {
-      .orbbec-stream-grid { grid-template-columns: 1fr; }
-      .orbbec-streams-head { align-items: start; flex-direction: column; }
-    }
   </style>
 </head>
 <body data-page="teach">
-  <header class="topbar"{% if embed_in_operators|default(false) %} style="padding:10px 16px"{% endif %}>
+  <header class="topbar">
     <div class="brand">
       <h1>D1 Teach</h1>
-      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}{% if embed_in_operators|default(false) %} · integrato 5052{% endif %}</span>
+      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}</span>
     </div>
     <div class="topbar-actions">
-      {% if not embed_in_operators|default(false) %}
       <nav class="topbar-nav">
         <a href="/" class="active">Teach</a>
         <a href="/program">Programma</a>
       </nav>
-      {% endif %}
       <button type="button" class="top-jog joint-jog" id="btnJointJog">Jog giunti</button>
       <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
       <span id="healthBadge" class="badge">…</span>
@@ -137,22 +102,10 @@
     <section class="orbbec-panel" aria-labelledby="orbbecPanelTitle">
       <h3 id="orbbecPanelTitle">Vista Orbbec</h3>
       <div class="orbbec-view-toggle">
-        <button type="button" class="warn" id="btnStealOrbbec" title="Cede la camera a Scene/grasp e prende l'Orbbec in esclusiva per Pick teach">Ruba Orbbec</button>
         <button type="button" id="btnViewLive" title="Tieni aperta la camera — può interferire con la foto">Anteprima live</button>
       </div>
       <img id="orbbecLive" class="orbbec-empty" alt="Orbbec" />
       <p class="orbbec-meta" id="orbbecMeta">Foto normale o task calibrazione (10 s → release → 10 s → coppia → presa zero)</p>
-
-      <div class="orbbec-streams-head">
-        <div>
-          <h4>4 stream polso</h4>
-          <p class="orbbec-stream-note">Sposta i feed o rinominali se RGB/depth risultano invertiti. Le etichette restano nel browser.</p>
-        </div>
-        <button type="button" id="btnOrbbecReloadStreams">Ricarica stream</button>
-      </div>
-      <div class="orbbec-stream-grid" id="orbbecStreamGrid">
-        <div class="orbbec-stream-card"><header><strong>Carico…</strong><small>attendi</small></header></div>
-      </div>
 
       <details class="crop-panel" id="cropPanel" open>
         <summary>ROI riconoscimento (inquadratura scatoletta)</summary>
@@ -348,211 +301,6 @@
     }
 
     let _orbbecLiveOn = false;
-    let _orbbecStolen = false;
-    const ORBBEC_STREAM_SLOT_KEYS = ['rgb', 'depth', 'ir', 'meta'];
-    const ORBBEC_STREAM_STATE_KEY = 'd1.pick.orbbec.streamGrid.v1';
-    let _orbbecStreamCatalog = null;
-    let _orbbecStreamState = loadOrbbecStreamState();
-
-    function loadOrbbecStreamState() {
-      const base = { slots: {} };
-      ORBBEC_STREAM_SLOT_KEYS.forEach((kind) => {
-        base.slots[kind] = { label: kind.toUpperCase(), index: null };
-      });
-      try {
-        const raw = localStorage.getItem(ORBBEC_STREAM_STATE_KEY);
-        if (!raw) return base;
-        const parsed = JSON.parse(raw);
-        const out = { slots: { ...base.slots } };
-        ORBBEC_STREAM_SLOT_KEYS.forEach((kind) => {
-          out.slots[kind] = {
-            ...out.slots[kind],
-            ...(parsed && parsed.slots && parsed.slots[kind] ? parsed.slots[kind] : {}),
-          };
-        });
-        return out;
-      } catch (_) {
-        return base;
-      }
-    }
-
-    function saveOrbbecStreamState() {
-      try {
-        localStorage.setItem(ORBBEC_STREAM_STATE_KEY, JSON.stringify(_orbbecStreamState));
-      } catch (_) {}
-    }
-
-    function orbbecStreamPreferredIndex(kind) {
-      if (_orbbecStreamCatalog && _orbbecStreamCatalog.slots) {
-        const slot = _orbbecStreamCatalog.slots.find((s) => s.key === kind);
-        if (slot && slot.index != null) return String(slot.index);
-      }
-      return ({ rgb: 'color', depth: 'depth', ir: 'ir1', meta: 'ir2' }[kind]) || 'color';
-    }
-
-    function orbbecStreamUrl(kind, index) {
-      const q = new URLSearchParams();
-      q.set('panel', String(index !== null && index !== undefined && index !== '' ? index : kind));
-      if (index !== null && index !== undefined && index !== '') q.set('index', String(index));
-      return D1.api('/api/pick/vision/stream.mjpg') + '?' + q.toString();
-    }
-
-    function escHtml(value) {
-      return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function renderOrbbecStreamGrid() {
-      const grid = document.getElementById('orbbecStreamGrid');
-      if (!grid) return;
-      const devices = (_orbbecStreamCatalog && _orbbecStreamCatalog.streams) ? _orbbecStreamCatalog.streams : [];
-      const slots = ORBBEC_STREAM_SLOT_KEYS.map((kind) => {
-        const slotState = _orbbecStreamState.slots[kind] || { label: kind.toUpperCase(), index: null };
-        const selectedIndex = slotState.index !== null && slotState.index !== undefined ? String(slotState.index) : null;
-        const previewIndex = selectedIndex !== null ? selectedIndex : orbbecStreamPreferredIndex(kind);
-        return { kind, label: slotState.label || kind.toUpperCase(), index: selectedIndex, previewIndex };
-      });
-      grid.innerHTML = slots.map((slot) => {
-        const opts = [
-          '<option value="">Auto</option>',
-          ...devices.map((d) => {
-            const txt = (d.label || d.key || 'stream') + (d.description ? ' · ' + d.description : '');
-            const sel = slot.index !== null && String(d.key) === String(slot.index) ? ' selected' : '';
-            return '<option value="' + escHtml(d.key) + '"' + sel + '>' + escHtml(txt) + '</option>';
-          }),
-        ].join('');
-        const src = orbbecStreamUrl(slot.kind, slot.previewIndex);
-        const meta = 'source: ' + (slot.index != null ? slot.index : 'auto') + ' · label: ' + slot.label;
-        return (
-          '<article class="orbbec-stream-card" data-kind="' + slot.kind + '">' +
-          '<header><div><strong>' + escHtml(slot.label) + '</strong><small> · ' + escHtml(slot.kind.toUpperCase()) + '</small></div><small>slot</small></header>' +
-          '<img class="orbbec-stream-view" id="orbbecStreamImg-' + slot.kind + '" alt="' + escHtml(slot.label) + '" src="' + src + '" />' +
-          '<div class="orbbec-stream-controls">' +
-          '<label>Etichetta<input type="text" data-orbbec-label="' + slot.kind + '" value="' + escHtml(slot.label) + '" /></label>' +
-          '<select data-orbbec-index="' + slot.kind + '">' + opts + '</select>' +
-          '<div class="orbbec-stream-meta" id="orbbecStreamMeta-' + slot.kind + '">' + escHtml(meta) + '</div>' +
-          '</div></article>'
-        );
-      }).join('');
-      ORBBEC_STREAM_SLOT_KEYS.forEach((kind) => {
-        const labelEl = grid.querySelector('[data-orbbec-label="' + kind + '"]');
-        const indexEl = grid.querySelector('[data-orbbec-index="' + kind + '"]');
-        const imgEl = document.getElementById('orbbecStreamImg-' + kind);
-        const metaEl = document.getElementById('orbbecStreamMeta-' + kind);
-        if (labelEl) {
-          labelEl.onchange = () => {
-            _orbbecStreamState.slots[kind] = _orbbecStreamState.slots[kind] || {};
-            _orbbecStreamState.slots[kind].label = labelEl.value || kind.toUpperCase();
-            saveOrbbecStreamState();
-            renderOrbbecStreamGrid();
-          };
-        }
-        if (indexEl) {
-          indexEl.onchange = () => {
-            const raw = indexEl.value.trim();
-            _orbbecStreamState.slots[kind] = _orbbecStreamState.slots[kind] || {};
-            _orbbecStreamState.slots[kind].index = raw === '' ? null : raw;
-            saveOrbbecStreamState();
-            renderOrbbecStreamGrid();
-          };
-        }
-        if (imgEl && metaEl) {
-          metaEl.textContent = 'source: ' + (slotIndexText(kind)) + ' · label: ' + ((_orbbecStreamState.slots[kind] || {}).label || kind.toUpperCase());
-        }
-      });
-    }
-
-    function slotIndexText(kind) {
-      const slot = _orbbecStreamState.slots[kind] || {};
-      return slot.index === null || slot.index === undefined ? 'auto' : '/dev/video' + slot.index;
-    }
-
-    async function refreshOrbbecStreamCatalog() {
-      const grid = document.getElementById('orbbecStreamGrid');
-      try {
-        const { data } = await D1.apiJson('/api/pick/vision/streams');
-        if (!data.ok) throw new Error('stream catalog unavailable');
-        _orbbecStreamCatalog = data;
-        ORBBEC_STREAM_SLOT_KEYS.forEach((kind) => {
-          _orbbecStreamState.slots[kind] = _orbbecStreamState.slots[kind] || { label: kind.toUpperCase(), index: null };
-          if (_orbbecStreamState.slots[kind].index === null || _orbbecStreamState.slots[kind].index === undefined) {
-            _orbbecStreamState.slots[kind].index = orbbecStreamPreferredIndex(kind);
-          }
-          if (!_orbbecStreamState.slots[kind].label) {
-            _orbbecStreamState.slots[kind].label = kind.toUpperCase();
-          }
-        });
-        saveOrbbecStreamState();
-        renderOrbbecStreamGrid();
-        if (grid) grid.dataset.ready = '1';
-      } catch (e) {
-        _orbbecStreamCatalog = { devices: [], slots: [] };
-        if (grid) {
-          grid.innerHTML = '<div class="orbbec-stream-card"><header><strong>Stream non disponibili</strong><small>NX</small></header><div class="orbbec-stream-controls"><div class="orbbec-stream-meta">' + String(e) + '</div></div></div>';
-        }
-      }
-    }
-
-    function updateStealButton() {
-      const btn = document.getElementById('btnStealOrbbec');
-      if (!btn) return;
-      if (_orbbecStolen) {
-        btn.textContent = 'Cedi Orbbec';
-        btn.classList.add('active');
-        btn.title = 'Rilascia il lock — Scene può riprendere log.0';
-      } else {
-        btn.textContent = 'Ruba Orbbec';
-        btn.classList.remove('active');
-        btn.title = 'Cede la camera a Scene/grasp e prende l\'Orbbec in esclusiva per Pick teach';
-      }
-    }
-
-    async function refreshOrbbecLockStatus() {
-      try {
-        const { data } = await D1.apiJson('/api/orbbec/lock');
-        _orbbecStolen = !!data.we_hold;
-        updateStealButton();
-        if (_orbbecStolen) {
-          setOrbbecMeta('Orbbec in uso esclusivo Pick teach' + (data.holder ? ' (' + data.holder + ')' : ''));
-        }
-      } catch (_) {}
-    }
-
-    async function stealOrbbec() {
-      const btn = document.getElementById('btnStealOrbbec');
-      if (btn) btn.disabled = true;
-      try {
-        const { data } = await D1.apiJson('/api/orbbec/steal', { method: 'POST' });
-        if (!data.ok) {
-          setOrbbecMeta(data.hint || ('Orbbec occupata' + (data.holder ? ': ' + data.holder : '')));
-          setStatus(data.hint || 'Impossibile rubare Orbbec', false);
-          return;
-        }
-        _orbbecStolen = true;
-        updateStealButton();
-        setOrbbecMeta(data.hint || 'Orbbec rubata');
-        setStatus('Orbbec rubata — avvia live o fai foto', true);
-      } catch (e) { setStatus(String(e), false); }
-      finally { if (btn) btn.disabled = false; }
-    }
-
-    async function releaseOrbbecSteal() {
-      const btn = document.getElementById('btnStealOrbbec');
-      if (btn) btn.disabled = true;
-      try {
-        stopOrbbecLive();
-        const { data } = await D1.apiJson('/api/orbbec/release', { method: 'POST' });
-        _orbbecStolen = false;
-        updateStealButton();
-        setOrbbecMeta(data.hint || 'Orbbec ceduta');
-        setStatus('Orbbec ceduta — Scene può riprendere', true);
-      } catch (e) { setStatus(String(e), false); }
-      finally { if (btn) btn.disabled = false; }
-    }
 
     function stopOrbbecLive() {
       const img = document.getElementById('orbbecLive');
@@ -587,11 +335,6 @@
       const img = document.getElementById('orbbecLive');
       const bLive = document.getElementById('btnViewLive');
       if (!img) return;
-      if (!_orbbecStolen) {
-        setStatus('Prima «Ruba Orbbec» se la vista è vuota o occupata', false);
-        await stealOrbbec();
-        if (!_orbbecStolen) return;
-      }
       try {
         const { data } = await D1.apiJson('/api/orbbec/probe');
         if (!data.ok || data.chosen_v4l_index == null) {
@@ -936,38 +679,17 @@
       }
     }
 
-    const PICK_EMBED_5052 = {{ embed_in_operators|default(false)|tojson }};
-
-    async function ensureOrbbecForPick() {
-      // Su 5052 integrato: Pick usa CameraCache log.0 — steal blocca Scene/MJPEG e non serve.
-      if (PICK_EMBED_5052) return;
-      try {
-        await D1.apiJson('/api/orbbec/steal', { method: 'POST', body: {} });
-      } catch (_) {}
-    }
-
-    async function releaseOrbbecAfterPick() {
-      if (PICK_EMBED_5052) return;
-      try {
-        await D1.apiJson('/api/orbbec/release', { method: 'POST', body: {} });
-      } catch (_) {}
-    }
-
     async function runPickSnapshot({ quiet }) {
       if (!quiet) {
         setStatus('Foto e riconoscimento…', null);
         stopOrbbecLive();
       }
-      await ensureOrbbecForPick();
-      let data;
-      try {
-        const { res, data: snapData } = await D1.apiJson('/api/pick/snapshot', {
-          method: 'POST',
-          body: {},
-          timeoutMs: 90000,
-        });
-        data = snapData;
-        const cap = data.capture || {};
+      const { res, data } = await D1.apiJson('/api/pick/snapshot', {
+        method: 'POST',
+        body: {},
+        timeoutMs: 90000,
+      });
+      const cap = data.capture || {};
       if (data.ok && (cap.ok !== false)) {
         const meta = (cap.saved_at ? 'Salvata ' + cap.saved_at + ' · ' : '') +
           (data.detection_ok ? 'Rilevamento OK' : 'Foto OK · nessun oggetto') +
@@ -1002,9 +724,6 @@
         setStatus(msg, false);
       }
       return data;
-      } finally {
-        await releaseOrbbecAfterPick();
-      }
     }
 
     async function pickSnapshotNormal() {
@@ -1292,16 +1011,10 @@
     document.getElementById('btnGotoGrasp').onclick = gotoGrasp;
     document.getElementById('btnGripOpen').onclick = () => gripperOnly('open');
     document.getElementById('btnGripClose').onclick = () => gripperOnly('close');
-    document.getElementById('btnStealOrbbec').onclick = () => {
-      if (_orbbecStolen) releaseOrbbecSteal();
-      else stealOrbbec();
-    };
     document.getElementById('btnViewLive').onclick = () => {
       if (_orbbecLiveOn) stopOrbbecLive();
       else startOrbbecLive();
     };
-    const btnReloadStreams = document.getElementById('btnOrbbecReloadStreams');
-    if (btnReloadStreams) btnReloadStreams.onclick = refreshOrbbecStreamCatalog;
     const orientEl = document.getElementById('orientJ5');
     if (orientEl) orientEl.addEventListener('input', scheduleOrientSave);
     CROP_SLIDERS.forEach(([id]) => {
@@ -1319,8 +1032,6 @@
       await loadCropSettings();
       await refreshPickPreset();
       await refreshTeachSamplesList();
-      await refreshOrbbecLockStatus();
-      await refreshOrbbecStreamCatalog();
       setStatus(_robotSynced ? 'Pronto — teach multiplo o foto → presa' : 'Leggi da robot', _robotSynced);
     })();
   </script>
