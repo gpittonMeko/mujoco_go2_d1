@@ -3,1037 +3,268 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>D1 — Teach</title>
-  <link rel="stylesheet" href="/static/d1_common.css" />
+  <title>D1 Focus 5056</title>
   <style>
     :root {
-      --bg: #0c0e12; --surface: #161a22; --surface2: #1e2430; --border: #2d3548;
-      --text: #f1f5f9; --muted: #8b9cb3; --joint: #34d399; --cart: #38bdf8;
-      --warn: #fbbf24; --danger: #f87171; --ok: #4ade80; --prog: #a78bfa;
+      --bg: #0b1220;
+      --panel: #111a2d;
+      --panel2: #1a2740;
+      --line: #2d3b5a;
+      --text: #e7eefb;
+      --muted: #9bb0d4;
+      --ok: #40d289;
+      --bad: #ff7f7f;
+      --accent: #4ea6ff;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
-    body {
-      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-      background: var(--bg); color: var(--text);
-      display: flex; flex-direction: column; min-height: 100vh;
-    }
-    .topbar {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 24px; background: var(--surface);
-      border-bottom: 2px solid var(--border); flex-shrink: 0;
-    }
-    .topbar .brand { display: flex; align-items: baseline; gap: 14px; }
-    .topbar h1 { margin: 0; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
-    .topbar .sub { color: var(--muted); font-size: 0.85rem; }
-    .badge { padding: 4px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; background: #334155; }
-    .badge.ok { background: #14532d; color: var(--ok); }
-    .badge.err { background: #7f1d1d; color: #fecaca; }
-    .main { flex: 1; max-width: 920px; width: 100%; margin: 0 auto; padding: 24px; }
-    .pane-title { margin: 0 0 4px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
-    .pane h2 { margin: 0 0 16px; font-size: 1.25rem; color: var(--joint); }
-    .status-bar { padding: 10px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; margin-bottom: 16px; min-height: 2.4em; }
-    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-    button { font-family: inherit; font-size: 0.88rem; font-weight: 600; border: none; border-radius: 8px; padding: 11px 18px; cursor: pointer; }
-    button.primary { background: #2563eb; color: #fff; }
-    button.joint { background: #047857; color: #ecfdf5; }
-    button.warn { background: #b45309; color: #fffbeb; }
-    button.prog { background: #6d28d9; color: #f5f3ff; }
-    button.danger { background: #b91c1c; color: #fef2f2; }
-    .joint-sliders { display: flex; flex-direction: column; gap: 12px; }
-    .joint-row {
-      display: grid; grid-template-columns: 44px 1fr 72px; align-items: center; gap: 14px;
-      padding: 10px 12px; background: var(--surface2); border-radius: 10px; border: 1px solid var(--border);
-    }
-    .joint-row span.lab { font-weight: 700; color: var(--joint); }
-    .joint-row input[type="range"] { width: 100%; accent-color: var(--joint); }
-    .joint-row span.val { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .hint { margin-top: 16px; font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
-    .pick-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
-    .pick-calib-hint { font-size: 0.82rem; color: var(--muted); line-height: 1.45; margin: 8px 0 12px; }
-    .teach-sample-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-    .teach-sample-item {
-      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-      padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
-      font-size: 0.82rem;
-    }
-    .teach-sample-item .meta { flex: 1; min-width: 200px; color: var(--muted); }
-    .teach-sample-item button { padding: 6px 12px; font-size: 0.78rem; background: #7f1d1d; color: #fecaca; }
-    .teach-model-status { font-size: 0.85rem; color: var(--ok); margin: 8px 0; }
-    .teach-model-status.inactive { color: var(--muted); }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Tahoma, sans-serif; }
+    .top { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; justify-content: space-between; align-items: center; }
+    .top h1 { margin: 0; font-size: 18px; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 8px; }
+    .tabbtn { border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+    .tabbtn.active { border-color: var(--accent); }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .stream { width: 100%; height: 280px; object-fit: contain; background: #000; border-radius: 8px; border: 1px solid var(--line); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    button { border: 1px solid var(--line); background: #23416d; color: #fff; padding: 10px 12px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    button.warn { background: #8a4a12; }
+    button.danger { background: #8a1f1f; }
+    button.neutral { background: #2f3f5d; }
+    .status { margin-top: 10px; min-height: 20px; color: var(--muted); font-size: 13px; }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .sl { margin-top: 8px; padding: 8px; background: var(--panel2); border-radius: 8px; }
+    .sl label { display: grid; grid-template-columns: 140px 1fr 56px; gap: 8px; align-items: center; font-size: 13px; margin: 6px 0; }
+    .sl input[type=range] { width: 100%; }
+    .hide { display: none; }
+    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
   </style>
 </head>
-<body data-page="teach">
-  <header class="topbar">
-    <div class="brand">
-      <h1>D1 Teach</h1>
-      <span class="sub">{{ d1_arm_host }} · :{{ dashboard_port }}</span>
+<body>
+  <div class="top">
+    <div>
+      <h1>D1 Focus Control</h1>
+      <div class="sub">{{ d1_arm_host }} :{{ dashboard_port }} - Polso IntelSense + Front Camera</div>
     </div>
-    <div class="topbar-actions">
-      <nav class="topbar-nav">
-        <a href="/" class="active">Teach</a>
-        <a href="/program">Programma</a>
-      </nav>
-      <button type="button" class="top-jog joint-jog" id="btnJointJog">Jog giunti</button>
-      <button type="button" class="top-jog" id="btnTcpJog">Jog TCP</button>
-      <span id="healthBadge" class="badge">…</span>
+    <div class="tabs">
+      <button class="tabbtn active" id="tabTeachBtn">Teach</button>
+      <button class="tabbtn" id="tabMoveBtn">Movimento</button>
     </div>
-  </header>
+  </div>
 
-  <main class="main">
-    <p class="pane-title">Insegnamento · scansione</p>
-    <h2>Braccio e camera</h2>
-    <div class="btn-row">
-      <button type="button" class="primary" id="btnRead">Leggi da robot</button>
-      <button type="button" class="joint" id="btnCouple">Coppia ON</button>
-      <button type="button" class="danger" id="btnRelease" title="Solo se devi muovere il braccio a mano">Release…</button>
-      <button type="button" class="warn" id="btnZero">Zero robot</button>
-    </div>
-    <div class="scan-row">
-      <button type="button" class="prog" id="btnScanPose">Pos. scansione</button>
-      <button type="button" class="prog" id="btnScanJ90">Scansione +90°</button>
-    </div>
-    <div class="pick-photo-row">
-      <button type="button" class="calib-zero" id="btnPickCalibZero">Foto · riconoscimento · calibrazione</button>
-      <button type="button" class="snap" id="btnPickNormal">Foto · riconoscimento</button>
-    </div>
-    <div class="status-bar" id="statusLine">Avvio…</div>
-
-    <section class="orbbec-panel" aria-labelledby="orbbecPanelTitle">
-      <h3 id="orbbecPanelTitle">Vista Orbbec</h3>
-      <div class="orbbec-view-toggle">
-        <button type="button" id="btnViewLive" title="Tieni aperta la camera — può interferire con la foto">Anteprima live</button>
+  <div class="wrap">
+    <section id="tabTeach">
+      <div class="grid2">
+        <div class="card">
+          <h3>Camera Polso (IntelSense)</h3>
+          <img id="wristStream" class="stream" src="/api/orbbec/live.mjpg" alt="Wrist stream" />
+        </div>
+        <div class="card">
+          <h3>Camera Frontale</h3>
+          <img id="frontStream" class="stream" src="/api/front/live.mjpg" alt="Front stream" />
+        </div>
       </div>
-      <img id="orbbecLive" class="orbbec-empty" alt="Orbbec" />
-      <p class="orbbec-meta" id="orbbecMeta">Foto normale o task calibrazione (10 s → release → 10 s → coppia → presa zero)</p>
 
-      <details class="crop-panel" id="cropPanel" open>
-        <summary>ROI riconoscimento (inquadratura scatoletta)</summary>
-        <p class="crop-hint">Regola i bordi grigi: YOLO cerca <strong>solo</strong> dentro il rettangolo chiaro. Escludi pinza e tavolo.</p>
-        <div class="crop-sliders">
-          <label class="crop-row"><span>Alto</span>
-            <input type="range" id="cropTop" min="0" max="45" step="1" value="0" />
-            <span class="crop-val" id="cropTopVal">0%</span></label>
-          <label class="crop-row"><span>Basso</span>
-            <input type="range" id="cropBottom" min="0" max="45" step="1" value="30" />
-            <span class="crop-val" id="cropBottomVal">30%</span></label>
-          <label class="crop-row"><span>Sinistra</span>
-            <input type="range" id="cropLeft" min="0" max="45" step="1" value="0" />
-            <span class="crop-val" id="cropLeftVal">0%</span></label>
-          <label class="crop-row"><span>Destra</span>
-            <input type="range" id="cropRight" min="0" max="45" step="1" value="0" />
-            <span class="crop-val" id="cropRightVal">0%</span></label>
+      <div class="card" style="margin-top:12px;">
+        <h3>Motori Braccio (stile legacy)</h3>
+        <div class="row">
+          <button id="btnCouple">Coppia ON</button>
+          <button id="btnEnable" class="neutral">Enable motori</button>
+          <button id="btnPower" class="neutral">Power ON</button>
+          <button id="btnHold" class="neutral">Hold posa</button>
+          <button id="btnRelease" class="danger">Release</button>
+          <button id="btnZero" class="warn">Zero</button>
         </div>
-        <div class="crop-actions">
-          <button type="button" class="prog" id="btnCropPreview">Anteprima ROI</button>
-          <button type="button" class="snap" id="btnCropDetect">Rileva in ROI</button>
-          <button type="button" class="primary" id="btnCropSave">Salva crop</button>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Scansione 90 e Detection</h3>
+        <div class="row">
+          <button id="btnRightScan">Vai a destra 90 e scannerizza</button>
+          <button id="btnLeftScan">Vai a sinistra 90 e scannerizza</button>
+          <button id="btnDetectNow" class="neutral">Solo detection</button>
+          <button id="btnTestGrasp" class="warn">Prova presa</button>
         </div>
-      </details>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Taratura con Slider (no numeretti a frecce)</h3>
+        <div class="sl">
+          <label>Yaw scan DX (J0)
+            <input id="scanRight" type="range" min="-120" max="120" step="1" value="-87" />
+            <span id="scanRightVal">-87</span>
+          </label>
+          <label>Yaw scan SX (J0)
+            <input id="scanLeft" type="range" min="-120" max="120" step="1" value="87" />
+            <span id="scanLeftVal">87</span>
+          </label>
+          <label>Offset J0 presa
+            <input id="offJ0" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="offJ0Val">0.0</span>
+          </label>
+          <label>Offset J1 presa
+            <input id="offJ1" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="offJ1Val">0.0</span>
+          </label>
+          <label>Offset J2 presa
+            <input id="offJ2" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="offJ2Val">0.0</span>
+          </label>
+          <label>Orient J5 extra
+            <input id="offJ5" type="range" min="-45" max="45" step="1" value="0" />
+            <span id="offJ5Val">0</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnApplyOffsets" class="neutral">Salva offset presa</button>
+        </div>
+      </div>
     </section>
 
-    <p class="pane-title" style="margin-top:20px">Presa (offset fissi da scansione)</p>
-    <details class="crop-panel orient-panel" id="orientPanel" open>
-      <summary>Rotazione pezzo → J5 (orientamento presa)</summary>
-      <p class="crop-hint">Assi fissi sul rettangolo: freccia <strong>magenta = lato lungo</strong>, freccia <strong>ciano = lato corto</strong> (qui chiude la pinza). J5 segue la rotazione del lato corto. Slider = fine tuning.</p>
-      <label class="crop-row"><span>J5 extra</span>
-        <input type="range" id="orientJ5" min="-45" max="45" step="1" value="0" />
-        <span class="crop-val" id="orientJ5Val">0°</span></label>
-    </details>
-    <p class="pick-info" id="pickInfo">Offset giunti non ancora definiti — usa «Offset da programma» o salva da Programma.</p>
-    <div class="pick-row">
-      <button type="button" class="prog" id="btnPickFromProg">Offset da programma</button>
-      <button type="button" class="pick-go" id="btnGotoGrasp">Vai verso oggetto</button>
-    </div>
-    <div class="pick-row pick-grip-row">
-      <button type="button" class="prog" id="btnGripOpen">Apri pinza</button>
-      <button type="button" class="pick-go" id="btnGripClose">Chiudi pinza</button>
-    </div>
+    <section id="tabMove" class="hide">
+      <div class="card">
+        <h3>Movimento Robot</h3>
+        <div class="row">
+          <button id="btnStand">Stand</button>
+          <button id="btnCrouch" class="warn">Crouch</button>
+        </div>
+        <div class="row">
+          <button id="btnForward">Avanti</button>
+          <button id="btnBackward">Indietro</button>
+          <button id="btnLeft">Sinistra</button>
+          <button id="btnRight">Destra</button>
+          <button id="btnTurnLeft">Ruota sx</button>
+          <button id="btnTurnRight">Ruota dx</button>
+          <button id="btnStop" class="danger">Stop base</button>
+        </div>
+      </div>
+    </section>
 
-    <p class="pane-title" style="margin-top:14px">Libreria teach (multipla)</p>
-    <p class="pick-calib-hint">
-      <strong>Flusso teach:</strong> Scansione +90° → «Aggiungi teach» (foto automatica, 10 s, release, 10 s, salvataggio + coppia) → sposta il pezzo → torna a Scansione +90° → ripeti.
-      Poi «Crea modello teach» per interpolare tutte le prese successive.
-    </p>
-    <div class="pick-row">
-      <button type="button" class="calib-zero" id="btnTeachAdd">+ Aggiungi teach</button>
-      <button type="button" class="pick-go" id="btnTeachBuildModel">Crea modello teach</button>
-    </div>
-    <ul class="teach-sample-list" id="teachSampleList" aria-label="Esempi teach salvati"></ul>
-    <p class="teach-model-status" id="teachModelStatus">Nessun modello teach attivo.</p>
+    <div class="status" id="status">Pronto.</div>
+  </div>
 
-    <p class="pane-title" style="margin-top:14px">Calibra presa (singola)</p>
-    <p class="pick-calib-hint">Calibrazione zero classica (un solo esempio). Con la libreria teach puoi accumulare più esempi e interpolare.</p>
-    <button type="button" class="primary pick-calib-save" id="btnPickSavePose">Salva da posa attuale</button>
-    <div class="pick-nudge-grid" id="pickNudgeGrid" aria-label="Regolazione fine offset"></div>
-
-    <p class="hint">
-      <strong>Calibrazione teach (consigliata):</strong> Scansione +90° → «+ Aggiungi teach» (foto, 10 s, release, 10 s, salvataggio automatico) → sposta pezzo → ripeti → «Crea modello teach».
-      <strong>Presa:</strong> Scansione +90° → «Foto · riconoscimento» → <strong>Vai verso oggetto</strong> (interpolazione dal modello) → <strong>Chiudi pinza</strong>.
-      Elimina i teach sporchi dalla lista prima di ricreare il modello.
-    </p>
-  </main>
-
-  {% include 'd1_joint_jog_modal.html' %}
-  {% include 'd1_tcp_jog_modal.html' %}
-
-  <script src="/static/d1_common.js"></script>
   <script>
-    let _cachedServoDeg = null;
-    let _pickOffsets = null;
-    const PICK_NUDGE_STEP = 0.5;
-    const PICK_CALIB_WAIT_S = 10;
-    const PICK_JOINT_LABELS = ['J0', 'J1', 'J2', 'J3', 'J4', 'J5'];
-    let _pickTaskBusy = false;
-    let _robotSynced = false;
-    let _jointSession = false;
-    let _cartesianActive = false;
-    let _commandBusy = false;
-
+    function q(id) { return document.getElementById(id); }
+    async function api(path, method, body, timeoutMs) {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), timeoutMs || 90000);
+      try {
+        const res = await fetch(path, {
+          method: method || 'GET',
+          headers: body ? { 'Content-Type': 'application/json' } : {},
+          body: body ? JSON.stringify(body) : undefined,
+          signal: ctrl.signal,
+        });
+        const text = await res.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!res.ok && data.ok !== false) data.ok = false;
+        data._http = res.status;
+        return data;
+      } finally { clearTimeout(tid); }
+    }
     function setStatus(msg, ok) {
-      const el = document.getElementById('statusLine');
+      const el = q('status');
       el.textContent = msg;
-      el.style.color = ok === true ? 'var(--ok)' : (ok === false ? 'var(--danger)' : '');
+      el.className = 'status ' + (ok === true ? 'ok' : (ok === false ? 'bad' : ''));
     }
 
-    function setOrbbecMeta(msg) {
-      const metaEl = document.getElementById('orbbecMeta');
-      if (metaEl) metaEl.textContent = msg || '';
+    function bindSlider(id, out, digits) {
+      const a = q(id), b = q(out);
+      const draw = () => { b.textContent = Number(a.value).toFixed(digits || 0); };
+      a.addEventListener('input', draw);
+      draw();
     }
 
-    const CROP_SLIDERS = [
-      ['cropTop', 'cropTopVal', 'top'],
-      ['cropBottom', 'cropBottomVal', 'bottom'],
-      ['cropLeft', 'cropLeftVal', 'left'],
-      ['cropRight', 'cropRightVal', 'right'],
-    ];
-    let _cropPreviewTimer = null;
-    let _orientSaveTimer = null;
-
-    function readCropFracsFromUi() {
-      const fr = {};
-      CROP_SLIDERS.forEach(([, , key]) => {
-        const el = document.getElementById('crop' + key.charAt(0).toUpperCase() + key.slice(1));
-        fr[key] = el ? Number(el.value) / 100 : 0;
-      });
-      return fr;
-    }
-
-    function applyCropFracsToUi(fr) {
-      if (!fr) return;
-      CROP_SLIDERS.forEach(([id, valId, key]) => {
-        const pct = Math.round((Number(fr[key]) || 0) * 100);
-        const el = document.getElementById(id);
-        const lab = document.getElementById(valId);
-        if (el) el.value = String(Math.max(0, Math.min(45, pct)));
-        if (lab) lab.textContent = pct + '%';
-      });
-    }
-
-    function onCropSliderInput() {
-      CROP_SLIDERS.forEach(([id, valId]) => {
-        const el = document.getElementById(id);
-        const lab = document.getElementById(valId);
-        if (el && lab) lab.textContent = el.value + '%';
-      });
-      clearTimeout(_cropPreviewTimer);
-      _cropPreviewTimer = setTimeout(previewCropRoi, 450);
-    }
-
-    async function loadCropSettings() {
+    async function callAndShow(label, path, method, body, timeoutMs) {
+      setStatus(label + '...', null);
       try {
-        const { data } = await D1.apiJson('/api/pick/vision/crop');
-        if (data.ok && data.crop_fracs) applyCropFracsToUi(data.crop_fracs);
-      } catch (_) {}
+        const d = await api(path, method, body, timeoutMs);
+        setStatus(label + ': ' + (d.ok ? 'OK' : (d.reason || 'KO')), !!d.ok);
+      } catch (e) {
+        setStatus(label + ': ' + String(e), false);
+      }
     }
 
-    async function previewCropRoi() {
-      const fr = readCropFracsFromUi();
+    async function saveOffsets() {
+      const off = [Number(q('offJ0').value), Number(q('offJ1').value), Number(q('offJ2').value), 0, 0, 0];
+      const j5 = Number(q('offJ5').value);
+      setStatus('Salvo offset...', null);
       try {
-        const { data } = await D1.apiJson('/api/pick/vision/crop/preview', {
-          method: 'POST',
-          body: { crop_fracs: fr },
-        });
-        if (data.ok && data.preview_url) {
-          showPickScene(data.preview_url, 'ROI — area chiara = zona ricerca oggetto', null);
-        } else {
-          setOrbbecMeta(data.hint || data.reason || 'Serve una foto prima');
-        }
-      } catch (e) { setOrbbecMeta(String(e)); }
-    }
-
-    async function saveCropSettings() {
-      const fr = readCropFracsFromUi();
-      try {
-        const { data } = await D1.apiJson('/api/pick/vision/crop', {
-          method: 'POST',
-          body: { crop_fracs: fr },
-        });
-        setStatus(data.ok ? 'Crop salvato sulla NX' : (data.reason || '?'), data.ok);
-        if (data.ok) await previewCropRoi();
+        const a = await api('/api/pick/preset', 'POST', { joint_offset_deg: off });
+        const b = await api('/api/pick/preset', 'POST', { manual_orient_offset_deg: j5 });
+        setStatus((a.ok && b.ok) ? 'Offset salvati' : 'Errore salvataggio offset', !!(a.ok && b.ok));
       } catch (e) { setStatus(String(e), false); }
     }
 
-    async function detectInCrop() {
-      const fr = readCropFracsFromUi();
-      setStatus('Rilevamento nella ROI…', null);
-      try {
-        await D1.apiJson('/api/pick/vision/crop', { method: 'POST', body: { crop_fracs: fr } });
-        const { data } = await D1.apiJson('/api/pick/detect', {
-          method: 'POST',
-          body: { capture_if_missing: false },
-          timeoutMs: 60000,
-        });
-        const det = data.detection || {};
-        if (data.ok) {
-          showPickScene(
-            data.preview_url || '/api/pick/scene.jpg',
-            (det.label || '?') + ' conf ' + (det.confidence || 0) +
-              (data.detection_ok ? ' · centro ' + (det.grip_center_px || []).join(',') : ' · nessun oggetto'),
-            data.image_url,
-          );
-          setStatus(data.detection_ok ? 'Oggetto trovato in ROI' : 'Nessun oggetto in ROI — regola crop', data.detection_ok);
-          await refreshPickPreset();
-        } else {
-          setStatus(data.hint || data.reason || '?', false);
-        }
-      } catch (e) { setStatus(String(e), false); }
-    }
-
-    let _orbbecLiveOn = false;
-
-    function stopOrbbecLive() {
-      const img = document.getElementById('orbbecLive');
-      if (!img) return;
-      _orbbecLiveOn = false;
-      img.src = '';
-      img.classList.add('orbbec-empty');
-      const bLive = document.getElementById('btnViewLive');
-      if (bLive) bLive.classList.remove('active');
-    }
-
-    function showPickScene(previewUrl, meta, fallbackUrl) {
-      const img = document.getElementById('orbbecLive');
-      if (!img) return;
-      stopOrbbecLive();
-      img.classList.remove('orbbec-empty');
-      const bust = '_=' + Date.now();
-      const primary = previewUrl.indexOf('http') === 0 ? previewUrl : D1.api(previewUrl);
-      const url = primary + (primary.indexOf('?') >= 0 ? '&' : '?') + bust;
-      img.onerror = function () {
-        if (fallbackUrl) {
-          const fb = fallbackUrl.indexOf('http') === 0 ? fallbackUrl : D1.api(fallbackUrl);
-          img.onerror = null;
-          img.src = fb + (fb.indexOf('?') >= 0 ? '&' : '?') + bust;
-        }
+    async function sideScanDetect(side) {
+      const left = Number(q('scanLeft').value);
+      const right = Number(q('scanRight').value);
+      const vals = {
+        left: [left, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
+        right: [right, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
       };
-      img.src = url;
-      if (meta) setOrbbecMeta(meta);
-    }
-
-    async function startOrbbecLive() {
-      const img = document.getElementById('orbbecLive');
-      const bLive = document.getElementById('btnViewLive');
-      if (!img) return;
+      const body = { side: side, override_servo_deg: vals[side] };
+      setStatus('Scan ' + side + ' + detection...', null);
       try {
-        const { data } = await D1.apiJson('/api/orbbec/probe');
-        if (!data.ok || data.chosen_v4l_index == null) {
-          setOrbbecMeta('Live RGB non disponibile — nodo Orbbec IR o camera occupata');
-          setStatus('Orbbec RGB non trovato (solo IR?)', false);
-          return;
-        }
-        setOrbbecMeta('Live RGB fisso /dev/video' + data.chosen_v4l_index +
-          ' spread=' + ((data.spread_by_index || {})[data.chosen_v4l_index] || '?'));
-      } catch (_) {}
-      _orbbecLiveOn = true;
-      img.classList.remove('orbbec-empty');
-      img.src = D1.api('/api/orbbec/live.mjpg') + '?t=' + Date.now();
-      if (bLive) bLive.classList.add('active');
-    }
-
-    function formatOffsets(off) {
-      if (!off || !off.length) return '—';
-      const labs = ['J0','J1','J2','J3','J4','J5'];
-      return off.slice(0, 6).map((v, i) => labs[i] + (v >= 0 ? '+' : '') + v.toFixed(1) + '°').join('  ');
-    }
-
-    function renderPickNudgeGrid(off) {
-      const grid = document.getElementById('pickNudgeGrid');
-      if (!grid) return;
-      const vals = (off && off.length) ? off.slice(0, 6) : null;
-      grid.innerHTML = '';
-      const has = vals && vals.length >= 6;
-      PICK_JOINT_LABELS.forEach((lab, i) => {
-        const row = document.createElement('div');
-        row.className = 'pick-nudge-row';
-        const v = has ? Number(vals[i] || 0) : 0;
-        const minus = document.createElement('button');
-        minus.type = 'button';
-        minus.textContent = '−';
-        minus.disabled = !has;
-        minus.onclick = () => nudgePickOffset(i, -PICK_NUDGE_STEP);
-        const plus = document.createElement('button');
-        plus.type = 'button';
-        plus.textContent = '+';
-        plus.disabled = !has;
-        plus.onclick = () => nudgePickOffset(i, PICK_NUDGE_STEP);
-        const val = document.createElement('span');
-        val.className = 'val';
-        val.textContent = has ? ((v >= 0 ? '+' : '') + v.toFixed(1) + '°') : '—';
-        row.innerHTML = '<span class="lab">' + lab + '</span>';
-        row.appendChild(minus);
-        row.appendChild(val);
-        row.appendChild(plus);
-        grid.appendChild(row);
-      });
-    }
-
-    function renderPickInfo(data) {
-      const el = document.getElementById('pickInfo');
-      if (!el || !data) return;
-      if (data.joint_offset_deg) _pickOffsets = data.joint_offset_deg.slice();
-      renderPickNudgeGrid(_pickOffsets);
-      if (!data.has_preset && !data.joint_offset_deg) {
-        el.textContent = 'Offset presa non definito — «Offset da programma» o salva Punto PRESA in Programma.';
-        return;
-      }
-      const off = data.joint_offset_deg || [];
-      let txt = (data.has_zero_calibration ? 'Presa zero OK · ' : '') +
-        'Offset (Δ da scansione): ' + formatOffsets(off);
-      if (data.has_zero_calibration && data.zero_calibration_at) {
-        txt += ' · calibrata ' + data.zero_calibration_at;
-      }
-      const ld = data.last_detection;
-      if (ld && ld.detected && ld.grip_center_px) {
-        txt += ' · Centro foto: ' + ld.grip_center_px[0] + ',' + ld.grip_center_px[1] + ' px';
-      }
-      if (data.vision_pixel_delta) {
-        txt += ' · Δ pezzo ' + data.vision_pixel_delta[0] + ',' + data.vision_pixel_delta[1] + ' px → presa aggiornata';
-      }
-      if (data.orient_ref_deg != null) {
-        txt += ' · Rot. calib ' + Number(data.orient_ref_deg).toFixed(1) + '°';
-      }
-      if (data.orient_cur_deg != null) {
-        txt += ' · Rotazione foto ' + (data.orient_cur_deg >= 0 ? '+' : '') + Number(data.orient_cur_deg).toFixed(1) + '°';
-      }
-      if (data.j5_breakdown) {
-        const b = data.j5_breakdown;
-        txt += ' · J5 insegnato ' + Number(b.j5_taught_deg).toFixed(1) + '°';
-        if (b.vision_delta_deg != null) {
-          const d = Number(b.vision_delta_deg);
-          txt += ' + Δfoto ' + (d >= 0 ? '+' : '') + d.toFixed(1) + '°';
-          if (b.vision_delta_raw_deg != null && Math.abs(Number(b.vision_delta_raw_deg) - d) > 0.5) {
-            txt += ' (raw ' + Number(b.vision_delta_raw_deg).toFixed(1) + '° limitato)';
-          }
-        }
-        if (b.manual_offset_deg != null && Number(b.manual_offset_deg) !== 0) {
-          const m = Number(b.manual_offset_deg);
-          txt += ' + manuale ' + (m >= 0 ? '+' : '') + m.toFixed(1) + '°';
-        }
-        txt += ' → J5 ' + Number(b.j5_target_deg).toFixed(1) + '°';
-      } else if (data.vision_orientation_delta_deg != null) {
-        const j = data.orient_joint_index != null ? data.orient_joint_index : 5;
-        const d = Number(data.vision_orientation_delta_deg);
-        txt += ' · Δ rot → J' + j + ' ' + (d >= 0 ? '+' : '') + d.toFixed(1) + '°';
-      }
-      if (data.manual_orient_offset_deg != null && Number(data.manual_orient_offset_deg) !== 0) {
-        const m = Number(data.manual_orient_offset_deg);
-        txt += ' · J5 manuale ' + (m >= 0 ? '+' : '') + m.toFixed(1) + '°';
-      }
-      if (data.has_teach_model) {
-        txt += ' · Modello teach attivo';
-        if (data.teach_samples_count != null) txt += ' (' + data.teach_samples_count + ' esempi)';
-        if (data.teach_interp_method === 'nearest_neighbor' || data.teach_interp_method === 'nn_position_j5_orient_blend') {
-          txt += ' · pos NN';
-          if (data.teach_nearest_id) txt += ' → ' + String(data.teach_nearest_id).slice(-8);
-        } else if (data.teach_interp_method) {
-          txt += ' · ' + data.teach_interp_method;
-        }
-        if (data.teach_j5_interp) txt += ' · J5: Δ rotazione teach';
-        if (data.teach_model_offset_deg) {
-          txt += ' · Offset: ' + formatOffsets(data.teach_model_offset_deg);
-        }
-      } else if (data.teach_samples_count > 0) {
-        txt += ' · ' + data.teach_samples_count + ' teach — crea modello';
-      }
-      if (data.grasp_servo_deg_computed) {
-        const g = data.grasp_servo_deg_computed;
-        txt += ' · Posa presa: ' + g.map((v) => Number(v).toFixed(1) + '°').join(' ');
-      }
-      el.textContent = txt;
-      renderTeachLibrary(data);
-    }
-
-    function renderTeachLibrary(data) {
-      const statusEl = document.getElementById('teachModelStatus');
-      if (!statusEl) return;
-      refreshTeachSamplesList();
-      if (data && data.has_teach_model) {
-        const n = data.teach_samples_count || (data.teach_model && data.teach_model.n_samples) || '?';
-        statusEl.textContent = 'Modello teach ATTIVO — ' + n + ' esempi · le prese usano interpolazione';
-        statusEl.classList.remove('inactive');
-      } else if (data && data.teach_samples_count > 0) {
-        statusEl.textContent = data.teach_samples_count + ' teach salvati — premi «Crea modello teach»';
-        statusEl.classList.add('inactive');
-      } else {
-        statusEl.textContent = 'Nessun teach in libreria.';
-        statusEl.classList.add('inactive');
-      }
-    }
-
-    async function refreshTeachSamplesList() {
-      const listEl = document.getElementById('teachSampleList');
-      if (!listEl) return;
-      try {
-        const { data } = await D1.apiJson('/api/pick/teach/samples');
-        const samples = data.samples || [];
-        listEl.innerHTML = '';
-        if (!samples.length) {
-          const li = document.createElement('li');
-          li.className = 'teach-sample-item';
-          li.textContent = 'Nessun esempio — Scansione +90° poi «Aggiungi teach»';
-          listEl.appendChild(li);
-          return;
-        }
-        samples.forEach((s, idx) => {
-          const li = document.createElement('li');
-          li.className = 'teach-sample-item';
-          const vis = s.vision_at_scan || {};
-          const gpx = vis.grip_center_px || [];
-          const meta = document.createElement('span');
-          meta.className = 'meta';
-          meta.textContent =
-            '#' + (idx + 1) + ' · ' + (s.at || s.id) +
-            (gpx.length >= 2 ? ' · centro ' + gpx[0] + ',' + gpx[1] : '') +
-            (vis.orientation_deg != null ? ' · lungo ' + Number(vis.orientation_deg).toFixed(1) + '°' : '') +
-            (s.joint_offset_deg ? ' · Δ ' + formatOffsets(s.joint_offset_deg) : '');
-          const del = document.createElement('button');
-          del.type = 'button';
-          del.textContent = 'Elimina';
-          del.onclick = () => deleteTeachSample(s.id);
-          li.appendChild(meta);
-          li.appendChild(del);
-          listEl.appendChild(li);
-        });
-        const statusEl = document.getElementById('teachModelStatus');
-        if (statusEl && data.has_active_model) {
-          statusEl.textContent = 'Modello teach ATTIVO — ' + samples.length + ' esempi';
-          statusEl.classList.remove('inactive');
-        } else if (statusEl) {
-          statusEl.textContent = samples.length + ' teach — «Crea modello teach» per le prese';
-          statusEl.classList.add('inactive');
-        }
-      } catch (e) {
-        listEl.innerHTML = '<li class="teach-sample-item">Errore lista teach</li>';
-      }
-    }
-
-    async function deleteTeachSample(id) {
-      if (!id) return;
-      setStatus('Elimino teach…', null);
-      try {
-        const { data } = await D1.apiJson('/api/pick/teach/samples/' + encodeURIComponent(id), {
-          method: 'DELETE',
-        });
-        if (data.ok) {
-          await refreshPickPreset();
-          await refreshTeachSamplesList();
-          setStatus(data.hint_it || 'Teach eliminato', true);
-        } else {
-          setStatus(data.reason || 'Eliminazione fallita', false);
-        }
+        const d = await api('/api/scan/side_detect', 'POST', body, 120000);
+        setStatus('Scan ' + side + ': ' + (d.ok ? 'OK detection' : 'KO ' + (d.reason || '')), !!d.ok);
       } catch (e) { setStatus(String(e), false); }
     }
 
-    async function pickTeachAddTask() {
-      if (_pickTaskBusy) return;
-      _pickTaskBusy = true;
-      setPickButtonsDisabled(true);
-      if (_jointJog) await _jointJog.endSession();
-      let visionAtScan = null;
-      try {
-        setStatus('Teach: metti Scansione +90° e il pezzo, poi foto…', null);
-        const snap = await runPickSnapshot({ quiet: true });
-        if (!snap.ok) {
-          setStatus(snap.hint || snap.reason || 'Foto teach fallita', false);
-          return;
-        }
-        visionAtScan = snap.last_detection || null;
-
-        await countdownSeconds(PICK_CALIB_WAIT_S, 'Teach · attesa');
-
-        setStatus('Release motori…', null);
-        await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
-        setStatus('RELEASE — porta il braccio sulla presa', null);
-
-        await countdownSeconds(PICK_CALIB_WAIT_S, 'Teach · muovi braccio');
-
-        setStatus('Salvo teach e coppia…', null);
-        const fb = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
-        if (!fb.data.ok || !fb.data.servo_deg) {
-          setStatus('Feedback non disponibile', false);
-          return;
-        }
-        const { data } = await D1.apiJson('/api/pick/teach/finish', {
-          method: 'POST',
-          body: { vision_at_scan: visionAtScan, servo_deg: fb.data.servo_deg },
-          timeoutMs: 60000,
-        });
-        if (data.taught_servo_deg || data.sample) {
-          const t = data.sample && data.sample.taught_servo_deg;
-          if (t) {
-            _cachedServoDeg = t.slice();
-            _robotSynced = true;
-            if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-          }
-        }
-        if (data.ok) {
-          await refreshPickPreset();
-          await refreshTeachSamplesList();
-          setStatus(
-            (data.hint_it || 'Teach salvato') + ' · Torna a Scansione +90° per il prossimo',
-            true,
-          );
-        } else {
-          setStatus(data.reason || data.warning_it || 'Salvataggio teach fallito', false);
-        }
-      } catch (e) {
-        setStatus(String(e), false);
-      } finally {
-        _pickTaskBusy = false;
-        setPickButtonsDisabled(false);
-      }
+    async function baseMode(mode, enable) {
+      await callAndShow('Base ' + mode, '/api/base/accompany_mode', 'POST', {
+        mode: mode,
+        enable: enable !== false,
+        sync: true,
+      }, 70000);
     }
 
-    async function buildTeachModel() {
-      setStatus('Creo modello teach…', null);
-      try {
-        const { data } = await D1.apiJson('/api/pick/teach/build_model', {
-          method: 'POST',
-          body: {},
-          timeoutMs: 30000,
-        });
-        if (data.ok) {
-          renderPickInfo(data);
-          await refreshTeachSamplesList();
-          setStatus(data.hint_it || 'Modello teach creato', true);
-        } else {
-          setStatus(data.hint_it || data.reason || 'Crea modello fallito', false);
-        }
-      } catch (e) { setStatus(String(e), false); }
-    }
-
-    function applyOrientSliderToUi(deg) {
-      const el = document.getElementById('orientJ5');
-      const val = document.getElementById('orientJ5Val');
-      const d = Number(deg) || 0;
-      if (el) el.value = String(Math.max(-45, Math.min(45, Math.round(d))));
-      if (val) val.textContent = (d >= 0 ? '+' : '') + d.toFixed(0) + '°';
-    }
-
-    async function saveManualOrientOffset(deg, { quiet }) {
-      try {
-        const { data } = await D1.apiJson('/api/pick/preset', {
-          method: 'POST',
-          body: { manual_orient_offset_deg: Number(deg) },
-        });
-        renderPickInfo(data);
-        if (!quiet) setStatus('Rotazione J5 manuale salvata', true);
-      } catch (e) {
-        if (!quiet) setStatus('Errore salvataggio rotazione J5', false);
-      }
-    }
-
-    function scheduleOrientSave() {
-      const el = document.getElementById('orientJ5');
-      if (!el) return;
-      applyOrientSliderToUi(el.value);
-      clearTimeout(_orientSaveTimer);
-      _orientSaveTimer = setTimeout(() => saveManualOrientOffset(el.value, { quiet: true }), 400);
-    }
-
-    async function refreshPickPreset() {
-      try {
-        const { data } = await D1.apiJson('/api/pick/preset');
-        if (data.manual_orient_offset_deg != null) applyOrientSliderToUi(data.manual_orient_offset_deg);
-        renderPickInfo(data);
-      } catch (_) {}
-    }
-
-    function setPickButtonsDisabled(disabled) {
-      ['btnPickCalibZero', 'btnPickNormal', 'btnGotoGrasp', 'btnGripOpen', 'btnGripClose', 'btnScanPose', 'btnScanJ90', 'btnTeachAdd', 'btnTeachBuildModel'].forEach((id) => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = disabled;
-      });
-    }
-
-    function sleepMs(ms) {
-      return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    async function countdownSeconds(sec, labelPrefix) {
-      for (let t = sec; t >= 1; t--) {
-        setStatus(labelPrefix + ' — ' + t + ' s…', null);
-        setOrbbecMeta(labelPrefix + ' · ' + t + ' secondi');
-        await sleepMs(1000);
-      }
-    }
-
-    async function runPickSnapshot({ quiet }) {
-      if (!quiet) {
-        setStatus('Foto e riconoscimento…', null);
-        stopOrbbecLive();
-      }
-      const { res, data } = await D1.apiJson('/api/pick/snapshot', {
-        method: 'POST',
-        body: {},
-        timeoutMs: 90000,
-      });
-      const cap = data.capture || {};
-      if (data.ok && (cap.ok !== false)) {
-        const meta = (cap.saved_at ? 'Salvata ' + cap.saved_at + ' · ' : '') +
-          (data.detection_ok ? 'Rilevamento OK' : 'Foto OK · nessun oggetto') +
-          (cap.v4l_index != null ? ' · video' + cap.v4l_index : '');
-        const det = data.detection || {};
-        const st = det.detector_status || {};
-        const cx = (det.grip_center_px || [])[0];
-        const cy = (det.grip_center_px || [])[1];
-        const orient = det.orientation_deg;
-        let detMsg = data.detection_ok
-          ? ((det.label || '?') + ' conf ' + (det.confidence || 0) +
-             (cx != null ? ' · centro ' + cx + ',' + cy + ' px' : '') +
-             (orient != null ? ' · rot ' + Number(orient).toFixed(1) + '°' : ''))
-          : 'Nessun box';
-        showPickScene(
-          data.preview_url || '/api/pick/scene.jpg',
-          detMsg + ' — ' + (data.hint_it || meta),
-          data.image_url || cap.image_url || '/api/orbbec/last.jpg',
-        );
-        if (!quiet) {
-          const fotoOk = true;
-          setStatus(
-            data.detection_ok ? 'Foto OK · oggetto trovato' : 'Foto OK · nessun oggetto',
-            data.detection_ok ? true : null,
-          );
-          await refreshPickPreset();
-        }
-      } else if (!quiet) {
-        const msg = data.hint || cap.hint || data.reason || cap.reason ||
-          (res && !res.ok ? ('HTTP ' + res.status) : 'Foto non disponibile');
-        setOrbbecMeta('Errore — ' + msg);
-        setStatus(msg, false);
-      }
-      return data;
-    }
-
-    async function pickSnapshotNormal() {
-      if (_pickTaskBusy) return;
-      setPickButtonsDisabled(true);
-      try {
-        await runPickSnapshot({ quiet: false });
-      } catch (e) { setStatus(String(e), false); }
-      finally { setPickButtonsDisabled(false); }
-    }
-
-    async function pickCalibZeroTask() {
-      if (_pickTaskBusy) return;
-      if (!confirm(
-        'Calibrazione presa zero\n\n' +
-        '1) Scansione +90° (posa camera)\n' +
-        '2) Foto + riconoscimento (rotazione pezzo = riferimento)\n' +
-        '3) Attesa ' + PICK_CALIB_WAIT_S + ' s\n' +
-        '4) Release motori\n' +
-        '5) Porta il braccio sulla presa reale (orientamento corretto)\n' +
-        '6) Conferma — salva offset e mantiene quella posa in coppia\n\n' +
-        'Le prese successive useranno questo riferimento (px + rotazione → J5).\n\n' +
-        'Avviare?'
-      )) return;
-      _pickTaskBusy = true;
-      setPickButtonsDisabled(true);
-      if (_jointJog) await _jointJog.endSession();
-      let visionAtScan = null;
-      try {
-        const snap = await runPickSnapshot({ quiet: true });
-        if (!snap.ok) {
-          setStatus(snap.hint || snap.reason || 'Foto calibrazione fallita', false);
-          return;
-        }
-        visionAtScan = snap.last_detection || null;
-        setStatus('Foto OK — preparati a muovere il braccio', true);
-
-        await countdownSeconds(PICK_CALIB_WAIT_S, 'Attesa prima del release');
-
-        setStatus('Release motori…', null);
-        await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
-        setStatus('RELEASE — porta il braccio sulla presa reale del pezzo', null);
-
-        await countdownSeconds(PICK_CALIB_WAIT_S, 'Muovi il braccio (release)');
-
-        setStatus('Leggo posa insegnata (release)…', null);
-        const fb = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
-        if (!fb.data.ok || !fb.data.servo_deg) {
-          setStatus('Feedback non disponibile — riprova dopo aver mosso il braccio', false);
-          return;
-        }
-        if (!confirm(
-          'Confermi la posa di presa?\n\n' +
-          'Offset salvato rispetto alla SCANSIONE.\n' +
-          'Rotazione riferimento dalla foto: ' +
-          (visionAtScan && visionAtScan.orientation_deg != null
-            ? Number(visionAtScan.orientation_deg).toFixed(1) + '°'
-            : '(manca — rifai foto con blue box)') +
-          '\n\nCoppia ON sulla posa attuale.'
-        )) {
-          setStatus('Calibrazione annullata — braccio ancora in release', null);
-          return;
-        }
-
-        setStatus('Salvo presa zero e coppia sulla posa insegnata…', null);
-        const { data } = await D1.apiJson('/api/pick/calibrate/zero/finish', {
-          method: 'POST',
-          body: { vision_at_scan: visionAtScan, servo_deg: fb.data.servo_deg },
-          timeoutMs: 60000,
-        });
-        if (data.servo_deg || data.taught_servo_deg) {
-          _cachedServoDeg = (data.taught_servo_deg || data.servo_deg).slice();
-          _robotSynced = true;
-          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-        }
-        if (data.ok || data.has_preset) {
-          renderPickInfo(data);
-          setStatus('Presa zero calibrata — Foto normale → Vai verso oggetto → Chiudi pinza', true);
-          setOrbbecMeta((data.hint_it || 'Offset salvato') + ' · ' + formatOffsets(data.joint_offset_deg));
-        } else {
-          setStatus(data.reason || data.hint || 'Salvataggio presa zero fallito', false);
-        }
-      } catch (e) {
-        setStatus(String(e), false);
-      } finally {
-        _pickTaskBusy = false;
-        setPickButtonsDisabled(false);
-      }
-    }
-
-    async function nudgePickOffset(joint, deltaDeg) {
-      setStatus('Regolo ' + PICK_JOINT_LABELS[joint] + '…', null);
-      try {
-        const { data } = await D1.apiJson('/api/pick/preset/nudge', {
-          method: 'POST',
-          body: { joint: joint, delta_deg: deltaDeg },
-        });
-        if (data.ok || data.has_preset) {
-          renderPickInfo(data);
-          setStatus(PICK_JOINT_LABELS[joint] + (deltaDeg >= 0 ? ' +' : ' ') + deltaDeg + '° · prova Vai a presa', true);
-        } else {
-          setStatus(data.reason || '?', false);
-        }
-      } catch (e) { setStatus(String(e), false); }
-    }
-
-    async function savePickFromCurrentPose() {
-      if (!confirm('Salvare l\'offset presa dalla posa attuale?\n(Δ rispetto al Punto SCANSIONE del programma — di solito dopo jog sulla presa decentrata.)')) return;
-      setStatus('Salvo calibrazione da posa…', null);
-      try {
-        const fb = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
-        if (!fb.data.ok || !fb.data.servo_deg) {
-          setStatus('Leggi da robot / feedback non disponibile', false);
-          return;
-        }
-        _cachedServoDeg = fb.data.servo_deg.slice();
-        const { data } = await D1.apiJson('/api/pick/preset/from_pose', {
-          method: 'POST',
-          body: { servo_deg: _cachedServoDeg },
-        });
-        if (data.ok || data.has_preset) {
-          renderPickInfo(data);
-          setStatus('Calibrazione salvata — riprova Vai a presa', true);
-        } else {
-          setStatus(data.reason || data.hint || '?', false);
-        }
-      } catch (e) { setStatus(String(e), false); }
-    }
-
-    async function savePickFromProgram() {
-      setStatus('Carico offset PRESA − SCANSIONE…', null);
-      const { data } = await D1.apiJson('/api/pick/preset', {
-        method: 'POST',
-        body: { from_program: true },
-      });
-      if (data.ok || data.has_preset) {
-        renderPickInfo(data);
-        setStatus('Offset presa salvato da programma', true);
-      } else {
-        setStatus(data.reason || data.hint || '?', false);
-      }
-    }
-
-    async function gotoGrasp() {
-      if (!confirm('Avvicinare il braccio alla presa?\n(Pinza resta APERTA — chiudi con «Chiudi pinza».)')) return;
-      if (_jointJog) await _jointJog.endSession();
-      setStatus('Avvicinamento verso oggetto…', null);
-      const { data } = await D1.apiJson('/api/pick/grasp/goto', { method: 'POST', body: {} });
-      if (data.ok) {
-        const hint = data.coupling_maintained !== false ? ' · coppia OK' : '';
-        setStatus('Sulla presa · pinza aperta' + hint, true);
-        if (data.target_servo_deg) {
-          _cachedServoDeg = data.target_servo_deg.slice();
-          _robotSynced = true;
-          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-        }
-      } else {
-        setStatus(data.hint || data.reason || '?', false);
-      }
-    }
-
-    async function gripperOnly(action) {
-      const open = action === 'open';
-      const label = open ? 'Apertura pinza' : 'Chiusura pinza';
-      if (!confirm(label + ' (solo giunto pinza)?')) return;
-      if (_jointJog) await _jointJog.endSession();
-      setStatus(label + '…', null);
-      const path = open ? '/api/pick/gripper/open' : '/api/pick/gripper/close';
-      const { data } = await D1.apiJson(path, { method: 'POST', body: {} });
-      if (data.ok) {
-        setStatus((open ? 'Pinza aperta' : 'Pinza chiusa') + ' OK', true);
-        if (data.target_servo_deg) {
-          _cachedServoDeg = data.target_servo_deg.slice();
-          _robotSynced = true;
-          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-        } else setTimeout(loadFeedback, 500);
-      } else {
-        setStatus(data.hint || data.reason || '?', false);
-      }
-    }
-
-    async function loadFeedback() {
-      setStatus('Lettura…', null);
-      try {
-        const { data } = await D1.apiJson('/api/joints/feedback?_=' + Date.now());
-        if (data.ok && data.servo_deg) {
-          _cachedServoDeg = data.servo_deg.slice();
-          _robotSynced = true;
-          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-          setStatus('Sincronizzato', true);
-        } else setStatus(data.reason || 'Nessun feedback', false);
-      } catch (e) { setStatus(String(e), false); }
-    }
-
-    async function ensureCoupled(withPower) {
-      _commandBusy = true;
-      try {
-        const { data } = await D1.apiJson('/api/arm/couple', {
-          method: 'POST',
-          body: { with_power: !!withPower, force: false },
-        });
-        setStatus(data.ok || data.skipped ? 'Coppia attiva' : (data.reason || '?'), data.ok || data.skipped);
-      } catch (e) { setStatus(String(e), false); }
-      _commandBusy = false;
-    }
-
-    async function gotoScanPreset(variant) {
-      const label = variant === 'j90' ? 'Scansione +90°' : 'Posizione scansione';
-      if (!confirm('Andare a «' + label + '» (dal programma salvato)?')) return;
-      if (_jointJog) await _jointJog.endSession();
-      setStatus(label + '…', null);
-      const { data } = await D1.apiJson('/api/presets/scan/goto', {
-        method: 'POST',
-        body: { variant: variant },
-      });
-      if (data.ok) {
-        const hint = data.coupling_maintained !== false ? ' · coppia OK' : ' · verifica coppia';
-        setStatus((data.waypoint_name || label) + ' OK' + hint, true);
-        if (data.target_servo_deg) {
-          _cachedServoDeg = data.target_servo_deg.slice();
-          _robotSynced = true;
-          if (_jointJog) _jointJog.applyServoDeg(_cachedServoDeg);
-        } else setTimeout(loadFeedback, 600);
-      } else {
-        const msg = data.reason === 'scan_j90_waypoint_not_found'
-          ? 'Punto SCANSIONE 90 non trovato — salvalo in Programma'
-          : (data.reason === 'scan_waypoint_not_found'
-          ? 'Punto SCANSIONE non trovato — salvalo in Programma'
-          : (data.reason === 'not_coupled'
-            ? 'Braccio non in coppia — Leggi da robot, poi riprova (non serve ripremere Coppia ON)'
-            : (data.reason || data.hint || '?')));
-        setStatus(msg, false);
-      }
-    }
-
-    const _jointJog = D1.initJointJogModal({
-      getCachedServoDeg: () => _cachedServoDeg,
-      setCachedServoDeg: (sd) => { _cachedServoDeg = sd.slice(); _robotSynced = true; },
-      isRobotSynced: () => _robotSynced,
-      isJointSession: () => _jointSession,
-      isCartesianActive: () => _cartesianActive,
-      onJointSessionStart: () => { _jointSession = true; },
-      onJointSessionEnd: () => { _jointSession = false; },
-    });
-
-    D1.initTcpJogModal({
-      requireSynced: () => _robotSynced,
-      getServoDeg: () => _cachedServoDeg,
-      isBlocked: () => _jointSession,
-      onCartesianStart: () => {
-        _cartesianActive = true;
-        if (_jointJog) _jointJog.setSlidersDisabled(true);
-      },
-      onCartesianEnd: () => {
-        _cartesianActive = false;
-        if (_jointJog) _jointJog.setSlidersDisabled(false);
-      },
-    });
-
-    document.getElementById('btnRead').onclick = loadFeedback;
-    document.getElementById('btnCouple').onclick = () => ensureCoupled(true);
-    document.getElementById('btnRelease').onclick = async () => {
-      const ok = prompt('ATTENZIONE: i motori cedono. Digita RELEASE per confermare:');
-      if (ok !== 'RELEASE') return;
-      if (_jointJog) await _jointJog.endSession();
-      await D1.apiJson('/api/joints/release', { method: 'POST', body: {} });
-      setStatus('Coppia rilasciata (cedevole)', null);
+    q('tabTeachBtn').onclick = function () {
+      q('tabTeach').classList.remove('hide');
+      q('tabMove').classList.add('hide');
+      q('tabTeachBtn').classList.add('active');
+      q('tabMoveBtn').classList.remove('active');
     };
-    document.getElementById('btnZero').onclick = async () => {
-      if (!confirm('Portare il braccio alla posizione ZERO robot?')) return;
-      if (_jointJog) await _jointJog.endSession();
-      setStatus('Zero…', null);
-      const { data } = await D1.apiJson('/api/joints/zero', { method: 'POST', body: {} });
-      setStatus(data.ok ? 'Zero OK' : (data.reason || '?'), data.ok);
-      setTimeout(loadFeedback, 800);
+    q('tabMoveBtn').onclick = function () {
+      q('tabMove').classList.remove('hide');
+      q('tabTeach').classList.add('hide');
+      q('tabMoveBtn').classList.add('active');
+      q('tabTeachBtn').classList.remove('active');
     };
-    document.getElementById('btnScanPose').onclick = () => gotoScanPreset('base');
-    document.getElementById('btnScanJ90').onclick = () => gotoScanPreset('j90');
-    document.getElementById('btnTeachAdd').onclick = pickTeachAddTask;
-    document.getElementById('btnTeachBuildModel').onclick = buildTeachModel;
-    document.getElementById('btnPickCalibZero').onclick = pickCalibZeroTask;
-    document.getElementById('btnPickNormal').onclick = pickSnapshotNormal;
-    document.getElementById('btnPickSavePose').onclick = savePickFromCurrentPose;
-    document.getElementById('btnPickFromProg').onclick = savePickFromProgram;
-    document.getElementById('btnGotoGrasp').onclick = gotoGrasp;
-    document.getElementById('btnGripOpen').onclick = () => gripperOnly('open');
-    document.getElementById('btnGripClose').onclick = () => gripperOnly('close');
-    document.getElementById('btnViewLive').onclick = () => {
-      if (_orbbecLiveOn) stopOrbbecLive();
-      else startOrbbecLive();
-    };
-    const orientEl = document.getElementById('orientJ5');
-    if (orientEl) orientEl.addEventListener('input', scheduleOrientSave);
-    CROP_SLIDERS.forEach(([id]) => {
-      const el = document.getElementById(id);
-      if (el) el.addEventListener('input', onCropSliderInput);
-    });
-    document.getElementById('btnCropPreview').onclick = previewCropRoi;
-    document.getElementById('btnCropSave').onclick = saveCropSettings;
-    document.getElementById('btnCropDetect').onclick = detectInCrop;
 
-    D1.pollHealth();
-    setInterval(() => D1.pollHealth(), 10000);
-    (async () => {
-      await loadFeedback();
-      await loadCropSettings();
-      await refreshPickPreset();
-      await refreshTeachSamplesList();
-      setStatus(_robotSynced ? 'Pronto — teach multiplo o foto → presa' : 'Leggi da robot', _robotSynced);
-    })();
+    bindSlider('scanRight', 'scanRightVal', 0);
+    bindSlider('scanLeft', 'scanLeftVal', 0);
+    bindSlider('offJ0', 'offJ0Val', 1);
+    bindSlider('offJ1', 'offJ1Val', 1);
+    bindSlider('offJ2', 'offJ2Val', 1);
+    bindSlider('offJ5', 'offJ5Val', 0);
+
+    q('btnCouple').onclick = () => callAndShow('Coppia ON', '/api/arm/couple', 'POST', {});
+    q('btnEnable').onclick = () => callAndShow('Enable motori', '/api/joints/enable', 'POST', { with_power: true, mode: 1 });
+    q('btnPower').onclick = () => callAndShow('Power ON', '/api/joints/power', 'POST', {});
+    q('btnHold').onclick = () => callAndShow('Hold', '/api/joints/hold', 'POST', {});
+    q('btnRelease').onclick = () => callAndShow('Release', '/api/joints/release', 'POST', {});
+    q('btnZero').onclick = () => callAndShow('Zero', '/api/joints/zero', 'POST', {});
+
+    q('btnRightScan').onclick = () => sideScanDetect('right');
+    q('btnLeftScan').onclick = () => sideScanDetect('left');
+    q('btnDetectNow').onclick = () => callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
+    q('btnTestGrasp').onclick = () => callAndShow('Prova presa', '/api/pick/grasp/goto', 'POST', {}, 120000);
+    q('btnApplyOffsets').onclick = saveOffsets;
+
+    q('btnStand').onclick = () => baseMode('stand_up', true);
+    q('btnCrouch').onclick = () => baseMode('crouch', true);
+    q('btnForward').onclick = () => baseMode('forward', true);
+    q('btnBackward').onclick = () => baseMode('backward', true);
+    q('btnLeft').onclick = () => baseMode('left', true);
+    q('btnRight').onclick = () => baseMode('right', true);
+    q('btnTurnLeft').onclick = () => baseMode('turn_left', true);
+    q('btnTurnRight').onclick = () => baseMode('turn_right', true);
+    q('btnStop').onclick = () => baseMode('stop', false);
   </script>
 </body>
 </html>

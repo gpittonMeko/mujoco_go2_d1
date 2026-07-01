@@ -21,6 +21,7 @@ from go2_dashboard.d1_jog import (
     service,
 )
 from go2_dashboard.paths import PROJECT_ROOT
+from go2_dashboard.sport_lane import accompany_mode_handle, sport_last_payload
 
 _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
 
@@ -97,6 +98,123 @@ def create_d1_jog_app() -> Flask:
                 "cyclonedds_uri_set": bool((os.environ.get("CYCLONEDDS_URI") or "").strip()),
             }
         )
+
+    def _parse_servo_env(key: str, default_vals: list[float]) -> list[float]:
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            return service.clamp_servo_deg(default_vals)
+        try:
+            vals = [float(x.strip()) for x in raw.split(",") if x.strip()]
+        except ValueError:
+            return service.clamp_servo_deg(default_vals)
+        if len(vals) < 7:
+            return service.clamp_servo_deg(default_vals)
+        return service.clamp_servo_deg(vals[:7])
+
+    def _scan_side_target(side: str) -> list[float]:
+        left_default = [87.1, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
+        right_default = [-87.1, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
+        if side == "left":
+            return _parse_servo_env("D1_SCAN_LEFT_DEG", left_default)
+        return _parse_servo_env("D1_SCAN_RIGHT_DEG", right_default)
+
+    def _front_camera_jpeg() -> bytes | None:
+        try:
+            import cv2
+        except ImportError:
+            return None
+        idx = int(os.environ.get("D1_FRONT_V4L_INDEX", "10"))
+        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if not ok or frame is None:
+            return None
+        ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok_enc or buf is None:
+            return None
+        return buf.tobytes()
+
+    @app.route("/api/front/last.jpg")
+    def front_last_jpeg() -> Response:
+        jpg = _front_camera_jpeg()
+        if jpg is None:
+            return Response("front camera unavailable", status=503)
+        return Response(jpg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.route("/api/front/live.mjpg")
+    def front_live_mjpg() -> Response:
+        period = float(os.environ.get("D1_FRONT_MJPEG_PERIOD_S", "0.10"))
+
+        def generate():
+            last: bytes | None = None
+            while True:
+                jpg = _front_camera_jpeg()
+                if jpg is None:
+                    jpg = last
+                if jpg is not None:
+                    last = jpg
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Cache-Control: no-store\r\n\r\n" + jpg + b"\r\n"
+                    )
+                time.sleep(period)
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+        )
+
+    @app.route("/api/base/sport_last", methods=["GET"])
+    def api_base_sport_last() -> Response:
+        return jsonify(sport_last_payload())
+
+    @app.route("/api/base/accompany_mode", methods=["GET", "POST"])
+    def api_base_accompany_mode() -> Response:
+        payload, code = accompany_mode_handle(request)
+        return jsonify(payload), code
+
+    @app.route("/api/scan/side_detect", methods=["POST"])
+    def scan_side_detect() -> Response:
+        body = request.get_json(silent=True) or {}
+        side = str(body.get("side") or "right").strip().lower()
+        if side not in ("left", "right"):
+            return jsonify({"ok": False, "reason": "side_must_be_left_or_right"}), 400
+        raw_override = body.get("override_servo_deg")
+        if isinstance(raw_override, list) and len(raw_override) >= 7:
+            target = service.clamp_servo_deg([float(x) for x in raw_override[:7]])
+        else:
+            target = _scan_side_target(side)
+        service._halt_cartesian_stream(wait_idle=True)
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return jsonify({"ok": False, "reason": "couple_failed", "coupling": couple}), 502
+        move = service.jog_pose_deg(target, mode=1)
+        move["action"] = move.get("action") or "scan_side_jog"
+        if not move.get("ok"):
+            move["coupling"] = couple
+            move["target_servo_deg"] = target
+            move["scan_side"] = side
+            return jsonify(move), 502
+        detect = pick_vision.capture_and_detect()
+        _apply_pick_detection_to_preset(detect)
+        ok_all = bool(move.get("ok")) and bool(detect.get("ok"))
+        return jsonify(
+            {
+                "ok": ok_all,
+                "scan_side": side,
+                "target_servo_deg": target,
+                "coupling": couple,
+                "move": move,
+                "detection": detect,
+            }
+        ), (200 if ok_all else 502)
 
     @app.route("/api/joints/feedback")
     def joints_feedback() -> Response:
@@ -921,6 +1039,32 @@ def create_d1_jog_app() -> Flask:
     def preset_scan_goto() -> Response:
         body = request.get_json(silent=True) or {}
         variant = str(body.get("variant") or "base").strip().lower()
+        if variant in ("j90_left", "left", "sx"):
+            side_target = _scan_side_target("left")
+            service._halt_cartesian_stream(wait_idle=True)
+            couple = service.ensure_coupled_for_motion()
+            if not couple.get("ok"):
+                return jsonify(couple), 502
+            out = service.jog_pose_deg(side_target, mode=1)
+            out["preset"] = "scan"
+            out["coupling"] = couple
+            out["scan_variant"] = "j90_left"
+            out["waypoint_name"] = "Punto SCANSIONE 90 SX"
+            out["target_servo_deg"] = side_target
+            return jsonify(out), (200 if out.get("ok") else 502)
+        if variant in ("j90_right", "right", "dx"):
+            side_target = _scan_side_target("right")
+            service._halt_cartesian_stream(wait_idle=True)
+            couple = service.ensure_coupled_for_motion()
+            if not couple.get("ok"):
+                return jsonify(couple), 502
+            out = service.jog_pose_deg(side_target, mode=1)
+            out["preset"] = "scan"
+            out["coupling"] = couple
+            out["scan_variant"] = "j90_right"
+            out["waypoint_name"] = "Punto SCANSIONE 90 DX"
+            out["target_servo_deg"] = side_target
+            return jsonify(out), (200 if out.get("ok") else 502)
         if variant not in ("base", "j90", "90"):
             variant = "base"
         scan_variant = "j90" if variant in ("j90", "90") else "base"
