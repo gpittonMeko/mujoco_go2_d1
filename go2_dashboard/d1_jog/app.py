@@ -21,7 +21,19 @@ from go2_dashboard.d1_jog import (
     service,
 )
 from go2_dashboard.paths import PROJECT_ROOT
-from go2_dashboard.sport_lane import accompany_mode_handle, sport_last_payload
+from go2_dashboard.sport_lane import (
+    GO2_DDS_DOMAIN,
+    GO2_DDS_INTERFACE,
+    accompany_mode_handle,
+    base_motion_allowed,
+    sport_last_payload,
+)
+
+THERMAL_SETTINGS: dict[str, Any] = {
+    "warn_c": 62.0,
+    "critical_c": 72.0,
+    "auto_crouch": False,
+}
 
 _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
 
@@ -179,6 +191,120 @@ def create_d1_jog_app() -> Flask:
     def api_base_accompany_mode() -> Response:
         payload, code = accompany_mode_handle(request)
         return jsonify(payload), code
+
+    @app.route("/api/base/move_nudge", methods=["POST"])
+    def api_base_move_nudge() -> Response:
+        body = request.get_json(silent=True) or {}
+        direction = str(body.get("direction") or "forward").strip().lower()
+        duration_s = float(body.get("duration_s", 0.35))
+        speed = float(body.get("speed", 0.22))
+        yaw_speed = float(body.get("yaw_speed", 0.45))
+        vectors: dict[str, tuple[float, float, float]] = {
+            "forward": (speed, 0.0, 0.0),
+            "backward": (-speed, 0.0, 0.0),
+            "left": (0.0, speed, 0.0),
+            "right": (0.0, -speed, 0.0),
+            "turn_left": (0.0, 0.0, yaw_speed),
+            "turn_right": (0.0, 0.0, -yaw_speed),
+        }
+        if direction not in vectors:
+            return jsonify({"ok": False, "reason": "unknown_direction"}), 400
+        ok_gate, reason = base_motion_allowed()
+        if not ok_gate:
+            return jsonify({"ok": False, "reason": reason}), 403
+        import sys
+
+        scripts_dir = str(PROJECT_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from go2_accompany import sport_move
+
+        vx, vy, vyaw = vectors[direction]
+        out = sport_move(
+            project_root=PROJECT_ROOT,
+            domain=GO2_DDS_DOMAIN,
+            iface=(GO2_DDS_INTERFACE.strip() if GO2_DDS_INTERFACE else None),
+            vx=vx,
+            vy=vy,
+            vyaw=vyaw,
+            duration_s=max(0.08, min(1.2, duration_s)),
+            stand_first=True,
+        )
+        out["direction"] = direction
+        return jsonify(out), (200 if out.get("ok") else 502)
+
+    @app.route("/api/motor/thermal_settings", methods=["GET", "POST"])
+    def api_motor_thermal_settings() -> Response:
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            if "warn_c" in body:
+                THERMAL_SETTINGS["warn_c"] = float(body.get("warn_c"))
+            if "critical_c" in body:
+                THERMAL_SETTINGS["critical_c"] = float(body.get("critical_c"))
+            if "auto_crouch" in body:
+                THERMAL_SETTINGS["auto_crouch"] = bool(body.get("auto_crouch"))
+        return jsonify({"ok": True, **THERMAL_SETTINGS})
+
+    def _read_motor_temperatures_once(timeout_s: float = 2.2) -> dict[str, Any]:
+        import sys
+
+        sys.path.insert(0, str(PROJECT_ROOT / "unitree_sdk2_python"))
+        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
+
+        seen: dict[str, Any] = {"temps": None}
+
+        def cb(msg: Any) -> None:
+            vals: list[float] = []
+            try:
+                for i in range(20):
+                    st = msg.motor_state[i]
+                    t = None
+                    if hasattr(st, "temperature"):
+                        t = float(getattr(st, "temperature"))
+                    elif hasattr(st, "temp"):
+                        t = float(getattr(st, "temp"))
+                    if t is None:
+                        t = 0.0
+                    vals.append(t)
+            except Exception:
+                vals = []
+            if vals:
+                seen["temps"] = vals
+
+        if GO2_DDS_INTERFACE:
+            ChannelFactoryInitialize(GO2_DDS_DOMAIN, GO2_DDS_INTERFACE)
+        else:
+            ChannelFactoryInitialize(GO2_DDS_DOMAIN)
+        sub = ChannelSubscriber("rt/lowstate", LowState_)
+        sub.Init(cb, 8)
+        t0 = time.time()
+        while time.time() - t0 < timeout_s and seen.get("temps") is None:
+            time.sleep(0.08)
+        return {"ok": bool(seen.get("temps")), "temps_c": seen.get("temps")}
+
+    @app.route("/api/motor/thermal_status", methods=["GET"])
+    def api_motor_thermal_status() -> Response:
+        try:
+            out = _read_motor_temperatures_once(timeout_s=2.0)
+        except Exception as exc:
+            return jsonify({"ok": False, "reason": repr(exc), **THERMAL_SETTINGS}), 502
+        temps = out.get("temps_c") or []
+        max_temp = max(temps) if temps else None
+        state = "ok"
+        if max_temp is not None and max_temp >= float(THERMAL_SETTINGS["critical_c"]):
+            state = "critical"
+        elif max_temp is not None and max_temp >= float(THERMAL_SETTINGS["warn_c"]):
+            state = "warn"
+        return jsonify(
+            {
+                "ok": out.get("ok", False),
+                "state": state,
+                "max_temp_c": max_temp,
+                "temps_c": temps,
+                **THERMAL_SETTINGS,
+            }
+        )
 
     @app.route("/api/scan/side_detect", methods=["POST"])
     def scan_side_detect() -> Response:

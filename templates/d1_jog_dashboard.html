@@ -53,6 +53,7 @@
     <div class="tabs">
       <button class="tabbtn active" id="tabTeachBtn">Teach</button>
       <button class="tabbtn" id="tabMoveBtn">Movimento</button>
+      <button class="tabbtn" id="tabMotorBtn">Motori</button>
     </div>
   </div>
 
@@ -92,7 +93,33 @@
       </div>
 
       <div class="card" style="margin-top:12px;">
-        <h3>Taratura con Slider (no numeretti a frecce)</h3>
+        <h3>Parametri calibrazione presa</h3>
+        <div class="sl">
+          <label>Offset presa J0
+            <input id="graspJ0" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="graspJ0Val">0.0</span>
+          </label>
+          <label>Offset presa J1
+            <input id="graspJ1" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="graspJ1Val">0.0</span>
+          </label>
+          <label>Offset presa J2
+            <input id="graspJ2" type="range" min="-25" max="25" step="0.5" value="0" />
+            <span id="graspJ2Val">0.0</span>
+          </label>
+          <label>Orient presa J5 extra
+            <input id="graspJ5" type="range" min="-45" max="45" step="1" value="0" />
+            <span id="graspJ5Val">0</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnSaveGraspParams" class="neutral">Salva parametri presa</button>
+          <button id="btnLoadGraspParams" class="neutral">Ricarica parametri presa</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Taratura posizione robot con Slider (solo posa)</h3>
         <div class="sl">
           <label>Yaw scan DX (J0)
             <input id="scanRight" type="range" min="-120" max="120" step="1" value="-87" />
@@ -102,25 +129,39 @@
             <input id="scanLeft" type="range" min="-120" max="120" step="1" value="87" />
             <span id="scanLeftVal">87</span>
           </label>
-          <label>Offset J0 presa
-            <input id="offJ0" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="offJ0Val">0.0</span>
+          <label>J0
+            <input id="poseJ0" type="range" min="-135" max="135" step="0.5" value="0" />
+            <span id="poseJ0Val">0.0</span>
           </label>
-          <label>Offset J1 presa
-            <input id="offJ1" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="offJ1Val">0.0</span>
+          <label>J1
+            <input id="poseJ1" type="range" min="-90" max="90" step="0.5" value="35" />
+            <span id="poseJ1Val">35.0</span>
           </label>
-          <label>Offset J2 presa
-            <input id="offJ2" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="offJ2Val">0.0</span>
+          <label>J2
+            <input id="poseJ2" type="range" min="-90" max="90" step="0.5" value="-2" />
+            <span id="poseJ2Val">-2.0</span>
           </label>
-          <label>Orient J5 extra
-            <input id="offJ5" type="range" min="-45" max="45" step="1" value="0" />
-            <span id="offJ5Val">0</span>
+          <label>J3
+            <input id="poseJ3" type="range" min="-135" max="135" step="0.5" value="0" />
+            <span id="poseJ3Val">0.0</span>
+          </label>
+          <label>J4
+            <input id="poseJ4" type="range" min="-90" max="90" step="0.5" value="36" />
+            <span id="poseJ4Val">36.0</span>
+          </label>
+          <label>J5
+            <input id="poseJ5" type="range" min="-135" max="135" step="0.5" value="0" />
+            <span id="poseJ5Val">0.0</span>
+          </label>
+          <label>Gripper J6
+            <input id="poseJ6" type="range" min="0" max="90" step="0.5" value="5" />
+            <span id="poseJ6Val">5.0</span>
           </label>
         </div>
         <div class="row">
-          <button id="btnApplyOffsets" class="neutral">Salva offset presa</button>
+          <button id="btnReadPose" class="neutral">Leggi posa robot</button>
+          <button id="btnApplyPose" class="neutral">Applica posa slider</button>
+          <button id="btnHoldPose" class="neutral">Hold posa slider</button>
         </div>
       </div>
     </section>
@@ -131,16 +172,45 @@
         <div class="row">
           <button id="btnStand">Stand</button>
           <button id="btnCrouch" class="warn">Crouch</button>
+          <button id="btnBalance">Balance hold</button>
+          <button id="btnDamping">Damping</button>
         </div>
         <div class="row">
-          <button id="btnForward">Avanti</button>
-          <button id="btnBackward">Indietro</button>
-          <button id="btnLeft">Sinistra</button>
-          <button id="btnRight">Destra</button>
-          <button id="btnTurnLeft">Ruota sx</button>
-          <button id="btnTurnRight">Ruota dx</button>
-          <button id="btnStop" class="danger">Stop base</button>
+          <button id="btnJoyOn">Joystick mode ON</button>
+          <button id="btnJoyOff" class="danger">Joystick mode OFF</button>
         </div>
+        <div class="row" style="display:grid;grid-template-columns:80px 80px 80px;justify-content:center;gap:8px;">
+          <button class="neutral" style="grid-column:2" id="mvForward">↑</button>
+          <button class="neutral" id="mvLeft">←</button>
+          <button class="neutral" id="mvStop">■</button>
+          <button class="neutral" id="mvRight">→</button>
+          <button class="neutral" style="grid-column:2" id="mvBackward">↓</button>
+        </div>
+        <div class="row" style="justify-content:center;">
+          <button class="neutral" id="mvTurnLeft">Ruota sx</button>
+          <button class="neutral" id="mvTurnRight">Ruota dx</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tabMotor" class="hide">
+      <div class="card">
+        <h3>Controllo temperatura motori</h3>
+        <div class="sl">
+          <label>Soglia warning C
+            <input id="tempWarn" type="range" min="40" max="85" step="1" value="62" />
+            <span id="tempWarnVal">62</span>
+          </label>
+          <label>Soglia critica C
+            <input id="tempCrit" type="range" min="50" max="95" step="1" value="72" />
+            <span id="tempCritVal">72</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnThermalRefresh" class="neutral">Aggiorna temperature</button>
+          <button id="btnThermalSave" class="warn">Salva soglie</button>
+        </div>
+        <div class="status" id="thermalStatus">Nessun dato temperatura.</div>
       </div>
     </section>
 
@@ -189,14 +259,33 @@
       }
     }
 
-    async function saveOffsets() {
-      const off = [Number(q('offJ0').value), Number(q('offJ1').value), Number(q('offJ2').value), 0, 0, 0];
-      const j5 = Number(q('offJ5').value);
-      setStatus('Salvo offset...', null);
+    function sliderPose() {
+      return [
+        Number(q('poseJ0').value),
+        Number(q('poseJ1').value),
+        Number(q('poseJ2').value),
+        Number(q('poseJ3').value),
+        Number(q('poseJ4').value),
+        Number(q('poseJ5').value),
+        Number(q('poseJ6').value),
+      ];
+    }
+
+    async function readPoseToSliders() {
+      setStatus('Leggo posa robot...', null);
       try {
-        const a = await api('/api/pick/preset', 'POST', { joint_offset_deg: off });
-        const b = await api('/api/pick/preset', 'POST', { manual_orient_offset_deg: j5 });
-        setStatus((a.ok && b.ok) ? 'Offset salvati' : 'Errore salvataggio offset', !!(a.ok && b.ok));
+        const d = await api('/api/joints/feedback', 'GET');
+        if (!d.ok || !d.servo_deg) {
+          setStatus('Feedback non disponibile', false);
+          return;
+        }
+        for (let i = 0; i < 7; i++) {
+          const id = 'poseJ' + i;
+          const vid = 'poseJ' + i + 'Val';
+          q(id).value = String(d.servo_deg[i]);
+          q(vid).textContent = Number(d.servo_deg[i]).toFixed(1);
+        }
+        setStatus('Posa caricata negli slider', true);
       } catch (e) { setStatus(String(e), false); }
     }
 
@@ -226,22 +315,43 @@
     q('tabTeachBtn').onclick = function () {
       q('tabTeach').classList.remove('hide');
       q('tabMove').classList.add('hide');
+      q('tabMotor').classList.add('hide');
       q('tabTeachBtn').classList.add('active');
       q('tabMoveBtn').classList.remove('active');
+      q('tabMotorBtn').classList.remove('active');
     };
     q('tabMoveBtn').onclick = function () {
       q('tabMove').classList.remove('hide');
       q('tabTeach').classList.add('hide');
+      q('tabMotor').classList.add('hide');
       q('tabMoveBtn').classList.add('active');
+      q('tabTeachBtn').classList.remove('active');
+      q('tabMotorBtn').classList.remove('active');
+    };
+    q('tabMotorBtn').onclick = function () {
+      q('tabMotor').classList.remove('hide');
+      q('tabMove').classList.add('hide');
+      q('tabTeach').classList.add('hide');
+      q('tabMotorBtn').classList.add('active');
+      q('tabMoveBtn').classList.remove('active');
       q('tabTeachBtn').classList.remove('active');
     };
 
     bindSlider('scanRight', 'scanRightVal', 0);
     bindSlider('scanLeft', 'scanLeftVal', 0);
-    bindSlider('offJ0', 'offJ0Val', 1);
-    bindSlider('offJ1', 'offJ1Val', 1);
-    bindSlider('offJ2', 'offJ2Val', 1);
-    bindSlider('offJ5', 'offJ5Val', 0);
+    bindSlider('poseJ0', 'poseJ0Val', 1);
+    bindSlider('poseJ1', 'poseJ1Val', 1);
+    bindSlider('poseJ2', 'poseJ2Val', 1);
+    bindSlider('poseJ3', 'poseJ3Val', 1);
+    bindSlider('poseJ4', 'poseJ4Val', 1);
+    bindSlider('poseJ5', 'poseJ5Val', 1);
+    bindSlider('poseJ6', 'poseJ6Val', 1);
+    bindSlider('graspJ0', 'graspJ0Val', 1);
+    bindSlider('graspJ1', 'graspJ1Val', 1);
+    bindSlider('graspJ2', 'graspJ2Val', 1);
+    bindSlider('graspJ5', 'graspJ5Val', 0);
+    bindSlider('tempWarn', 'tempWarnVal', 0);
+    bindSlider('tempCrit', 'tempCritVal', 0);
 
     q('btnCouple').onclick = () => callAndShow('Coppia ON', '/api/arm/couple', 'POST', {});
     q('btnEnable').onclick = () => callAndShow('Enable motori', '/api/joints/enable', 'POST', { with_power: true, mode: 1 });
@@ -254,17 +364,79 @@
     q('btnLeftScan').onclick = () => sideScanDetect('left');
     q('btnDetectNow').onclick = () => callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
     q('btnTestGrasp').onclick = () => callAndShow('Prova presa', '/api/pick/grasp/goto', 'POST', {}, 120000);
-    q('btnApplyOffsets').onclick = saveOffsets;
+    q('btnReadPose').onclick = readPoseToSliders;
+    q('btnApplyPose').onclick = () => callAndShow('Applica posa', '/api/joints/jog', 'POST', { servo_deg: sliderPose() }, 70000);
+    q('btnHoldPose').onclick = () => callAndShow('Hold posa', '/api/joints/hold', 'POST', { servo_deg: sliderPose() }, 70000);
+
+    q('btnSaveGraspParams').onclick = async () => {
+      const off = [Number(q('graspJ0').value), Number(q('graspJ1').value), Number(q('graspJ2').value), 0, 0, 0];
+      const j5 = Number(q('graspJ5').value);
+      setStatus('Salvo parametri presa...', null);
+      try {
+        const a = await api('/api/pick/preset', 'POST', { joint_offset_deg: off });
+        const b = await api('/api/pick/preset', 'POST', { manual_orient_offset_deg: j5 });
+        setStatus((a.ok && b.ok) ? 'Parametri presa salvati' : 'Errore salvataggio presa', !!(a.ok && b.ok));
+      } catch (e) { setStatus(String(e), false); }
+    };
+    q('btnLoadGraspParams').onclick = async () => {
+      try {
+        const d = await api('/api/pick/preset', 'GET');
+        const o = d.joint_offset_deg || [0, 0, 0, 0, 0, 0];
+        q('graspJ0').value = String(Number(o[0] || 0));
+        q('graspJ1').value = String(Number(o[1] || 0));
+        q('graspJ2').value = String(Number(o[2] || 0));
+        q('graspJ5').value = String(Number(d.manual_orient_offset_deg || 0));
+        q('graspJ0Val').textContent = Number(q('graspJ0').value).toFixed(1);
+        q('graspJ1Val').textContent = Number(q('graspJ1').value).toFixed(1);
+        q('graspJ2Val').textContent = Number(q('graspJ2').value).toFixed(1);
+        q('graspJ5Val').textContent = Number(q('graspJ5').value).toFixed(0);
+        setStatus('Parametri presa ricaricati', true);
+      } catch (e) { setStatus(String(e), false); }
+    };
 
     q('btnStand').onclick = () => baseMode('stand_up', true);
     q('btnCrouch').onclick = () => baseMode('crouch', true);
-    q('btnForward').onclick = () => baseMode('forward', true);
-    q('btnBackward').onclick = () => baseMode('backward', true);
-    q('btnLeft').onclick = () => baseMode('left', true);
-    q('btnRight').onclick = () => baseMode('right', true);
-    q('btnTurnLeft').onclick = () => baseMode('turn_left', true);
-    q('btnTurnRight').onclick = () => baseMode('turn_right', true);
-    q('btnStop').onclick = () => baseMode('stop', false);
+    q('btnBalance').onclick = () => baseMode('balance_hold', true);
+    q('btnDamping').onclick = () => baseMode('damping', true);
+    q('btnJoyOn').onclick = () => baseMode('joystick', true);
+    q('btnJoyOff').onclick = () => baseMode('joystick', false);
+
+    async function moveNudge(direction) {
+      await callAndShow('Move ' + direction, '/api/base/move_nudge', 'POST', { direction: direction, duration_s: 0.35 });
+    }
+    q('mvForward').onclick = () => moveNudge('forward');
+    q('mvBackward').onclick = () => moveNudge('backward');
+    q('mvLeft').onclick = () => moveNudge('left');
+    q('mvRight').onclick = () => moveNudge('right');
+    q('mvTurnLeft').onclick = () => moveNudge('turn_left');
+    q('mvTurnRight').onclick = () => moveNudge('turn_right');
+    q('mvStop').onclick = () => baseMode('damping', true);
+
+    async function refreshThermal() {
+      try {
+        const d = await api('/api/motor/thermal_status', 'GET');
+        const el = q('thermalStatus');
+        if (!d.ok) {
+          el.textContent = 'Thermal read fail: ' + (d.reason || 'unknown');
+          el.className = 'status bad';
+          return;
+        }
+        const maxT = (d.max_temp_c == null) ? 'n/a' : Number(d.max_temp_c).toFixed(1);
+        el.textContent = 'State: ' + d.state + ' | max temp: ' + maxT + ' C';
+        el.className = 'status ' + (d.state === 'critical' ? 'bad' : (d.state === 'warn' ? '' : 'ok'));
+      } catch (e) {
+        q('thermalStatus').textContent = String(e);
+        q('thermalStatus').className = 'status bad';
+      }
+    }
+    q('btnThermalRefresh').onclick = refreshThermal;
+    q('btnThermalSave').onclick = async () => {
+      await callAndShow('Salva soglie termiche', '/api/motor/thermal_settings', 'POST', {
+        warn_c: Number(q('tempWarn').value),
+        critical_c: Number(q('tempCrit').value),
+      });
+      await refreshThermal();
+    };
   </script>
 </body>
 </html>
