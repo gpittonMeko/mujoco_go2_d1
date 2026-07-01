@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from werkzeug.exceptions import HTTPException
 
 from go2_dashboard.d1_jog import (
     cartesian,
@@ -45,6 +46,8 @@ def create_d1_jog_app() -> Flask:
     @app.errorhandler(Exception)
     def _api_json_error(exc: Exception) -> tuple[Response, int]:
         if not request.path.startswith("/api/"):
+            if isinstance(exc, HTTPException):
+                return exc
             raise exc
         return jsonify({"ok": False, "reason": str(exc), "error": type(exc).__name__}), 500
 
@@ -62,6 +65,10 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/")
     def index() -> str:
+        return render_template("d1_jog_dashboard.html", **_page_ctx(dash_mode="arm"))
+
+    @app.route("/focus/teach")
+    def focus_teach_alias() -> str:
         return render_template("d1_jog_dashboard.html", **_page_ctx(dash_mode="arm"))
 
     @app.route("/program")

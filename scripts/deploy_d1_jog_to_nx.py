@@ -42,8 +42,11 @@ PUSH_FILES = [
     "go2_dashboard/d1_jog/pick_vision_crop.py",
     "scripts/box_object_detector.py",
     "D1 550 Workspace/OLD/scripts/arm_kinematics_d1_template.py",
+    "D1 550 Workspace/OLD/scripts/d1_arm_servo_read_python.py",
     "scripts/serve_d1_jog_dashboard.py",
     "scripts/build_d1_sdk.sh",
+    "scripts/build_d1_iox_shim.sh",
+    "scripts/free_iox_chunk_shim.c",
     "scripts/nx_d1_jog_env.sh",
     "scripts/nx_d1_jog_supervise.sh",
     "scripts/nx_start_d1_jog.sh",
@@ -195,7 +198,8 @@ def main() -> None:
         "scripts/nx_d1_jog_supervise.sh",
         "scripts/nx_start_d1_jog.sh",
         "scripts/nx_stop_operator_dashboard.sh",
-    "scripts/orbbec_reset_camera.sh",
+        "scripts/orbbec_reset_camera.sh",
+        "scripts/build_d1_iox_shim.sh",
         "scripts/build_d1_sdk.sh",
     ):
         try:
@@ -215,6 +219,14 @@ def main() -> None:
     build_code = _remote_build_d1_sdk(ssh)
     if build_code != 0:
         print("[d1-jog deploy] Avvio comunque Flask (health segnalerà bin mancanti)")
+    _, so_shim, se_shim = ssh.exec_command(f"cd {REMOTE_BASE} && bash scripts/build_d1_iox_shim.sh", timeout=60)
+    so_shim.channel.recv_exit_status()
+    out_shim = so_shim.read().decode(errors="replace").strip()
+    err_shim = se_shim.read().decode(errors="replace").strip()
+    if out_shim:
+        print(out_shim)
+    if err_shim:
+        print("shim stderr:", err_shim)
     _remote_start_jog(ssh, host)
     ssh.close()
 

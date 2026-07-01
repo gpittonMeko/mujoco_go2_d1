@@ -7,7 +7,7 @@ fi
 export GO2_LOCAL=1
 export D1_JOG_ENABLE_REAL_ARM=1
 export GO2_ENABLE_REAL_ARM=1
-export D1_JOG_PORT=5053
+export D1_JOG_PORT=5056
 export D1_JOG_BIND=0.0.0.0
 # mode 1 = smoothing traiettoria (come movimento zero interno al controller)
 export D1_JOG_MODE=1
@@ -19,10 +19,21 @@ export D1_JOG_FEEDBACK_TIMEOUT_S=14
 export D1_DDS_DOMAIN="${D1_DDS_DOMAIN:-${GO2_DDS_DOMAIN:-0}}"
 export GO2_DDS_INTERFACE="${GO2_DDS_INTERFACE:-eth0}"
 export D1_DDS_INTERFACE="${D1_DDS_INTERFACE:-$GO2_DDS_INTERFACE}"
-# CycloneDDS: forza multicast sulla NIC verso subnet Unitree (192.168.123.x)
-if [ -z "${CYCLONEDDS_URI:-}" ]; then
-  export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0" multicast="default" priority="default"/></Interfaces></General></Domain></CycloneDDS>'
+# Cyclone + iceoryx: i binari d1_sdk_command / d1_sdk_feedback richiedono le
+# librerie di sistema in testa al path, altrimenti compare undefined symbol
+# free_iox_chunk quando il daemon prova a partire.
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+_UT="${UNITREE_SDK2:-/usr/local}"
+if [ -d "$_UT/lib" ]; then
+  export LD_LIBRARY_PATH="$_UT/lib:${LD_LIBRARY_PATH}"
+elif [ -d "$_UT/lib64" ]; then
+  export LD_LIBRARY_PATH="$_UT/lib64:${LD_LIBRARY_PATH}"
 fi
+if [ -f "$PWD/bin/libd1_iox_shim.so" ]; then
+  export LD_PRELOAD="$PWD/bin/libd1_iox_shim.so${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+# CycloneDDS: forza multicast sulla NIC verso subnet Unitree (192.168.123.x)
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0" multicast="default" priority="default"/></Interfaces></General></Domain></CycloneDDS>'
 export D1_ARM_HOST="${D1_ARM_HOST:-192.168.123.100}"
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 # Jog cartesiano interpolato (waypoint IK) — ritardi bassi per reattività
@@ -66,8 +77,8 @@ export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
 # Orbbec polso — pin RGB (video12 mjpeg dopo reload UVC); no reset a ogni foto (live+foto più veloci)
-export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-12}"
-export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-12}"
+export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-2}"
+export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-2}"
 export D1_ORBBEC_AUTO_DISCOVERY="${D1_ORBBEC_AUTO_DISCOVERY:-0}"
 export D1_ORBBEC_PREFERRED_UVC_INDEX="${D1_ORBBEC_PREFERRED_UVC_INDEX:-2}"
 export D1_ORBBEC_REPROBE_EACH_CAPTURE="${D1_ORBBEC_REPROBE_EACH_CAPTURE:-0}"
@@ -92,7 +103,8 @@ export D1_ORBBEC_MIN_CHANNEL_SPREAD="${D1_ORBBEC_MIN_CHANNEL_SPREAD:-8}"
 export D1_ORBBEC_AUTO_MIN_CHANNEL_SPREAD="${D1_ORBBEC_AUTO_MIN_CHANNEL_SPREAD:-0.05}"
 export D1_ORBBEC_PINNED_MIN_CHANNEL_SPREAD="${D1_ORBBEC_PINNED_MIN_CHANNEL_SPREAD:-0.05}"
 export D1_ORBBEC_MIN_SPREAD_FLOOR="${D1_ORBBEC_MIN_SPREAD_FLOOR:-0.04}"
-export D1_ORBBEC_RGB_ONLY="${D1_ORBBEC_RGB_ONLY:-1}"
+export D1_ORBBEC_RGB_ONLY="${D1_ORBBEC_RGB_ONLY:-0}"
+export D1_PICK_ALLOW_GENERIC_RGB_FALLBACK="${D1_PICK_ALLOW_GENERIC_RGB_FALLBACK:-1}"
 export D1_ORBBEC_V4L_DIRECT="${D1_ORBBEC_V4L_DIRECT:-1}"
 export D1_ORBBEC_PREFER_V4L_DIRECT="${D1_ORBBEC_PREFER_V4L_DIRECT:-1}"
 export D1_ORBBEC_USE_OPERATOR_HTTP="${D1_ORBBEC_USE_OPERATOR_HTTP:-0}"

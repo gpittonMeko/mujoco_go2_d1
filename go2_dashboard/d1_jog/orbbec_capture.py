@@ -369,6 +369,15 @@ def _auto_discovery_enabled() -> bool:
     )
 
 
+def _allow_generic_rgb_fallback() -> bool:
+    return os.environ.get("D1_PICK_ALLOW_GENERIC_RGB_FALLBACK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 def _pinned_rgb_v4l_index() -> int | None:
     """Indice RGB fisso — live + capture usano solo questo /dev/videoN."""
     for key in ("D1_ORBBEC_RGB_V4L_INDEX", "D1_ORBBEC_LIVE_V4L_INDEX"):
@@ -604,6 +613,11 @@ def _verify_v4l_index_is_orbbec_rgb(idx: int) -> bool:
 def _pinned_index_usable(idx: int) -> bool:
     if not _v4l_device_exists(idx):
         return False
+    if _allow_generic_rgb_fallback():
+        if _ffmpeg_grab_jpeg(int(idx)) is not None:
+            return True
+        frame, _ = _read_rgb_frame(idx=idx)
+        return frame is not None
     if not _v4l_index_is_orbbec_device(idx) or _v4l_index_is_realsense_device(idx):
         return False
     if _verify_v4l_index_is_orbbec_rgb(idx):
@@ -712,7 +726,7 @@ def _read_rgb_frame(*, idx: int | None = None) -> tuple[Any | None, int | None]:
         return None, None
     _resolved_rgb_idx = use_idx
 
-    if _v4l_sysfs_name_is_ir(_v4l_sysfs_card_name(use_idx)):
+    if (not _allow_generic_rgb_fallback()) and _v4l_sysfs_name_is_ir(_v4l_sysfs_card_name(use_idx)):
         return None, use_idx
 
     cap = _open_v4l_cap(cv2, use_idx)
@@ -900,7 +914,9 @@ def _capture_v4l_direct_jpeg() -> tuple[bytes, str, dict[str, Any]] | None:
         chroma = round(float(chroma), 2)
         spread = round(float(spread), 2)
         sysfs_name = _v4l_sysfs_card_name(idx)
-        if not _v4l_index_is_orbbec_device(idx) or _v4l_index_is_realsense_device(idx):
+        if (not _allow_generic_rgb_fallback()) and (
+            not _v4l_index_is_orbbec_device(idx) or _v4l_index_is_realsense_device(idx)
+        ):
             _resolved_rgb_idx = None
             return None
         meta = {

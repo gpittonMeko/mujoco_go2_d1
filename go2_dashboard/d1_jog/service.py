@@ -19,7 +19,7 @@ from go2_dashboard.d1_jog.motion_guard import (
     status as motion_guard_status,
     try_acquire as motion_try_acquire,
 )
-from go2_dashboard.paths import D1_SDK_COMMAND_BIN, D1_SDK_FEEDBACK_BIN, PROJECT_ROOT
+from go2_dashboard.paths import D1_ARM_SERVO_READ_PY, D1_SDK_COMMAND_BIN, D1_SDK_FEEDBACK_BIN, PROJECT_ROOT
 
 JOINT_LIMITS: list[tuple[float, float]] = [
     (-135.0, 135.0),
@@ -65,10 +65,16 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _env_shell_prefix(cwd: str) -> str | None:
-    env_sh = PROJECT_ROOT / "scripts" / "nx_dashboard_env.sh"
-    if os.name == "nt" or not env_sh.is_file():
+    if os.name == "nt":
         return None
-    return f"cd {shlex.quote(cwd)} && . {shlex.quote(str(env_sh))} && "
+    env_candidates = [
+        PROJECT_ROOT / "scripts" / "nx_d1_jog_env.sh",
+        PROJECT_ROOT / "scripts" / "nx_dashboard_env.sh",
+    ]
+    for env_sh in env_candidates:
+        if env_sh.is_file():
+            return f"cd {shlex.quote(cwd)} && . {shlex.quote(str(env_sh))} && "
+    return None
 
 
 def _run_bin(
@@ -177,6 +183,34 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
         ),
     }
     if angles is None:
+        py_fb = D1_ARM_SERVO_READ_PY
+        if py_fb.is_file():
+            try:
+                py_res = _run_bin(
+                    "python3",
+                    [str(py_fb), str(_dds_domain()), str(listen_s)],
+                    timeout_s=timeout_s,
+                )
+                py_angles = _parse_feedback_stdout(py_res.stdout or "")
+                if py_angles is not None:
+                    set_servo_cache(py_angles)
+                    mark_coupled_from_feedback()
+                    return {
+                        "ok": True,
+                        "servo_deg": py_angles,
+                        "returncode": py_res.returncode,
+                        "dds_counts": next(
+                            (
+                                ln.strip()
+                                for ln in (py_res.stdout or "").splitlines()
+                                if ln.startswith("servo_count=")
+                            ),
+                            None,
+                        ),
+                        "fallback": "python_feedback",
+                    }
+            except subprocess.TimeoutExpired:
+                pass
         base["reason"] = "no_servo_feedback"
         base["stderr_tail"] = (result.stderr or "")[-500:]
     else:
@@ -195,6 +229,19 @@ def _spawn_cmd_daemon(delay_ms: int) -> subprocess.Popen[str]:
     cmd_bin = str(D1_SDK_COMMAND_BIN)
     args = [cmd_bin, str(_dds_domain()), str(delay_ms)]
     cwd = str(PROJECT_ROOT)
+    prefix = _env_shell_prefix(cwd)
+    if prefix:
+        script = prefix + "exec " + " ".join(shlex.quote(x) for x in args)
+        return subprocess.Popen(
+            ["bash", "-lc", script],
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=_subprocess_env(),
+        )
     return subprocess.Popen(
         args,
         cwd=cwd,
