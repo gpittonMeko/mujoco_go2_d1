@@ -30,6 +30,7 @@
   var streamCarousel = loadCarouselState();
   var TUNE_HISTORY_KEY = "focus.teach.tuningHistory.v1";
   var tuneHistory = loadTuneHistory();
+  var detectorCfg = null;
 
   function resetSvcAck() {
     Object.keys(SVC_LABELS).forEach(function (k) { setSvcAck(k, "idle"); });
@@ -151,6 +152,13 @@
 
   function $(id) { return document.getElementById(id); }
 
+  function numVal(id, fallback) {
+    var el = $(id);
+    if (!el) return fallback;
+    var v = Number(el.value);
+    return Number.isFinite(v) ? v : fallback;
+  }
+
   function escHtml(v) {
     return String(v)
       .replace(/&/g, "&amp;")
@@ -262,10 +270,135 @@
     lines.push("label: " + (det.label || "-"));
     lines.push("confidence: " + (det.confidence != null ? Number(det.confidence).toFixed(3) : "-"));
     lines.push("orientation_deg: " + (det.orientation_deg != null ? det.orientation_deg : "-"));
+    lines.push("method: " + (det.detect_method || "-"));
     lines.push("grip_center_px: " + (det.grip_center_px ? JSON.stringify(det.grip_center_px) : "-"));
     lines.push("bbox_xyxy: " + (det.bbox_xyxy ? JSON.stringify(det.bbox_xyxy) : "-"));
+    if (payload.depth_m != null) lines.push("depth_m: " + Number(payload.depth_m).toFixed(3));
     lines.push("at: " + (det.at || "-"));
     meta.textContent = lines.join("\n");
+  }
+
+  function applyDetectorForm(cfg) {
+    if (!cfg) return;
+    detectorCfg = cfg;
+    var p = cfg.params || {};
+    if ($("detectorMode")) $("detectorMode").value = cfg.mode || "hsv_strict";
+    if ($("detLumTarget")) $("detLumTarget").value = p.D1_COLOR_BOX_COMP_TARGET_V_MED != null ? p.D1_COLOR_BOX_COMP_TARGET_V_MED : 92;
+    if ($("detMinArea")) $("detMinArea").value = Math.round((p.D1_COLOR_BOX_MIN_AREA_FRAC != null ? p.D1_COLOR_BOX_MIN_AREA_FRAC : 0.004) * 1000);
+    if ($("detCompGain")) $("detCompGain").value = Math.round((p.D1_COLOR_BOX_COMP_MAX_GAIN != null ? p.D1_COLOR_BOX_COMP_MAX_GAIN : 2.4) * 10);
+    if ($("detCompBeta")) $("detCompBeta").value = p.D1_COLOR_BOX_COMP_BETA != null ? p.D1_COLOR_BOX_COMP_BETA : 6;
+    syncDetectorRangeLabels();
+    var meta = $("detectorLabMeta");
+    if (meta) {
+      var st = cfg.detector_status || {};
+      meta.textContent = [
+        "mode=" + (cfg.mode || "-") + " | backend=" + (st.pick_detect_backend || "-") + " | color_only=" + (!!st.color_only),
+        "model=" + (st.model_path || "none") + " | exists=" + (!!st.model_exists),
+        "comp_target_v=" + (p.D1_COLOR_BOX_COMP_TARGET_V_MED != null ? p.D1_COLOR_BOX_COMP_TARGET_V_MED : "-") +
+          " | comp_gain=" + (p.D1_COLOR_BOX_COMP_MAX_GAIN != null ? p.D1_COLOR_BOX_COMP_MAX_GAIN : "-") +
+          " | comp_beta=" + (p.D1_COLOR_BOX_COMP_BETA != null ? p.D1_COLOR_BOX_COMP_BETA : "-"),
+      ].join("\n");
+    }
+  }
+
+  function syncDetectorRangeLabels() {
+    if ($("detCropBottom") && $("detCropBottomVal")) $("detCropBottomVal").textContent = String(numVal("detCropBottom", 10)) + "%";
+    if ($("detLumTarget") && $("detLumTargetVal")) $("detLumTargetVal").textContent = String(numVal("detLumTarget", 92));
+    if ($("detCompBeta") && $("detCompBetaVal")) $("detCompBetaVal").textContent = String(numVal("detCompBeta", 6));
+    if ($("detCompGain") && $("detCompGainVal")) $("detCompGainVal").textContent = (numVal("detCompGain", 24) / 10).toFixed(1);
+    if ($("detMinArea") && $("detMinAreaVal")) $("detMinAreaVal").textContent = (numVal("detMinArea", 4) / 1000).toFixed(4);
+  }
+
+  function loadDetectorConfig() {
+    return json("/api/pick/detector/config?_=" + Date.now()).then(function (j) {
+      applyDetectorForm(j);
+      return json("/api/pick/vision/crop?_=" + Date.now()).then(function (crop) {
+        var fr = (crop && crop.crop_fracs) || {};
+        if ($("detCropBottom")) $("detCropBottom").value = fr.bottom != null ? Math.round(Number(fr.bottom) * 100) : 10;
+        syncDetectorRangeLabels();
+        return j;
+      });
+    }).catch(function (e) {
+      var meta = $("detectorLabMeta");
+      if (meta) meta.textContent = "Errore config detector: " + String(e);
+      return { ok: false, reason: String(e) };
+    });
+  }
+
+  function applyDetectorConfig() {
+    var mode = ($("detectorMode") && $("detectorMode").value) || "hsv_strict";
+    var presetByMode = {
+      hsv_strict: { hmin: 95, hmax: 130, smin: 45, vmin: 35, solidity: 0.55 },
+      hsv_robust: { hmin: 90, hmax: 145, smin: 25, vmin: 20, solidity: 0.38 },
+      yolo_classic: { hmin: 90, hmax: 145, smin: 25, vmin: 20, solidity: 0.30 },
+    };
+    var modePreset = presetByMode[mode] || presetByMode.hsv_strict;
+    var params = {
+      D1_COLOR_BOX_H_MIN: modePreset.hmin,
+      D1_COLOR_BOX_H_MAX: modePreset.hmax,
+      D1_COLOR_BOX_S_MIN: modePreset.smin,
+      D1_COLOR_BOX_V_MIN: modePreset.vmin,
+      D1_COLOR_BOX_MIN_AREA_FRAC: numVal("detMinArea", 4) / 1000,
+      D1_COLOR_BOX_MIN_SOLIDITY: modePreset.solidity,
+      D1_COLOR_BOX_COMP_TARGET_V_MED: numVal("detLumTarget", 92),
+      D1_COLOR_BOX_COMP_MAX_GAIN: numVal("detCompGain", 24) / 10,
+      D1_COLOR_BOX_COMP_BETA: numVal("detCompBeta", 6),
+    };
+    var cropBottom = numVal("detCropBottom", 10) / 100;
+    pill("applico detector...", "warn");
+    return post("/api/pick/detector/config", { mode: mode, params: params }).then(function (j) {
+      applyDetectorForm(j);
+      return post("/api/pick/vision/crop", { crop_fracs: { top: 0.0, left: 0.0, right: 0.0, bottom: cropBottom } }).then(function (crop) {
+        log("detector config applicata", { detector: j, crop: crop });
+        pill("detector ok", j && j.ok ? "ok" : "warn");
+        return j;
+      });
+    }).catch(function (e) {
+      pill("detector err", "err");
+      log(String(e), null, "error");
+    });
+  }
+
+  function detectorDetect() {
+    return snapshot().then(function (j) {
+      if (j && j.ok) {
+        var meta = $("detectorLabMeta");
+        if (meta) {
+          var d = j.detection || {};
+          meta.textContent = [
+            "detect_ok=" + (!!j.detection_ok) + " reason=" + (d.reason || "-"),
+            "method=" + (d.detect_method || "-") + " orient=" + (d.orientation_deg != null ? d.orientation_deg : "-"),
+            "bbox=" + (d.bbox_xyxy ? JSON.stringify(d.bbox_xyxy) : "-"),
+          ].join("\n");
+        }
+      }
+      return j;
+    });
+  }
+
+  function detectorDetectDepth() {
+    pill("detect+depth...", "warn");
+    return post("/api/pick/detect/metric", { detect_camera: "wrist", instruction: instruction() }).then(function (j) {
+      log("detect metric", j, j.ok ? "info" : "warn");
+      if (j.metric_viz_url && $("detectMonitorImg")) {
+        $("detectMonitorImg").src = api(j.metric_viz_url + (j.metric_viz_url.indexOf("?") >= 0 ? "&" : "?") + "_=" + Date.now());
+      }
+      renderDetectionMonitor(j, "metric_detect");
+      var meta = $("detectorLabMeta");
+      if (meta) {
+        var d = j.detection || {};
+        meta.textContent = [
+          "metric_ok=" + (!!j.ok) + " detect_ok=" + (!!j.detection_ok) + " reason=" + (j.reason || d.reason || "-"),
+          "depth_m=" + (j.depth_m != null ? Number(j.depth_m).toFixed(3) : "-") + " source=" + (j.depth_source || "-"),
+          "orient=" + (d.orientation_deg != null ? d.orientation_deg : "-") + " bbox=" + (d.bbox_xyxy ? JSON.stringify(d.bbox_xyxy) : "-"),
+        ].join("\n");
+      }
+      pill(j.ok ? "depth ok" : "depth warn", j.ok ? "ok" : "warn");
+      return j;
+    }).catch(function (e) {
+      pill("depth err", "err");
+      log(String(e), null, "error");
+    });
   }
 
   function loadDetectionMonitor() {
@@ -1259,6 +1392,16 @@
     if (btnDetectSnapshot) btnDetectSnapshot.addEventListener("click", function () { return snapshot(); });
     var btnRgbReset = $("btnRgbReset");
     if (btnRgbReset) btnRgbReset.addEventListener("click", resetRgbCamera);
+    ["detCropBottom", "detLumTarget", "detCompBeta", "detCompGain", "detMinArea"].forEach(function (id) {
+      var el = $(id);
+      if (el) el.addEventListener("input", syncDetectorRangeLabels);
+    });
+    var btnDetectorApply = $("btnDetectorApply");
+    if (btnDetectorApply) btnDetectorApply.addEventListener("click", applyDetectorConfig);
+    var btnDetectorDetect = $("btnDetectorDetect");
+    if (btnDetectorDetect) btnDetectorDetect.addEventListener("click", detectorDetect);
+    var btnDetectorDetectDepth = $("btnDetectorDetectDepth");
+    if (btnDetectorDetectDepth) btnDetectorDetectDepth.addEventListener("click", detectorDetectDepth);
     dbgBtn("page", "dom_ready", { buttons: Object.keys(DBG.buttons) });
     resetSvcAck();
     log("Dashboard presa caricata (ACK servizi + Home attivi)");
@@ -1269,6 +1412,8 @@
     loadPresetInfo();
     loadDetectionMonitor();
     loadRgbHealth();
+    syncDetectorRangeLabels();
+    loadDetectorConfig();
     status();
     setInterval(status, 5000);
     setInterval(loadDetectionMonitor, 4000);

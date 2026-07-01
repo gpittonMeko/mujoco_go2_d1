@@ -727,6 +727,13 @@ def _detect_color_box(frame: np.ndarray, profile: dict[str, Any] | None = None) 
     except (TypeError, ValueError):
         s_cal = 0
     if s_cal < 80:
+        rel = _detect_color_box_relaxed(frame, profile=profile)
+        if rel.get("ok"):
+            out = dict(rel)
+            out["relaxed_fallback"] = True
+            out["reason_prev"] = reason
+            out["hint_it"] = "Detection recuperata con soglie colore rilassate (low-light/low-saturation)."
+            return out
         return det
     global _IGNORE_COLOR_CALIB
     _IGNORE_COLOR_CALIB = True
@@ -735,6 +742,13 @@ def _detect_color_box(frame: np.ndarray, profile: dict[str, Any] | None = None) 
     finally:
         _IGNORE_COLOR_CALIB = False
     if not fb.get("ok"):
+        rel = _detect_color_box_relaxed(frame, profile=profile)
+        if rel.get("ok"):
+            out = dict(rel)
+            out["relaxed_fallback"] = True
+            out["reason_prev"] = reason
+            out["hint_it"] = "Detection recuperata con soglie colore rilassate (low-light/low-saturation)."
+            return out
         return det
     out = dict(fb)
     out["calib_fallback"] = True
@@ -744,6 +758,106 @@ def _detect_color_box(frame: np.ndarray, profile: dict[str, Any] | None = None) 
         "Ricalibra dal vivo (Calibra colore) con la scatola inquadrata."
     )
     return out
+
+
+def _detect_color_box_relaxed(frame: np.ndarray, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fallback robusto per luce bassa: soglie HSV piu' permissive + area minima ridotta."""
+    t0 = time.perf_counter()
+    h, w = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    if profile:
+        h_min = int(profile.get("h_min", 95))
+        h_max = int(profile.get("h_max", 130))
+        s_min = int(profile.get("s_min", 45))
+        v_min = int(profile.get("v_min", 35))
+    else:
+        h_min = _color_int("D1_COLOR_BOX_H_MIN", 95)
+        h_max = _color_int("D1_COLOR_BOX_H_MAX", 130)
+        s_min = _color_int("D1_COLOR_BOX_S_MIN", 45)
+        v_min = _color_int("D1_COLOR_BOX_V_MIN", 35)
+
+    h_pad = _parse_int_env("D1_COLOR_BOX_RELAX_H_PAD", 14)
+    s_min_rel = max(15, int(round(s_min * _parse_float_env("D1_COLOR_BOX_RELAX_S_SCALE", 0.55))))
+    v_min_rel = max(12, int(round(v_min * _parse_float_env("D1_COLOR_BOX_RELAX_V_SCALE", 0.50))))
+    lower = np.array([max(0, h_min - h_pad), s_min_rel, v_min_rel], dtype=np.uint8)
+    upper = np.array([min(179, h_max + h_pad), 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+
+    k = max(3, _parse_int_env("D1_COLOR_BOX_RELAX_MORPH_K", 3))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = _apply_detect_roi_crop(mask)
+
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return {
+            "ok": False,
+            "backend": "color_blue_box",
+            "reason": "no_blue_contour_relaxed",
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+
+    min_area = _color_float("D1_COLOR_BOX_RELAX_MIN_AREA_FRAC", 0.0015) * float(w * h)
+    max_area = _color_float("D1_COLOR_BOX_RELAX_MAX_AREA_FRAC", 0.20) * float(w * h)
+    min_solidity = _color_float("D1_COLOR_BOX_RELAX_MIN_SOLIDITY", 0.42)
+
+    best_cnt = None
+    best_score = -1.0
+    best_solidity = 0.0
+    for cnt in cnts:
+        area = float(cv2.contourArea(cnt))
+        if area < min_area or area > max_area:
+            continue
+        hull = cv2.convexHull(cnt)
+        hull_area = float(cv2.contourArea(hull))
+        if hull_area < 1.0:
+            continue
+        solidity = area / hull_area
+        if solidity < min_solidity:
+            continue
+        (cx, cy), (rw, rh), _ = cv2.minAreaRect(cnt)
+        if min(rw, rh) < 6.0:
+            continue
+        sc = _score_color_candidate(
+            area=area,
+            cx=float(cx),
+            cy=float(cy),
+            rw=float(rw),
+            rh=float(rh),
+            frame_hw=(h, w),
+        )
+        if sc > best_score:
+            best_score = sc
+            best_cnt = cnt
+            best_solidity = solidity
+
+    if best_cnt is None:
+        return {
+            "ok": False,
+            "backend": "color_blue_box",
+            "reason": "blue_contour_filtered_relaxed",
+            "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+
+    det = _detection_from_color_contour(
+        frame,
+        best_cnt,
+        score=best_score,
+        elapsed_s=time.perf_counter() - t0,
+        solidity=best_solidity,
+        label=str((profile or {}).get("label") or "blue_box"),
+        backend="color_blue_box",
+    )
+    det["detect_method"] = "hsv_blue_contour_relaxed"
+    det["hsv_relaxed"] = {
+        "h_min": int(lower[0]),
+        "h_max": int(upper[0]),
+        "s_min": int(s_min_rel),
+        "v_min": int(v_min_rel),
+    }
+    return det
 
 
 def calibrate_color_from_frame(

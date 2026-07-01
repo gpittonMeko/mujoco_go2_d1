@@ -36,6 +36,149 @@ _RS_PANEL_CACHE: dict[str, dict[str, Any]] = {
     "front": {"ts": 0.0, "panels": {}},
 }
 _TUNING_CYCLES_PATH = PROJECT_ROOT / "data" / "pick_tuning_cycles.jsonl"
+_DETECTOR_CONFIG_PATH = PROJECT_ROOT / "data" / "d1_pick_detector_config.json"
+
+_DETECTOR_MODEL_PRESETS: dict[str, dict[str, str]] = {
+    "hsv_strict": {
+        "D1_PICK_DETECT_BACKEND": "color",
+        "D1_PICK_COLOR_ONLY": "1",
+        "GO2_CLASSIC_BOX_FALLBACK": "1",
+        "D1_COLOR_BOX_MIN_AREA_FRAC": "0.004",
+        "D1_COLOR_BOX_MIN_SOLIDITY": "0.55",
+        "D1_COLOR_BOX_RELAX_H_PAD": "14",
+        "D1_COLOR_BOX_RELAX_S_SCALE": "0.55",
+        "D1_COLOR_BOX_RELAX_V_SCALE": "0.50",
+    },
+    "hsv_robust": {
+        "D1_PICK_DETECT_BACKEND": "color",
+        "D1_PICK_COLOR_ONLY": "1",
+        "GO2_CLASSIC_BOX_FALLBACK": "1",
+        "D1_COLOR_BOX_MIN_AREA_FRAC": "0.0015",
+        "D1_COLOR_BOX_MIN_SOLIDITY": "0.42",
+        "D1_COLOR_BOX_RELAX_H_PAD": "18",
+        "D1_COLOR_BOX_RELAX_S_SCALE": "0.45",
+        "D1_COLOR_BOX_RELAX_V_SCALE": "0.40",
+    },
+    "yolo_classic": {
+        "D1_PICK_DETECT_BACKEND": "color_then_yolo",
+        "D1_PICK_COLOR_ONLY": "0",
+        "GO2_CLASSIC_BOX_FALLBACK": "1",
+    },
+}
+
+_DETECTOR_PARAM_SPECS: dict[str, dict[str, Any]] = {
+    "D1_COLOR_BOX_H_MIN": {"type": "int", "min": 0, "max": 179, "default": 95},
+    "D1_COLOR_BOX_H_MAX": {"type": "int", "min": 0, "max": 179, "default": 130},
+    "D1_COLOR_BOX_S_MIN": {"type": "int", "min": 0, "max": 255, "default": 45},
+    "D1_COLOR_BOX_V_MIN": {"type": "int", "min": 0, "max": 255, "default": 35},
+    "D1_COLOR_BOX_MIN_AREA_FRAC": {"type": "float", "min": 0.0003, "max": 0.08, "default": 0.004},
+    "D1_COLOR_BOX_MIN_SOLIDITY": {"type": "float", "min": 0.2, "max": 1.0, "default": 0.55},
+    "D1_COLOR_BOX_MAX_BOTTOM_Y_FRAC": {"type": "float", "min": 0.45, "max": 0.98, "default": 0.72},
+    "D1_COLOR_BOX_RELAX_H_PAD": {"type": "int", "min": 0, "max": 40, "default": 14},
+    "D1_COLOR_BOX_RELAX_S_SCALE": {"type": "float", "min": 0.2, "max": 1.2, "default": 0.55},
+    "D1_COLOR_BOX_RELAX_V_SCALE": {"type": "float", "min": 0.2, "max": 1.2, "default": 0.50},
+    "D1_COLOR_BOX_COMP_TARGET_V_MED": {"type": "float", "min": 40.0, "max": 180.0, "default": 92.0},
+    "D1_COLOR_BOX_COMP_MAX_GAIN": {"type": "float", "min": 1.0, "max": 4.0, "default": 2.4},
+    "D1_COLOR_BOX_COMP_BETA": {"type": "int", "min": -40, "max": 80, "default": 6},
+    "D1_COLOR_BOX_COMP_CLAHE_CLIP": {"type": "float", "min": 1.0, "max": 6.0, "default": 2.2},
+    "D1_COLOR_BOX_COMP_CLAHE_TILE": {"type": "int", "min": 4, "max": 32, "default": 8},
+}
+
+
+def _read_detector_config_file() -> dict[str, Any]:
+    try:
+        raw = json.loads(_DETECTOR_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _save_detector_config_file(doc: dict[str, Any]) -> None:
+    _DETECTOR_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _DETECTOR_CONFIG_PATH.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _sanitize_detector_value(name: str, value: Any) -> float | int | None:
+    spec = _DETECTOR_PARAM_SPECS.get(name)
+    if spec is None or value is None:
+        return None
+    try:
+        out: float | int
+        if spec["type"] == "int":
+            out = int(round(float(value)))
+        else:
+            out = float(value)
+    except (TypeError, ValueError):
+        return None
+    out = max(spec["min"], min(spec["max"], out))
+    if spec["type"] == "int":
+        return int(out)
+    return round(float(out), 5)
+
+
+def _detector_model_mode_from_env() -> str:
+    backend = (os.environ.get("D1_PICK_DETECT_BACKEND") or "color").strip().lower()
+    color_only = (os.environ.get("D1_PICK_COLOR_ONLY") or "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not color_only and backend in {"color_then_yolo", "yolo", "ultralytics", "classic", "classic_contour"}:
+        return "yolo_classic"
+    if os.environ.get("D1_COLOR_BOX_MIN_SOLIDITY", "") == "0.42" or os.environ.get("D1_COLOR_BOX_MIN_AREA_FRAC", "") == "0.0015":
+        return "hsv_robust"
+    return "hsv_strict"
+
+
+def _apply_detector_preset(mode: str) -> str:
+    mode_norm = str(mode or "").strip().lower()
+    if mode_norm not in _DETECTOR_MODEL_PRESETS:
+        mode_norm = "hsv_strict"
+    for k, v in _DETECTOR_MODEL_PRESETS[mode_norm].items():
+        os.environ[k] = str(v)
+    return mode_norm
+
+
+def _effective_detector_params() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, spec in _DETECTOR_PARAM_SPECS.items():
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            out[name] = spec["default"]
+            continue
+        parsed = _sanitize_detector_value(name, raw)
+        out[name] = spec["default"] if parsed is None else parsed
+    return out
+
+
+def _detector_config_payload() -> dict[str, Any]:
+    cfg = _read_detector_config_file()
+    return {
+        "ok": True,
+        "path": str(_DETECTOR_CONFIG_PATH),
+        "saved": cfg,
+        "mode": _detector_model_mode_from_env(),
+        "params": _effective_detector_params(),
+        "param_specs": _DETECTOR_PARAM_SPECS,
+    }
+
+
+def _apply_detector_saved_config_once() -> None:
+    cfg = _read_detector_config_file()
+    if not cfg:
+        return
+    try:
+        mode = _apply_detector_preset(cfg.get("mode") or "hsv_strict")
+        params = cfg.get("params") if isinstance(cfg.get("params"), dict) else {}
+        for name in _DETECTOR_PARAM_SPECS:
+            if name in params:
+                parsed = _sanitize_detector_value(name, params.get(name))
+                if parsed is not None:
+                    os.environ[name] = str(parsed)
+        cfg["mode"] = mode
+    except Exception:
+        return
+
+
+_apply_detector_saved_config_once()
 
 
 def _color_stream_source_setting(camera_role: str) -> str:
@@ -1186,6 +1329,90 @@ def pick_vision_crop_preview() -> Response:
             "crop_fracs": pick_vision_crop.vision_crop_fracs(),
         }
     )
+
+
+@bp.route("/api/pick/detector/config", methods=["GET", "POST"])
+def pick_detector_config() -> Response:
+    if request.method == "GET":
+        out = _detector_config_payload()
+        try:
+            import sys
+
+            scripts_dir = str(PROJECT_ROOT / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from box_object_detector import detector_status
+
+            out["detector_status"] = detector_status()
+        except Exception as exc:
+            out["detector_status"] = {"ok": False, "reason": repr(exc)}
+        return jsonify(out)
+
+    body = request.get_json(silent=True) or {}
+    mode = _apply_detector_preset(body.get("mode") or _detector_model_mode_from_env())
+    raw_params = body.get("params") if isinstance(body.get("params"), dict) else body
+    applied: dict[str, Any] = {}
+    for name in _DETECTOR_PARAM_SPECS:
+        if name not in raw_params:
+            continue
+        parsed = _sanitize_detector_value(name, raw_params.get(name))
+        if parsed is None:
+            continue
+        os.environ[name] = str(parsed)
+        applied[name] = parsed
+    saved = {
+        "mode": mode,
+        "params": _effective_detector_params(),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    try:
+        _save_detector_config_file(saved)
+    except OSError as exc:
+        return jsonify({"ok": False, "reason": "detector_config_save_failed", "error": repr(exc)}), 500
+    out = _detector_config_payload()
+    out["applied"] = applied
+    return jsonify(out)
+
+
+@bp.route("/api/pick/detect/metric", methods=["POST"])
+def pick_detect_metric() -> Response:
+    body = request.get_json(silent=True) or {}
+    if _normalize_camera_role(body.get("detect_camera") or "wrist") != "wrist":
+        return jsonify({"ok": False, "reason": "metric_detect_requires_wrist_camera"}), 400
+
+    fb = service.read_servo_deg(fast=True)
+    if not fb.get("ok") or not isinstance(fb.get("servo_deg"), list):
+        return jsonify({"ok": False, "reason": "no_servo_feedback", "feedback": fb}), 503
+    scan_sd = service.clamp_servo_deg([float(x) for x in fb.get("servo_deg", [])[:7]])
+
+    try:
+        from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
+
+        metric = plan_wrist_grasp_metric(
+            scan_sd,
+            instruction=str(body.get("instruction") or "").strip() or None,
+            fast_capture=True,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "reason": "metric_detect_exception", "error": str(exc)}), 502
+
+    det = metric.get("detection") if isinstance(metric.get("detection"), dict) else {}
+    if not det and isinstance(metric.get("object_detection"), dict):
+        det = dict(metric.get("object_detection") or {})
+    out = {
+        "ok": bool(metric.get("ok")),
+        "reason": metric.get("reason"),
+        "detection_ok": bool(det.get("ok")),
+        "detection": det,
+        "depth_m": metric.get("depth_m"),
+        "depth_source": metric.get("depth_source"),
+        "metric_viz_url": metric.get("metric_viz_url"),
+        "validation_ui": metric.get("validation_ui"),
+        "hint_it": metric.get("hint_it"),
+        "metric_plan": metric,
+    }
+    code = 200 if out["ok"] or out["detection_ok"] else 502
+    return jsonify(out), code
 
 @bp.route("/api/pick/snapshot", methods=["POST"])
 def pick_snapshot() -> Response:

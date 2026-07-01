@@ -44,6 +44,14 @@
     .detect-monitor-head strong { font-size: .85rem; }
     .detect-monitor img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid #293748; border-radius: 8px; background: #05080d; }
     .detect-monitor-meta { white-space: pre-wrap; color: #9fb0c3; font-size: .75rem; line-height: 1.35; border: 1px solid #293748; border-radius: 8px; padding: 8px; background: #0a1017; }
+    .detector-lab { margin-top: 10px; border: 1px solid #2b394c; border-radius: 9px; padding: 10px; background: #0c131c; display: grid; gap: 8px; }
+    .detector-lab .row { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .detector-lab .row-4 { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .detector-lab .range-line { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .detector-lab label { display: grid; gap: 4px; color: #93a2b4; font-size: .73rem; }
+    .detector-lab input, .detector-lab select { width: 100%; border: 1px solid #334154; border-radius: 7px; background: #0a1017; color: #e7edf5; padding: 7px 9px; font: inherit; }
+    .detector-lab .actions { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .detector-lab .meta { white-space: pre-wrap; color: #9fb0c3; font-size: .74rem; line-height: 1.35; border: 1px solid #293748; border-radius: 8px; padding: 8px; background: #0a1017; min-height: 66px; }
     .tune-grid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 340px); gap: 12px; }
     .tune-preview { border: 1px solid #2b394c; border-radius: 8px; overflow: hidden; background: #0a1017; }
     .tune-preview img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; }
@@ -145,6 +153,58 @@
           <img id="detectMonitorImg" alt="ultimo frame detection" src="{{ script_root }}/api/pick/scene.jpg" />
           <div id="detectMonitorMeta" class="detect-monitor-meta">Nessuna detection registrata.</div>
         </div>
+        <div class="detector-lab">
+          <strong style="font-size:.84rem;">Detection Lab (switch modello + slider)</strong>
+          <div class="row">
+            <label>Modalita' detector
+              <select id="detectorMode">
+                <option value="hsv_strict">HSV strict</option>
+                <option value="hsv_robust">HSV robust</option>
+                <option value="yolo_classic">YOLO/classic</option>
+              </select>
+            </label>
+            <label>Percentuale sotto esclusa (gambe cane)
+              <div class="range-line">
+                <input id="detCropBottom" type="range" step="1" min="0" max="30" value="10" />
+                <span id="detCropBottomVal">10%</span>
+              </div>
+            </label>
+          </div>
+          <div class="row">
+            <label>Luminosita' target
+              <div class="range-line">
+                <input id="detLumTarget" type="range" step="1" min="50" max="170" value="92" />
+                <span id="detLumTargetVal">92</span>
+              </div>
+            </label>
+            <label>Contrasto (beta)
+              <div class="range-line">
+                <input id="detCompBeta" type="range" step="1" min="-20" max="40" value="6" />
+                <span id="detCompBetaVal">6</span>
+              </div>
+            </label>
+          </div>
+          <div class="row">
+            <label>Sensibilita' detection
+              <div class="range-line">
+                <input id="detMinArea" type="range" step="1" min="1" max="40" value="4" />
+                <span id="detMinAreaVal">0.0040</span>
+              </div>
+            </label>
+            <label>Guadagno max luce
+              <div class="range-line">
+                <input id="detCompGain" type="range" step="1" min="10" max="40" value="24" />
+                <span id="detCompGainVal">2.4</span>
+              </div>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="btnDetectorApply" type="button">Applica slider</button>
+            <button id="btnDetectorDetect" type="button">Detect adesso</button>
+            <button id="btnDetectorDetectDepth" type="button">Detect + depth</button>
+          </div>
+          <div id="detectorLabMeta" class="meta">Config detector non caricata.</div>
+        </div>
       </article>
     </section>
 
@@ -181,7 +241,9 @@
       <p class="muted">Il polso si sposta sulla posa sinistra, riconosce l'oggetto e usa il teach per avvicinarsi. Usa il ciclo automatico solo con area libera.</p>
       <div class="teach-primary" style="margin-top:12px;">
         <button class="warn" id="btnScanLeft90" type="button">1. Scansione sinistra</button>
+        <button class="warn" id="btnScanRight90" type="button">1b. Scansione destra</button>
         <button class="ok" id="btnGraspLeft" type="button">2. Avvicina sinistra</button>
+        <button class="ok" id="btnGraspRight" type="button">2b. Avvicina destra</button>
         <button class="ok" id="btnStartGrasp" type="button">3. Chiudi + rialza</button>
       </div>
       <div class="teach-row" style="margin-top:10px;">
@@ -256,6 +318,7 @@
           <button class="warn" id="btnTeachPosition" type="button">Teaching posizione presa</button>
           <button class="warn" id="btnMarkGraspFailed" type="button">Presa fallita &rarr; teaching</button>
           <button id="btnManualTeachLeft" type="button">Teaching completo sinistra</button>
+          <button id="btnManualTeachRight" type="button">Teaching completo destra</button>
           <button class="ok" id="btnBuildTeachModel" type="button">Ricrea modello teach</button>
         </div>
       </article>
