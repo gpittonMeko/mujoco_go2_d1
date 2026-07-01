@@ -1786,19 +1786,21 @@
         </div>
         <div class="flow-card" style="margin-top:12px;padding:12px 14px;border:1px dashed #475569;background:rgba(15,23,42,0.35);">
           <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
-            <strong style="font-size:13px;color:#cbd5e1;">Calib tag 5 (opzionale)</strong>
-            <button type="button" class="primary-go" onclick="openOpTab('calibration', { user: true });">Tab Calibrazione</button>
+            <strong style="font-size:13px;color:#cbd5e1;">Calibrazione pronta da eseguire</strong>
+            <button type="button" class="primary-go" onclick="openOpTab('calibration', { user: true });">Apri tab Calibrazione</button>
           </div>
-          <p class="small muted" style="margin:8px 0 0;line-height:1.35;">Solo se ti serve allineare AprilTag / viewer 3D. Non è obbligatoria per provare OpenVLA con URL JPEG esplicito.</p>
+          <p class="small muted" style="margin:8px 0 0;line-height:1.4;">
+            La calibrazione operativa completa è ora nel tab <strong>Calibrazione</strong>: lì trovi i passi server, il salvataggio del nominale tag5, la calibrazione condivisa 0+6 e la checklist di verifica viewer/IK.
+          </p>
         </div>
       </div>
       <div id="op-calibration" class="op-panel" role="tabpanel" data-op-panel="calibration">
         <div class="section-head">
           <div>
-            <p class="section-kicker">Calibration</p>
-            <h2>Calib — tag 5 (opzionale)</h2>
+            <p class="section-kicker">Calibration / visual alignment</p>
+            <h2>Calibrazione visiva: tag 5, camera frontale, camera polso, viewer 3D</h2>
           </div>
-          <p class="section-note">Allinea viewer 3D e stime tag→base. Salta se non usi AprilTag o stai solo con OpenVLA + JPEG.</p>
+          <p class="section-note">Questa sezione serve per portare in coerenza braccio, camere e target. Quando finisci qui, la pagina deve rendere chiaro se il target è stimato o validato e se la traiettoria IK è pronta.</p>
         </div>
         {% include "_calibration_panel.html" %}
       </div>
@@ -3265,16 +3267,9 @@
     }
     function initOpTabs() {
       const tabs = document.querySelectorAll('.op-tab');
-      var opPrevTab = null;
       function activate(tabId, opts) {
         opts = opts || {};
         var fromUserClick = !!opts.user;
-        try {
-          if (opPrevTab === 'calibration' && tabId !== 'calibration' && window.operatorsCalibrationOnTabHidden) {
-            window.operatorsCalibrationOnTabHidden();
-          }
-        } catch (errH) {}
-        opPrevTab = tabId;
         tabs.forEach((btn) => {
           const on = btn.dataset.opTab === tabId;
           btn.classList.toggle('is-active', on);
@@ -3290,6 +3285,7 @@
         if (tabId === 'arm3d' && fromUserClick) {
           setTimeout(function () {
             try { visGeomPresetRefreshSelect(); } catch (eP) {}
+            try { calibrationFlowReload(); } catch (eC) {}
             try {
               arm3dPoll(true);
               void arm3dPoll(false);
@@ -3297,9 +3293,8 @@
           }, 0);
         } else if (tabId === 'calibration' && fromUserClick) {
           setTimeout(function () {
-            try {
-              if (window.operatorsCalibrationOnTabShown) window.operatorsCalibrationOnTabShown();
-            } catch (eCal) {}
+            try { calibrationFlowReload(); } catch (eCal) {}
+            try { tag5CalibRefresh(); } catch (eTag) {}
             try { arm3dPoll(false); } catch (e3d) {}
           }, 0);
         } else if (tabId === 'trace' && fromUserClick) {
@@ -3333,9 +3328,8 @@
         }, 0);
       } else if (initial === 'calibration') {
         setTimeout(function () {
-          try {
-            if (window.operatorsCalibrationOnTabShown) window.operatorsCalibrationOnTabShown();
-          } catch (eTg0) {}
+          try { calibrationFlowReload(); } catch (eC0) {}
+          try { tag5CalibRefresh(); } catch (eTg0) {}
           try { arm3dPoll(false); } catch (eA0) {}
         }, 0);
       } else if (initial === 'trace') {
@@ -4805,6 +4799,158 @@
         }
       }
     }
+    async function calibrationFlowReload() {
+      var ol = document.getElementById('calibrationStepsList');
+      var pre = document.getElementById('calibrationFlowJson');
+      var ck = document.getElementById('calibrationShowFullJson');
+      try {
+        var res = await fetch(dashboardApi('/api/arm/calibration_flow?_=' + Date.now()));
+        var j = await res.json();
+        if (ol && j.steps_it && j.steps_it.length) {
+          ol.innerHTML = '';
+          for (var i = 0; i < j.steps_it.length; i++) {
+            var s = j.steps_it[i];
+            var li = document.createElement('li');
+            li.style.marginBottom = '8px';
+            li.innerHTML =
+              '<strong style="color:#e2e8f0">' +
+              (s.n != null ? s.n : i + 1) +
+              '. ' +
+              (s.title || '') +
+              '</strong><br/><span style="color:#94a3b8">' +
+              (s.body || '') +
+              '</span>';
+            ol.appendChild(li);
+          }
+        } else if (ol) {
+          ol.innerHTML = '<li>Guida non disponibile (risposta server inattesa).</li>';
+        }
+        if (pre) {
+          pre.textContent = JSON.stringify(j, null, 2);
+          pre.style.display = ck && ck.checked ? 'block' : 'none';
+        }
+        if (ck && !ck._calibFlowBound) {
+          ck._calibFlowBound = true;
+          ck.addEventListener('change', function () {
+            if (pre) pre.style.display = ck.checked ? 'block' : 'none';
+          });
+        }
+      } catch (e) {
+        if (ol) ol.innerHTML = '<li style="color:#f87171">' + String(e) + '</li>';
+      }
+    }
+    async function tag5CalibRefresh() {
+      var pre = document.getElementById('tag5CalibStatus');
+      try {
+        var res = await fetch(dashboardApi('/api/arm/tag5_calibration?_=' + Date.now()));
+        var j = await res.json();
+        if (pre) pre.textContent = JSON.stringify(j, null, 2);
+        var nom = j.nominal_env_m;
+        if (nom && nom.length >= 3) {
+          var nx = document.getElementById('tag5_nom_x');
+          var ny = document.getElementById('tag5_nom_y');
+          var nz = document.getElementById('tag5_nom_z');
+          if (nx && nx.value === '') nx.value = String(nom[0]);
+          if (ny && ny.value === '') ny.value = String(nom[1]);
+          if (nz && nz.value === '') nz.value = String(nom[2]);
+        }
+      } catch (e) {
+        if (pre) pre.textContent = String(e);
+      }
+    }
+    async function tag5CalibSave() {
+      var pre = document.getElementById('tag5CalibStatus');
+      try {
+        var body = {};
+        var nx = document.getElementById('tag5_nom_x');
+        var ny = document.getElementById('tag5_nom_y');
+        var nz = document.getElementById('tag5_nom_z');
+        var sel = document.getElementById('tag5_calib_camera');
+        var xv = nx && nx.value !== '' && nx.value != null ? parseFloat(nx.value) : NaN;
+        var yv = ny && ny.value !== '' && ny.value != null ? parseFloat(ny.value) : NaN;
+        var zv = nz && nz.value !== '' && nz.value != null ? parseFloat(nz.value) : NaN;
+        if (!isNaN(xv) && !isNaN(yv) && !isNaN(zv)) body.nominal_tag5_arm_base_m = [xv, yv, zv];
+        if (sel && sel.value !== '') body.camera_device = parseInt(sel.value, 10);
+        var res = await fetch(dashboardApi('/api/arm/tag5_calibration'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var j = await res.json();
+        if (pre) pre.textContent = JSON.stringify(j, null, 2);
+        if (j.ok) {
+          try {
+            await arm3dPoll(false);
+          } catch (e3d) {}
+          try {
+            await calibrationFlowReload();
+          } catch (e2) {}
+        }
+      } catch (e) {
+        if (pre) pre.textContent = String(e);
+      }
+    }
+    async function tag5CalibClear() {
+      var pre = document.getElementById('tag5CalibStatus');
+      try {
+        var res = await fetch(dashboardApi('/api/arm/tag5_calibration'), { method: 'DELETE' });
+        var j = await res.json();
+        if (pre) pre.textContent = JSON.stringify(j, null, 2);
+        if (j.ok) {
+          try {
+            await arm3dPoll(false);
+          } catch (e3d2) {}
+          try {
+            await calibrationFlowReload();
+          } catch (e3) {}
+        }
+      } catch (e) {
+        if (pre) pre.textContent = String(e);
+      }
+    }
+    async function sharedDualCalibSave() {
+      var pre = document.getElementById('dualSharedCalibStatus');
+      try {
+        var tidEl = document.getElementById('dual_tag_id');
+        var edgeEl = document.getElementById('dual_tag_edge');
+        var dx = document.getElementById('dual_nom_x');
+        var dy = document.getElementById('dual_nom_y');
+        var dz = document.getElementById('dual_nom_z');
+        var tid = tidEl ? parseInt(tidEl.value, 10) : NaN;
+        var xv = dx && dx.value !== '' ? parseFloat(dx.value) : NaN;
+        var yv = dy && dy.value !== '' ? parseFloat(dy.value) : NaN;
+        var zv = dz && dz.value !== '' ? parseFloat(dz.value) : NaN;
+        if (isNaN(tid) || tid < 0) {
+          if (pre) pre.textContent = 'tag_id non valido';
+          return;
+        }
+        if (isNaN(xv) || isNaN(yv) || isNaN(zv)) {
+          if (pre) pre.textContent = 'Imposta nominale X Y Z (m) del centro tag in arm_link00';
+          return;
+        }
+        var body = { tag_id: tid, nominal_arm_base_m: [xv, yv, zv], logical_devices: [0, 6] };
+        if (edgeEl && edgeEl.value !== '' && !isNaN(parseFloat(edgeEl.value))) {
+          body.tag_edge_length_m = parseFloat(edgeEl.value);
+        }
+        var res = await fetch(dashboardApi('/api/arm/tag_calibration_shared_dual'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var j = await res.json();
+        if (pre) pre.textContent = JSON.stringify(j, null, 2);
+        if (j.ok) {
+          try {
+            await arm3dPoll(false);
+          } catch (e3d) {}
+          try {
+            await calibrationFlowReload();
+          } catch (e2) {}
+        }
+      } catch (e) {
+        if (pre) pre.textContent = String(e);
+      }
+    }
     var ARM3D_LS_SOLO = 'arm3d_solo_focus';
     /** Chiave legacy: solo migrazione preset «pause dashboard» → arm3d_solo_focus. */
     var ARM3D_LS_PAUSE_DASH = 'arm3d_pause_heavy_dashboard';
@@ -6205,9 +6351,5 @@
     setInterval(arm3dTickFastIfVisible, 200);
     setInterval(arm3dTickFullIfVisible, 4000);
   </script>
-  <script>
-    window.__OPERATORS_SCRIPT_ROOT__ = {{ script_root|default('')|tojson }};
-  </script>
-  <script src="{{ script_root|default('') }}/static/js/operators_calibration.js"></script>
 </body>
 </html>

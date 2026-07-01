@@ -5,7 +5,6 @@ Legge ``current_servo_angle`` (PubServoInfo_, 7 float) via unitree_sdk2py — st
 Uso (stesso contratto di ``bin/d1_arm_feedback_helper``):
   python3 scripts/d1_arm_servo_read_python.py <domain> <listen_s>
 
-``listen_s`` = attesa massima; si esce dopo il primo ``servo_angles`` + settle (env ``D1_FEEDBACK_PYTHON_SETTLE_S``, default 0.08 s).
 Stampa righe ``servo_angles`` e a fine ``servo_count=`` / ``feedback_count=`` (feedback_count=0).
 Env: GO2_DDS_INTERFACE (es. eth0), PYTHONPATH con ``unitree_sdk2_python`` se non dalla root repo.
 """
@@ -48,7 +47,6 @@ def _project_root() -> Path:
 def main() -> int:
     domain = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     listen_s = max(1.0, float(sys.argv[2]) if len(sys.argv) > 2 else 3.0)
-    settle_s = max(0.0, min(0.8, float(os.environ.get("D1_FEEDBACK_PYTHON_SETTLE_S", "0.08") or "0.08")))
     root = _project_root()
     usdk = root / "unitree_sdk2_python"
     if usdk.is_dir():
@@ -92,15 +90,12 @@ def main() -> int:
         return 3
 
     latest_line = None
-    first_sample_at: float | None = None
     while time.monotonic() < deadline:
         try:
             msg = sub.Read(timeout=0.35)
         except Exception:
             msg = None
         if msg is None:
-            if first_sample_at is not None and time.monotonic() - first_sample_at >= settle_s:
-                break
             continue
         servo_count += 1
         try:
@@ -118,10 +113,6 @@ def main() -> int:
             continue
         latest_line = "servo_angles " + " ".join(str(v) for v in vals)
         print(latest_line, flush=True)
-        if first_sample_at is None:
-            first_sample_at = time.monotonic()
-        elif settle_s > 0 and time.monotonic() - first_sample_at >= settle_s:
-            break
 
     try:
         sub.Close()

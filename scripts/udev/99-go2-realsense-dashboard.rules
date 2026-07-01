@@ -1,5 +1,4 @@
-# Permessi RealSense D435/D435i (8086:0b3a) e D456 (8086:0b5c) per la dashboard Flask (utente unitree).
+# Permessi RealSense D435/D435i (USB 8086:0b3a) per la dashboard Flask (utente unitree).
 # KERNEL: tutti i nodi video* del device; ATTRS risale ai genitori USB fino al device USB.
 # MODE 0666: lettura senza gruppo "video" (su molte NX i nodi RealSense sono root:video 0660).
 SUBSYSTEM=="video4linux", KERNEL=="video*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
-SUBSYSTEM=="video4linux", KERNEL=="video*", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5c", MODE="0666", GROUP="plugdev", TAG+="uaccess"

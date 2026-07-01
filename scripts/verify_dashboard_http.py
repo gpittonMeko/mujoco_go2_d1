@@ -48,14 +48,8 @@ def main() -> int:
         code, body = _get(home_url, 65536)
         if code != 200:
             errs.append(f"{home_url} status {code}")
-        elif (
-            b"Go2 Diagnostics Dashboard" not in body
-            and b"Dashboard operator" not in body
-            and b"Go2 operator" not in body
-            and b"Operator Console" not in body
-            and b"Operator \xc2\xb7 Go2" not in body  # UTF-8 «Operator · Go2»
-        ):
-            errs.append(f"{home_url} body senza titolo dashboard atteso (monolite o operator lite)")
+        elif b"Go2 Diagnostics Dashboard" not in body and b"Dashboard operator" not in body:
+            errs.append(f"{home_url} body senza titolo dashboard atteso (monolite o operator)")
         else:
             print("OK", home_url, "bytes", len(body))
     except urllib.error.HTTPError as exc:

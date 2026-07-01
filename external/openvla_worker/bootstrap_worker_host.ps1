@@ -1,11 +1,6 @@
 # Avvio worker grasp su Windows — **nessun monolite**; piano da ``scripts/box_grasp_planner`` se repo completo.
-# Opzionale: clone repo OpenVLA ufficiale (solo git) con ``-WithOpenvla``.
 # Esegui da qualunque cwd — path assoluto consigliato:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\...\mujoco_go2_d1\external\openvla_worker\bootstrap_worker_host.ps1"
-param(
-    [switch]$WithOpenvla,
-    [switch]$InstallOpenvlaHF
-)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
@@ -33,29 +28,8 @@ if (-not (Test-Path $venvPy)) {
 Write-Host ">>> pip: aggiorno pip / wheel e tqdm (barra sui pacchetti dopo)"
 & $venvPy -m pip install -q -U pip tqdm wheel
 
-if ($InstallOpenvlaHF) {
-    $env:OPENVLA_INSTALL_HF_DEPS = "1"
-    Write-Host ">>> InstallOpenvlaHF: installerò anche requirements-openvla.txt (transformers, …)" -ForegroundColor Cyan
-}
-
 Write-Host ">>> Installazione requirements (tqdm per riga in setup_windows_worker.py)"
 & $venvPy (Join-Path $Root "setup_windows_worker.py")
-
-$OpenvlaDest = Join-Path $env:USERPROFILE "source\openvla"
-if ($WithOpenvla) {
-    Write-Host ">>> -WithOpenvla: clone / pull https://github.com/openvla/openvla.git (solo codice; pesi e venv CUDA seguono README OpenVLA)" -ForegroundColor Green
-    $parentOv = Split-Path $OpenvlaDest
-    New-Item -ItemType Directory -Force -Path $parentOv | Out-Null
-    if (-not (Test-Path (Join-Path $OpenvlaDest ".git"))) {
-        git clone "https://github.com/openvla/openvla.git" $OpenvlaDest
-    } else {
-        Push-Location $OpenvlaDest
-        git pull
-        Pop-Location
-    }
-    $env:OPENVLA_REPO_ROOT = $OpenvlaDest
-    Write-Host "Impostato OPENVLA_REPO_ROOT=$OpenvlaDest" -ForegroundColor Cyan
-}
 
 if (-not $env:WORKER_BIND_HOST) { $env:WORKER_BIND_HOST = "0.0.0.0" }
 if (-not $env:WORKER_PORT) { $env:WORKER_PORT = "8765" }
@@ -79,12 +53,7 @@ try {
 
 Write-Host ""
 Write-Host "Sulla macchina di deploy imposta (esempio):" -ForegroundColor Yellow
-# Primo IP 192.168.123.x come stringa scalare (evita System.Object[] con Select-Object -First 1 su pipeline mista)
-$lab = @(
-    Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -like '192.168.123.*' } |
-        ForEach-Object { [string]$_.IPAddress }
-) | Select-Object -First 1
+$lab = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -like '192.168.123.*' } | Select-Object -ExpandProperty IPAddress -First 1)
 if ($lab) {
     Write-Host ('  $env:GO2_DEPLOY_ANYGRASP_WORKER_URL="http://{0}:{1}"' -f $lab, $env:WORKER_PORT)
 } else {
@@ -93,6 +62,5 @@ if ($lab) {
 Write-Host "  python scripts/deploy_dashboard_to_nx.py"
 Write-Host ""
 Write-Host "Test locale: curl http://127.0.0.1:$($env:WORKER_PORT)/health" -ForegroundColor DarkGray
-Write-Host "OpenVLA su GPU: `$env:GO2_GRASP_WORKER_BACKEND='openvla'; `$env:OPENVLA_USE_HF='1'; `$env:OPENVLA_DEFAULT_INSTRUCTION='grasp the box'" -ForegroundColor DarkYellow
 Write-Host ">>> Avvio Flask su $($env:WORKER_BIND_HOST):$($env:WORKER_PORT)  (Ctrl+C per uscire)" -ForegroundColor Green
 & $venvPy (Join-Path $Root "app.py")

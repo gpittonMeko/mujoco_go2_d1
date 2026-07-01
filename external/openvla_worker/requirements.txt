@@ -1,9 +1,6 @@
 # Server HTTP + modalità ``planner`` (box_grasp_planner dal repo).
-# OpenVLA HF: vedi ``requirements-openvla.txt`` + variabili ``OPENVLA_USE_HF`` / README.
+# OpenVLA (torch/transformers) non è incluso: vedi README se lo aggiungete in seguito.
 flask>=3.0.0,<4
 gunicorn>=22.0.0,<24
 numpy>=1.23,<3
 opencv-python-headless>=4.8,<5
-pyzmq>=25.0,<27
-msgpack>=1.0,<2
-msgpack-numpy>=0.4,<0.5

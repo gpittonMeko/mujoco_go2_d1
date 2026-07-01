@@ -1,24 +1,17 @@
 #!/bin/bash
-# Supervisore: rilancia la dashboard Flask sulla NX.
-# Default attuale: focus dashboard su :5056. La vecchia operator/lite :5052 resta solo
-# per avvii manuali espliciti con GO2_DASHBOARD_SERVE=lite.
+# Supervisore: rilancia la dashboard Flask sulla NX (default: monolite modular per lab localDogTest).
+# L'avvio ufficiale su NX passa da qui (nx_start_dashboard.sh / boot wrapper), non più solo nohup diretto.
 set +e
-cd "$(dirname "$0")/.." || exit 1
+cd /home/unitree/go2_visual_dashboard || exit 1
 # shellcheck disable=SC1091
 source "$PWD/scripts/nx_dashboard_env.sh"
 # Traceback su abort/segfault utile in dashboard_run.log
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 RESTART_SEC="${GO2_DASHBOARD_RESTART_DELAY_S:-15}"
 echo "$(date -Is) nx_dashboard_supervise pid=$$ restart_delay_s=${RESTART_SEC}"
-SERVE="${GO2_DASHBOARD_SERVE:-focus}"
+SERVE="${GO2_DASHBOARD_SERVE:-modular}"
 if [ "$SERVE" = "lite" ] || [ "$SERVE" = "operator" ]; then
   SERVE_SCRIPT="scripts/serve_dashboard_lite.py"
-elif [ "$SERVE" = "focus" ]; then
-  export GO2_FOCUS_PORT="${GO2_FOCUS_PORT:-5056}"
-  export GO2_DASHBOARD_PORT="$GO2_FOCUS_PORT"
-  export HERMES_OPERATOR_URL="http://127.0.0.1:${GO2_FOCUS_PORT}"
-  export GO2_HERMES_INTEGRATED=1
-  SERVE_SCRIPT="scripts/serve_focus_dashboard.py"
 else
   SERVE_SCRIPT="scripts/serve_dashboard_modular.py"
 fi

@@ -31,7 +31,7 @@ class CameraUsbMappingTests(unittest.TestCase):
         ]
         with patch("go2_dashboard.cameras.platform.system", return_value="Linux"), patch(
             "go2_dashboard.cameras._enumerate_v4l_usb_bindings", return_value=rows
-        ), patch("go2_dashboard.cameras._probe_orbbec_rgb_v4l", return_value=10) as probe0, patch(
+        ), patch("go2_dashboard.cameras._probe_generic_rgb_v4l", return_value=10) as probe0, patch(
             "go2_dashboard.cameras._probe_realsense_rgb_v4l", return_value=6
         ):
             mapping = cameras.usb_auto_v4l_mapping()
@@ -63,10 +63,8 @@ class CameraUsbMappingTests(unittest.TestCase):
         with patch.dict("os.environ", {"GO2_ARM_CAMERA_V4L_DEFAULT": "10"}, clear=False), patch(
             "go2_dashboard.cameras.platform.system", return_value="Linux"
         ), patch("go2_dashboard.cameras._enumerate_v4l_usb_bindings", return_value=rows), patch(
-            "go2_dashboard.cameras._probe_orbbec_rgb_v4l", return_value=None
-        ), patch("go2_dashboard.cameras._v4l_sysfs_card_name", return_value=""), patch(
-            "go2_dashboard.cameras._probe_realsense_rgb_v4l", return_value=None
-        ):
+            "go2_dashboard.cameras._probe_generic_rgb_v4l", return_value=None
+        ), patch("go2_dashboard.cameras._probe_realsense_rgb_v4l", return_value=None):
             mapping = cameras.usb_auto_v4l_mapping()
         self.assertEqual(mapping[0], 10)
 
@@ -77,32 +75,11 @@ class CameraUsbMappingTests(unittest.TestCase):
         ]
         with patch("go2_dashboard.cameras.platform.system", return_value="Linux"), patch(
             "go2_dashboard.cameras._enumerate_v4l_usb_bindings", return_value=rows
-        ), patch("go2_dashboard.cameras._probe_orbbec_rgb_v4l", return_value=None), patch(
+        ), patch("go2_dashboard.cameras._probe_generic_rgb_v4l", return_value=None), patch(
             "go2_dashboard.cameras._probe_realsense_rgb_v4l", return_value=None
         ):
             mapping = cameras.usb_auto_v4l_mapping()
         self.assertEqual(mapping[0], 10)
-
-    def test_orbbec_fallback_prefers_rgb_sysfs_over_depth_node(self) -> None:
-        rows = [
-            (0, "2bc5", "080b"),
-            (8, "2bc5", "080b"),
-        ]
-
-        def fake_name(idx: int) -> str:
-            if int(idx) == 0:
-                return "Orbbec Gemini Depth"
-            if int(idx) == 8:
-                return "Orbbec Gemini RGB Camera"
-            return ""
-
-        with patch("go2_dashboard.cameras.platform.system", return_value="Linux"), patch(
-            "go2_dashboard.cameras._enumerate_v4l_usb_bindings", return_value=rows
-        ), patch("go2_dashboard.cameras._probe_orbbec_rgb_v4l", return_value=None), patch(
-            "go2_dashboard.cameras._probe_realsense_rgb_v4l", return_value=None
-        ), patch("go2_dashboard.cameras._v4l_sysfs_card_name", side_effect=fake_name):
-            mapping = cameras.usb_auto_v4l_mapping()
-        self.assertEqual(mapping[0], 8)
 
 
 if __name__ == "__main__":

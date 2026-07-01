@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Dashboard operator legacy (lite): porta default 5052.
-
-Non è più la dashboard di boot. La dashboard principale del robot è
-``serve_focus_dashboard.py`` su :5056.
-"""
+"""Dashboard operator (lite): porta default 5052 — **processo autonomo** (niente ``diagnostics_dashboard``)."""
 
 from __future__ import annotations
 
