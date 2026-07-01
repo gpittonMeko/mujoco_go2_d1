@@ -62,6 +62,37 @@
   window.__operatorsHermesRec = null;
   window.__operatorsHermesPending = null;
   window.__operatorsHermesLastUserCommand = "";
+  window.__operatorsHermesOffline = false;
+
+  function operatorsHermesApplyOfflineUi(j) {
+    window.__operatorsHermesOffline = !!(j && j.GO2_HERMES_OFFLINE);
+    var ttsChk = document.getElementById("hermesTtsOpenAi");
+    var ttsRow = ttsChk && ttsChk.closest ? ttsChk.closest("label") : null;
+    if (ttsChk) {
+      if (window.__operatorsHermesOffline) {
+        ttsChk.checked = false;
+        ttsChk.disabled = true;
+      } else {
+        ttsChk.disabled = false;
+      }
+    }
+    if (ttsRow && window.__operatorsHermesOffline) {
+      ttsRow.title = "Cloud TTS disabilitato in modalità offline (Piper locale)";
+    }
+    var attachEl = document.getElementById("hermesAttachCamera");
+    if (attachEl) {
+      if (window.__operatorsHermesOffline) {
+        attachEl.checked = false;
+        attachEl.disabled = true;
+      } else {
+        attachEl.disabled = false;
+      }
+    }
+    var voiceEl = document.getElementById("hermesOpenAiVoiceSelect");
+    if (voiceEl) {
+      voiceEl.disabled = !!window.__operatorsHermesOffline;
+    }
+  }
 
   window.operatorsHermesClearChat = function () {
     var log = document.getElementById("hermesChatLog");
@@ -389,11 +420,17 @@
       })
       .then(function (o) {
         var j = o.j || {};
+        operatorsHermesApplyOfflineUi(j);
         var parts = [];
-        if (j.GO2_ENABLE_HERMES_AGENT && j.has_openai_api_key) {
-          parts.push("Hermes LLM");
+        if (j.GO2_ENABLE_HERMES_AGENT && (j.hermes_llm_ready || j.has_openai_api_key)) {
+          parts.push(j.GO2_HERMES_OFFLINE ? "Hermes offline" : "Hermes LLM");
         } else {
           parts.push("Hermes off");
+        }
+        if (j.GO2_HERMES_OFFLINE && j.tts_local && j.tts_local.piper_ready) {
+          parts.push("Piper");
+        } else if (j.GO2_HERMES_OFFLINE && j.tts_local_supported) {
+          parts.push("Piper?");
         }
         if (j.go2_local) {
           parts.push("NX+DDS");
@@ -515,7 +552,9 @@
     window.__operatorsHermesLastUserCommand = text;
     var caps = operatorsHermesBuildCapabilities();
     var dry = !!(dryEl && dryEl.checked);
-    var ttsOi = !!(document.getElementById("hermesTtsOpenAi") && document.getElementById("hermesTtsOpenAi").checked);
+    var ttsOi =
+      !window.__operatorsHermesOffline &&
+      !!(document.getElementById("hermesTtsOpenAi") && document.getElementById("hermesTtsOpenAi").checked);
     hermesAppendLine("you", text);
     if (pre) {
       pre.textContent = "POST /api/hermes/command…";
@@ -552,7 +591,7 @@
       body.tts_openai = true;
     }
     var attachEl = document.getElementById("hermesAttachCamera");
-    if (attachEl && attachEl.checked) {
+    if (attachEl && attachEl.checked && !window.__operatorsHermesOffline) {
       body.attach_camera = true;
     }
 

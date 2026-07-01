@@ -1,4 +1,4 @@
-﻿"""Client DDS braccio D1 ÔÇö protocollo ufficiale (funcode da d1_sdk / doc Unitree)."""
+"""Client DDS braccio D1 ÔÇö protocollo ufficiale (funcode da d1_sdk / doc Unitree)."""
 
 from __future__ import annotations
 
@@ -494,6 +494,23 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
     feedback giunti ├¿ gi├á valido; non reinviare funcode 5 se gi├á in coppia.
     """
     global _arm_coupled
+    force_before_motion = os.environ.get("GO2_ENFORCE_FUNCODE5_BEFORE_MOTION", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    power_before_motion = os.environ.get("GO2_ENFORCE_POWER_BEFORE_MOTION", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if force_before_motion:
+        out = ensure_coupled(with_power=power_before_motion, force=True)
+        out["action"] = "ensure_coupled_for_motion"
+        out["forced_couple"] = True
+        return out
     if _arm_coupled:
         return {
             "ok": True,
@@ -540,7 +557,7 @@ def _prepare_for_admin_release() -> dict[str, Any]:
     try:
         from go2_dashboard import d1_arm_motion
 
-        prep["live_session_end"] = d1_arm_motion.end_live_session()
+        prep["live_session_end"] = d1_arm_motion.end_live_session(skip_hold=True)
     except Exception as exc:
         prep["live_session_end"] = {"ok": False, "detail": repr(exc)}
     try:
@@ -548,7 +565,7 @@ def _prepare_for_admin_release() -> dict[str, Any]:
     except Exception:
         pass
     try:
-        prep["joint_end"] = joint_control_end()
+        prep["joint_end"] = joint_control_end(skip_hold=True)
     except Exception as exc:
         prep["joint_end"] = {"ok": False, "detail": repr(exc)}
     motion_force_idle()
@@ -558,7 +575,7 @@ def _prepare_for_admin_release() -> dict[str, Any]:
 
 
 def motor_release() -> dict[str, Any]:
-    """funcode 5 mode 0 ÔÇö SOLO su richiesta esplicita utente (mai automatico)."""
+    """funcode 5 mode 0 — SOLO su richiesta esplicita utente (mai automatico)."""
     prep = _prepare_for_admin_release()
     ok, busy = motion_try_acquire("admin")
     if not ok:
@@ -583,17 +600,42 @@ def motor_release() -> dict[str, Any]:
         }
     try:
         _halt_cartesian_stream(wait_idle=True)
+        global _couple_last_ts, _arm_coupled
+        try:
+            release_repeats = max(3, int(os.environ.get("D1_MOTOR_RELEASE_REPEATS", "8")))
+        except ValueError:
+            release_repeats = 8
+
+        from go2_dashboard.d1_jog import motion_profile
+
+        stream_releases: list[dict[str, Any]] = []
+        # Mode 0 sul daemon PRIMA di killarlo: se chiudi prima il publisher resta l'hold funcode 2.
+        if ensure_command_daemon(motion_profile.daemon_delay_ms()):
+            delay_ms = max(40, motion_profile.stream_delay_ms())
+            for i in range(release_repeats):
+                seq = int(time.time()) % 100000 + i
+                msg = {"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 0}}
+                pub = publish_messages_stream([msg], delay_ms=delay_ms)
+                stream_releases.append(pub)
+                if not (pub.get("ok") or pub.get("skipped")):
+                    break
+                time.sleep(0.05)
+
         stop_command_daemon()
         motion_force_idle()
-        global _couple_last_ts, _arm_coupled
         _couple_last_ts = 0.0
         _arm_coupled = False
-        seq = int(time.time()) % 100000
-        msg = {"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 0}}
-        out = _publish_messages([msg], delay_ms=80)
+        seq0 = int(time.time()) % 100000
+        burst = [
+            {"seq": seq0 + i, "address": 1, "funcode": 5, "data": {"mode": 0}}
+            for i in range(min(3, release_repeats))
+        ]
+        out = _publish_messages(burst, delay_ms=80)
         out["action"] = "motor_release"
         out["stream_halted"] = True
         out["explicit_only"] = True
+        out["prepare"] = prep
+        out["stream_release"] = stream_releases
         return out
     finally:
         motion_release("admin")
@@ -785,14 +827,15 @@ def joint_control_begin(*, servo_deg: list[float] | None = None) -> dict[str, An
     return {"ok": True, "plane": "joint", "action": "joint_begin", "coupling": couple}
 
 
-def joint_control_end() -> dict[str, Any]:
+def joint_control_end(*, skip_hold: bool = False) -> dict[str, Any]:
     motion_release("joint")
     motion_release_plane("joint")
-    sd = get_servo_cache()
-    hold: dict[str, Any] = {"ok": True, "skipped": True}
-    if sd is not None and _arm_coupled:
-        hold = _stream_pose_hold(sd, repeats=1)
-    return {"ok": True, "action": "joint_end", "hold": hold}
+    hold: dict[str, Any] = {"ok": True, "skipped": True, "reason": "skip_hold"}
+    if not skip_hold:
+        sd = get_servo_cache()
+        if sd is not None and _arm_coupled:
+            hold = _stream_pose_hold(sd, repeats=1)
+    return {"ok": True, "action": "joint_end", "hold": hold, "skip_hold": bool(skip_hold)}
 
 
 def cartesian_begin_jog(**kwargs: Any) -> dict[str, Any]:
@@ -880,6 +923,27 @@ def cartesian_end_jog(*, hold_after: bool = False) -> dict[str, Any]:
     motion_release_plane("cartesian")
     out["action"] = "cartesian_jog_stop"
     return out
+
+
+def move_servo_deg_jog_trajectory(
+    target_servo_deg: list[float],
+    *,
+    max_step_deg: float | list[float] | None = None,
+    keep_lock: bool = False,
+) -> dict[str, Any]:
+    """Interpola verso ``target_servo_deg`` via daemon DDS (backend SDK grasp)."""
+    from go2_dashboard.d1_jog import program_runner
+
+    step: float | None = None
+    if isinstance(max_step_deg, (list, tuple)) and max_step_deg:
+        step = float(min(float(x) for x in max_step_deg))
+    elif max_step_deg is not None:
+        step = float(max_step_deg)
+    return program_runner.move_to_servo_deg_smooth(
+        target_servo_deg,
+        keep_lock=keep_lock,
+        max_step_deg=step,
+    )
 
 
 def jog_with_enable(servo_deg: list[float]) -> dict[str, Any]:

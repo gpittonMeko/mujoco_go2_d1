@@ -4,13 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hermes</title>
-  <link rel="stylesheet" href="/static/hermes.css" />
+  <link rel="stylesheet" href="{{ script_root|default('') }}/static/hermes/hermes.css" />
+  {% if embed_in_operators|default(false) %}
+  <style>
+    body { margin: 0; min-height: 100vh; background: #0c0e12; }
+    .hermes-app { min-height: 100vh; border-radius: 0; }
+  </style>
+  {% endif %}
 </head>
 <body>
   <div class="hermes-app">
     <header class="hermes-top">
       <h1>Hermes</h1>
-      <span class="hermes-port">:{{ port }}</span>
+      <span class="hermes-port">:{{ port }}{% if embed_in_operators|default(false) %} · integrato 5052{% endif %}</span>
       <span id="hermesStatus" class="hermes-status">…</span>
     </header>
     <div id="chatLog" class="hermes-log">
@@ -21,6 +27,9 @@
       <button type="submit">Invia</button>
     </form>
   </div>
-  <script src="/static/hermes.js" defer></script>
+  <script>
+    window.__HERMES_SCRIPT_ROOT__ = {{ script_root|default('')|tojson }};
+  </script>
+  <script src="{{ script_root|default('') }}/static/hermes/hermes.js" defer></script>
 </body>
 </html>

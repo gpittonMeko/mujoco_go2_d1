@@ -17,14 +17,59 @@ except Exception:  # pragma: no cover
 from go2_dashboard import orbbec_lock
 
 CAMERA_DEVICES: dict[int, str] = {
-    0: "Wrist RGB (Orbbec Gemini / Sonix UVC — auto-map USB)",
-    6: "Intel RealSense D435i RGB stream",
+    0: "Wrist Intel RealSense D456 RGB stream",
+    6: "Front Intel RealSense D435i RGB stream",
 }
 
 _USB_IDS_LOGICAL_0_ORBBEC = {("2bc5", "080b")}
 _USB_IDS_LOGICAL_0_SONIX = {("0735", "0269")}
 _USB_IDS_LOGICAL_0 = _USB_IDS_LOGICAL_0_ORBBEC | _USB_IDS_LOGICAL_0_SONIX
-_USB_IDS_REALSENSE = {("8086", "0b3a")}
+_USB_IDS_REALSENSE_D435 = {("8086", "0b3a")}
+_USB_IDS_REALSENSE_D456 = {("8086", "0b5c")}
+_USB_IDS_REALSENSE = _USB_IDS_REALSENSE_D435 | _USB_IDS_REALSENSE_D456
+
+
+def wrist_depth_backend() -> str:
+    """Backend depth metrica polso: ``realsense`` (D456, default deploy) o ``orbbec`` (lab legacy)."""
+    b = (os.environ.get("GO2_WRIST_DEPTH_BACKEND") or "realsense").strip().lower()
+    if b in ("orbbec", "pyorbbec", "ob", "pyorbbecsdk"):
+        return "orbbec"
+    return "realsense"
+
+
+def mjpeg_stream_period_s() -> float:
+    """Compat helper for older operator routes: current MJPEG frame period."""
+    raw = (
+        os.environ.get("GO2_MJPEG_FRAME_PERIOD_S")
+        or os.environ.get("GO2_CAMERA_STREAM_PERIOD_S")
+        or ""
+    ).strip()
+    if raw:
+        try:
+            return max(0.02, float(raw))
+        except ValueError:
+            pass
+    fps_raw = (os.environ.get("GO2_CAMERA_CACHE_FPS") or "10").strip()
+    try:
+        fps = max(1.0, float(fps_raw))
+    except ValueError:
+        fps = 10.0
+    return 1.0 / fps
+
+
+def _norm_usb_pid(raw: str) -> tuple[str, str]:
+    p = raw.strip().lower().replace("0x", "")
+    return ("8086", p)
+
+
+def _wrist_realsense_usb_ids() -> set[tuple[str, str]]:
+    raw = (os.environ.get("GO2_WRIST_REALSENSE_USB_PID") or "0b5c").strip()
+    return {_norm_usb_pid(raw)}
+
+
+def _front_realsense_usb_ids() -> set[tuple[str, str]]:
+    raw = (os.environ.get("GO2_FRONT_REALSENSE_USB_PID") or "0b3a").strip()
+    return {_norm_usb_pid(raw)}
 
 # Cache: logico dashboard → indice /dev/videoN (solo Linux, sysfs USB).
 _usb_auto_v4l_cache: dict[int, int] | None = None
@@ -563,74 +608,108 @@ def usb_auto_v4l_mapping() -> dict[int, int]:
             return {}
         rows = _enumerate_v4l_usb_bindings()
         m: dict[int, int] = {}
-        logical0_idx = sorted(
-            {
-                idx
-                for idx, vid, pid in rows
-                if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
-                or (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
-            }
+        if wrist_depth_backend() != "realsense":
+            logical0_idx = sorted(
+                {
+                    idx
+                    for idx, vid, pid in rows
+                    if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
+                    or (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
+                }
+            )
+            if logical0_idx:
+                try:
+                    pref0 = int(os.environ.get("GO2_ARM_CAMERA_V4L_DEFAULT", "0").strip())
+                except ValueError:
+                    pref0 = 0
+                logical0_orbbec = [
+                    idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
+                ]
+                logical0_sonix = [
+                    idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
+                ]
+                if logical0_orbbec:
+                    logical0_candidates = sorted({int(idx) for idx in logical0_orbbec})
+                    probed0 = _probe_orbbec_rgb_v4l(
+                        logical0_candidates,
+                        default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
+                        fallback_default=pref0,
+                    )
+                    if probed0 is not None:
+                        m[0] = int(probed0)
+                    else:
+                        fb = int(_orbbec_rgb_fallback_v4l_index(logical0_candidates, pref0))
+                        m[0] = fb
+                        _ORBBEC_LOGICAL0_DEBUG = {
+                            "ok": False,
+                            "method": "sysfs_fallback_after_failed_probe",
+                            "v4l_index": fb,
+                            "pref": pref0,
+                            "hint_it": (
+                                "Nessun frame ha superato il probe RGB Orbbec: "
+                                "prova export GO2_VIDEO_INDEX_0=N sul nodo RGB da v4l2-ctl, "
+                                "oppure aumenta GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED."
+                            ),
+                        }
+                else:
+                    logical0_candidates = sorted({int(idx) for idx in logical0_sonix})
+                    probed0 = _probe_generic_rgb_v4l(
+                        logical0_candidates,
+                        default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
+                        fallback_default=pref0,
+                    )
+                    if probed0 is not None:
+                        m[0] = int(probed0)
+                    else:
+                        m[0] = int(min(logical0_candidates, key=lambda x: abs(int(x) - pref0)))
+        wrist_rs_idx = sorted(
+            {idx for idx, vid, pid in rows if (vid, pid) in _wrist_realsense_usb_ids()}
         )
-        if logical0_idx:
-            try:
-                pref0 = int(os.environ.get("GO2_ARM_CAMERA_V4L_DEFAULT", "0").strip())
-            except ValueError:
-                pref0 = 0
-            logical0_orbbec = [
-                idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_ORBBEC
-            ]
-            logical0_sonix = [
-                idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_LOGICAL_0_SONIX
-            ]
-            if logical0_orbbec:
-                logical0_candidates = sorted({int(idx) for idx in logical0_orbbec})
-                probed0 = _probe_orbbec_rgb_v4l(
-                    logical0_candidates,
-                    default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
-                    fallback_default=pref0,
-                )
-                if probed0 is not None:
-                    m[0] = int(probed0)
-                else:
-                    fb = int(_orbbec_rgb_fallback_v4l_index(logical0_candidates, pref0))
-                    m[0] = fb
-                    _ORBBEC_LOGICAL0_DEBUG = {
-                        "ok": False,
-                        "method": "sysfs_fallback_after_failed_probe",
-                        "v4l_index": fb,
-                        "pref": pref0,
-                        "hint_it": (
-                            "Nessun frame ha superato il probe RGB Orbbec: "
-                            "prova export GO2_VIDEO_INDEX_0=N sul nodo RGB da v4l2-ctl, "
-                            "oppure aumenta GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED."
-                        ),
-                    }
+        front_rs_idx = sorted(
+            {idx for idx, vid, pid in rows if (vid, pid) in _front_realsense_usb_ids()}
+        )
+        if wrist_depth_backend() == "realsense" and wrist_rs_idx:
+            probed_w = _probe_realsense_rgb_v4l(wrist_rs_idx)
+            if probed_w is not None:
+                m[0] = int(probed_w)
             else:
-                logical0_candidates = sorted({int(idx) for idx in logical0_sonix})
-                probed0 = _probe_generic_rgb_v4l(
-                    logical0_candidates,
-                    default_env="GO2_ARM_CAMERA_V4L_DEFAULT",
-                    fallback_default=pref0,
-                )
-                if probed0 is not None:
-                    m[0] = int(probed0)
+                try:
+                    pref_w = int(os.environ.get("GO2_WRIST_REALSENSE_V4L_DEFAULT", "0").strip())
+                except ValueError:
+                    pref_w = 0
+                if pref_w in wrist_rs_idx:
+                    m[0] = int(pref_w)
                 else:
-                    m[0] = int(min(logical0_candidates, key=lambda x: abs(int(x) - pref0)))
-        rs_idx = sorted({idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_REALSENSE})
-        if rs_idx:
-            probed = _probe_realsense_rgb_v4l(rs_idx)
-            if probed is not None:
-                m[6] = int(probed)
+                    m[0] = int(min(wrist_rs_idx, key=lambda x: abs(x - pref_w)))
+        if front_rs_idx:
+            probed_f = _probe_realsense_rgb_v4l(front_rs_idx)
+            if probed_f is not None:
+                m[6] = int(probed_f)
             else:
                 pref_s = os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "6").strip()
                 try:
                     pref = int(pref_s)
                 except ValueError:
                     pref = 6
-                if pref in rs_idx:
+                if pref in front_rs_idx:
                     m[6] = int(pref)
                 else:
-                    m[6] = int(min(rs_idx, key=lambda x: abs(x - pref)))
+                    m[6] = int(min(front_rs_idx, key=lambda x: abs(x - pref)))
+        elif wrist_depth_backend() == "orbbec":
+            rs_idx = sorted({idx for idx, vid, pid in rows if (vid, pid) in _USB_IDS_REALSENSE})
+            if rs_idx:
+                probed = _probe_realsense_rgb_v4l(rs_idx)
+                if probed is not None:
+                    m[6] = int(probed)
+                else:
+                    try:
+                        pref = int(os.environ.get("GO2_REALSENSE_V4L_DEFAULT", "6").strip())
+                    except ValueError:
+                        pref = 6
+                    if pref in rs_idx:
+                        m[6] = int(pref)
+                    else:
+                        m[6] = int(min(rs_idx, key=lambda x: abs(x - pref)))
         _usb_auto_v4l_cache = dict(m)
         return dict(_usb_auto_v4l_cache)
 
@@ -734,6 +813,8 @@ def _v4l_is_orbbec(v4l_index: int) -> bool:
 
 def _logical_uses_orbbec(logical: int) -> bool:
     """Vero se lo slot logico aprirebbe un device Orbbec (almeno un candidato V4L è Orbbec)."""
+    if int(logical) != 0 or wrist_depth_backend() != "orbbec":
+        return False
     try:
         for idx in v4l_open_candidates_for_logical(int(logical)):
             if _v4l_is_orbbec(int(idx)):
@@ -809,7 +890,7 @@ def debug_v4l_snapshot_jpeg(v4l_index: int, *, jpeg_quality: int = 72) -> bytes 
         usb = _usb_vid_pid_for_video_index(int(v4l_index))
         if usb == ("2bc5", "080b"):
             _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
-        elif usb == ("8086", "0b3a"):
+        elif usb in _USB_IDS_REALSENSE:
             _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
         try:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -846,14 +927,16 @@ def v4l_index_in_usb_inventory(v4l_index: int) -> bool:
 
 def _expected_usb_ids_for_logical(logical: int) -> set[tuple[str, str]]:
     if int(logical) == 0:
+        if wrist_depth_backend() == "realsense":
+            return set(_wrist_realsense_usb_ids())
         return set(_USB_IDS_LOGICAL_0)
     if int(logical) == 6:
-        return set(_USB_IDS_REALSENSE)
+        return set(_front_realsense_usb_ids())
     return set()
 
 
 def v4l_candidates_for_logical_slot(logical: int) -> list[int]:
-    """Tutti i ``/dev/videoN`` USB compatibili con lo slot dashboard (0 = Orbbec/Sonix, 6 = RealSense)."""
+    """Tutti i ``/dev/videoN`` USB compatibili con lo slot dashboard (0 = polso, 6 = frontale)."""
     want = _expected_usb_ids_for_logical(int(logical))
     if not want:
         return []
@@ -930,6 +1013,18 @@ class CameraCache:
         self._stop = threading.Event()
         self._started_devices: set[int] = set()
         self._lock = threading.Lock()
+        self._pause_until: dict[int, float] = {}
+
+    def request_pause(self, device: int, duration_s: float = 0.5) -> None:
+        """Rilascia temporaneamente il V4L su ``device`` (capture pyrealsense2 on-demand)."""
+        until = time.time() + max(0.05, float(duration_s))
+        with self._lock:
+            self._pause_until[int(device)] = max(self._pause_until.get(int(device), 0.0), until)
+
+    def _is_paused(self, device: int) -> bool:
+        with self._lock:
+            until = self._pause_until.get(int(device), 0.0)
+        return time.time() < until
 
     def start(self, device: int | None = None) -> None:
         if cv2 is None:
@@ -946,6 +1041,46 @@ class CameraCache:
         last_opened_v4l: int | None = None
         orb_lease: orbbec_lock.OrbbecLease | None = None
         is_orbbec_logical = _logical_uses_orbbec(device)
+        bad_rgb_streak = 0
+        last_recover_ts = 0.0
+
+        def _recover_realsense_rgb_mapping() -> bool:
+            nonlocal last_recover_ts
+            if int(device) != 0 or wrist_depth_backend() != "realsense":
+                return False
+            now = time.time()
+            try:
+                cooldown_s = float(os.environ.get("GO2_RGB_RECOVER_COOLDOWN_S", "3.0"))
+            except ValueError:
+                cooldown_s = 3.0
+            if now - last_recover_ts < max(0.6, cooldown_s):
+                return False
+            cand = v4l_candidates_for_logical_slot(0)
+            if len(cand) < 2:
+                return False
+            cur = int(last_opened_v4l) if last_opened_v4l is not None else _v4l_index_for_logical_camera(0)
+            if cur not in cand:
+                return False
+            nxt = cand[(cand.index(cur) + 1) % len(cand)]
+            if nxt == cur:
+                return False
+            env_key = "GO2_VIDEO_INDEX_0"
+            if env_key in os.environ:
+                with self._lock:
+                    self.errors[device] = (
+                        f"log.0 non RGB ma {env_key} e fisso su {os.environ.get(env_key)}; "
+                        "rimuovi env per permettere auto-recovery runtime"
+                    )
+                return False
+            with _runtime_v4l_lock:
+                _runtime_v4l_by_logical[0] = int(nxt)
+            last_recover_ts = now
+            with self._lock:
+                self.errors[device] = (
+                    f"auto-recovery RGB log.0: switch /dev/video{cur} -> /dev/video{nxt} "
+                    "(frame mono/IR persistenti)"
+                )
+            return True
 
         def _release_all() -> None:
             nonlocal cap, last_opened_v4l, orb_lease
@@ -962,6 +1097,12 @@ class CameraCache:
 
         while not self._stop.is_set():
             start = time.perf_counter()
+            if self._is_paused(device):
+                _release_all()
+                with self._lock:
+                    self.errors[device] = "stream in pausa (capture depth on-demand)"
+                time.sleep(0.15)
+                continue
             # Prelazione cooperativa: se un altro consumatore (presa SDK / altro processo)
             # ha chiesto l'Orbbec, cediamo subito la camera e attendiamo che finisca.
             if is_orbbec_logical and cap is not None and orbbec_lock.preempt_requested():
@@ -971,7 +1112,8 @@ class CameraCache:
                 time.sleep(0.4)
                 continue
             target_v4l = _v4l_index_for_logical_camera(device)
-            if (
+            hot_remap = os.environ.get("GO2_CAMERA_HOT_REMAP", "0").strip().lower() in {"1", "true", "yes", "on"}
+            if hot_remap and (
                 cap is not None
                 and cap.isOpened()
                 and last_opened_v4l is not None
@@ -1021,7 +1163,7 @@ class CameraCache:
                     except Exception:
                         pass
                     usb = _usb_vid_pid_for_video_index(v4l_idx)
-                    if int(device) == 6 and usb == ("8086", "0b3a"):
+                    if usb in _USB_IDS_REALSENSE:
                         _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_REALSENSE_PREFER_MJPEG")
                     elif int(device) == 0 and usb in _USB_IDS_LOGICAL_0:
                         _try_set_uvc_mjpeg_fourcc(cap, prefer_env="GO2_ORBBEC_PREFER_MJPEG")
@@ -1071,7 +1213,7 @@ class CameraCache:
                     [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
                 )
                 if enc_ok:
-                    v4l_now = _v4l_index_for_logical_camera(device)
+                    v4l_now = int(last_opened_v4l if last_opened_v4l is not None else target_v4l)
                     usb_now = _usb_vid_pid_for_video_index(v4l_now)
                     diag = _frame_rgb_diagnostics(frame)
                     if int(device) == 0 and usb_now == ("2bc5", "080b"):
@@ -1094,9 +1236,29 @@ class CameraCache:
                             "stream_kind": diag.get("stream_kind"),
                         }
                         self.errors.pop(device, None)
+                    usb_now = _usb_vid_pid_for_video_index(v4l_now)
+                    if (
+                        int(device) == 0
+                        and usb_now in _wrist_realsense_usb_ids()
+                        and not bool(diag.get("rgb_like"))
+                    ):
+                        bad_rgb_streak += 1
+                        try:
+                            thr = int(os.environ.get("GO2_RGB_RECOVER_STREAK", "24"))
+                        except ValueError:
+                            thr = 24
+                        if bad_rgb_streak >= max(6, thr):
+                            if _recover_realsense_rgb_mapping():
+                                bad_rgb_streak = 0
+                                _release_all()
+                                time.sleep(0.25)
+                                continue
+                    else:
+                        bad_rgb_streak = 0
             else:
                 with self._lock:
                     self.errors[device] = "read returned no frame"
+                bad_rgb_streak = 0
                 _release_all()
                 time.sleep(0.5)
                 continue

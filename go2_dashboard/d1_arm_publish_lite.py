@@ -362,6 +362,7 @@ def _publish_servo_deg_trajectory(
     steps = [max(0.12, float(s) * step_scale) for s in steps]
 
     if prefer_sdk_backend():
+        from go2_dashboard import d1_arm_motion
         from go2_dashboard.d1_jog import service as jog_svc
 
         jog_step = min(steps) if steps else float(os.environ.get("D1_GRASP_JOINT_STEP_DEG", "1.8"))
@@ -369,7 +370,10 @@ def _publish_servo_deg_trajectory(
             jog_step = max(steps)
         elif profile == "grasp":
             jog_step = min(steps)
-        pub = jog_svc.move_servo_deg_jog_trajectory(tgt, max_step_deg=jog_step)
+        keep = bool(d1_arm_motion.is_live_session_active())
+        pub = jog_svc.move_servo_deg_jog_trajectory(
+            tgt, max_step_deg=jog_step, keep_lock=keep
+        )
         return {
             **pub,
             "target_servo_deg_7": tgt,
@@ -739,8 +743,9 @@ def check_at_saved_start_pose(
             "Braccio in posa START salvata."
             if ok
             else (
-                f"Non in START: giunto {worst_i} err {worst:.1f}° (tol {max_error_deg}°). "
-                "Esegui goto START o sequenza con confirm RUN_FULL_GRASP."
+                f"Non in START salvata: giunto {worst_i} err {worst:.1f}° (tol {max_error_deg}°). "
+                "Normale dopo «START +90°» (waypoint Scansione ≠ START file). "
+                "Usa goto START solo se serve l'allineamento salvato."
             )
         ),
     }

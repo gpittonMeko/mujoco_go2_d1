@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Riavvio dashboard sulla NX: strip CRLF, env, build helper legacy, avvio lite."""
+"""Riavvio dashboard sulla NX: strip CRLF, env, build helper legacy, avvio focus."""
 from __future__ import annotations
 
 import json
@@ -60,13 +60,13 @@ def main() -> int:
         "pkill -f nx_dashboard_supervise || true; pkill -f serve_dashboard || true; pkill -f diagnostics_dashboard || true; sleep 2",
         (
             f"cd {base} && set -a && . scripts/nx_dashboard_env.sh && set +a && "
-            f"export GO2_DASHBOARD_SERVE=lite && "
-            f"nohup python3 scripts/serve_dashboard_lite.py >> dashboard_run.log 2>&1 &"
+            f"export GO2_DASHBOARD_SERVE=focus && "
+            f"nohup python3 scripts/serve_focus_dashboard.py >> focus_dashboard.log 2>&1 &"
         ),
         "sleep 10",
-        "curl -s -m 10 http://127.0.0.1:${GO2_DASHBOARD_PORT:-5052}/api/health",
-        "curl -s -m 15 \"http://127.0.0.1:${GO2_DASHBOARD_PORT:-5052}/api/arm/servo_snapshot?diag=1\" | head -c 2000",
-        f"tail -30 {base}/dashboard_run.log",
+        "curl -s -m 10 http://127.0.0.1:${GO2_FOCUS_PORT:-5056}/api/health",
+        "curl -s -m 15 \"http://127.0.0.1:${GO2_FOCUS_PORT:-5056}/api/focus/status\" | head -c 2000",
+        f"tail -30 {base}/focus_dashboard.log",
     ]
     for cmd in steps:
         code, out, err = _run(ssh, cmd)
@@ -79,8 +79,8 @@ def main() -> int:
     ssh.close()
 
     time.sleep(2)
-    base_url = f"http://{host}:5052"
-    for path in ("/api/health", "/api/arm/servo_snapshot?diag=1"):
+    base_url = f"http://{host}:5056"
+    for path in ("/api/health", "/api/focus/status"):
         data = _http_json(base_url + path, timeout=20.0)
         print(f"\n[verify PC] {path}:")
         print(json.dumps(data, indent=2)[:2500])

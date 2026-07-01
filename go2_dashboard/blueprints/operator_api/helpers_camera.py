@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any
 
 from flask import request
@@ -18,6 +20,7 @@ from go2_dashboard.cameras import (
     v4l_candidates_for_logical_slot,
     v4l_index_in_usb_inventory,
     v4l_usb_inventory,
+    wrist_depth_backend,
 )
 from go2_dashboard.operator_stack import go2_local
 
@@ -29,6 +32,39 @@ try:
     import numpy as np
 except Exception:
     np = None  # type: ignore[misc, assignment]
+
+
+_RS_W_COLOR_LOCK = threading.Lock()
+_RS_W_COLOR_CACHE: dict[str, Any] = {"ts": 0.0, "jpg": None}
+
+
+def _wrist_realsense_color_jpeg() -> bytes | None:
+    if cv2 is None:
+        return None
+    with _RS_W_COLOR_LOCK:
+        now = time.time()
+        ttl_s = float(os.environ.get("GO2_LOG0_RS_COLOR_TTL_S", "0.22"))
+        cached = _RS_W_COLOR_CACHE.get("jpg")
+        ts = float(_RS_W_COLOR_CACHE.get("ts") or 0.0)
+        if isinstance(cached, (bytes, bytearray)) and now - ts <= max(0.06, ttl_s):
+            return bytes(cached)
+        try:
+            from go2_dashboard import realsense_pyrs as rp
+
+            cap = rp.capture_aligned_on_demand(role="wrist", fast=True, include_ir=False)
+            color = cap.get("color_bgr") if isinstance(cap, dict) else None
+            if color is None:
+                return None
+            q = int(os.environ.get("GO2_CAMERA_JPEG_QUALITY", "82"))
+            ok, buf = cv2.imencode(".jpg", color, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+            if not ok or buf is None:
+                return None
+            jpg = bytes(buf.tobytes())
+            _RS_W_COLOR_CACHE["jpg"] = jpg
+            _RS_W_COLOR_CACHE["ts"] = now
+            return jpg
+        except Exception:
+            return None
 
 def _operator_camera_summary(
     cam_stats: dict[str, Any],
@@ -57,7 +93,7 @@ def _operator_camera_summary(
             "color_ok": bool(color_ok),
             "error": st.get("error"),
         }
-        if int(log) == 0 and orbbec and not color_ok:
+        if int(log) == 0 and orbbec and wrist_depth_backend() == "orbbec" and not color_ok:
             named_rgb = sorted(
                 {
                     int(r["v4l_index"])
@@ -75,6 +111,37 @@ def _operator_camera_summary(
                 "Oppure apri i JPEG di debug per ogni N se GO2_ALLOW_RAW_V4L_DEBUG=1."
             )
         summary[key] = entry
+    s0 = summary.get("0")
+    s6 = summary.get("6")
+    wrist_backend = wrist_depth_backend()
+    if (
+        isinstance(s0, dict)
+        and isinstance(s6, dict)
+        and s0.get("device_path")
+        and s0.get("device_path") == s6.get("device_path")
+    ):
+        summary["_conflict"] = {
+            "ok": False,
+            "reason": "same_v4l_device",
+            "hint_it": (
+                f"log.0 (polso) e log.6 (frontale) puntano entrambi a {s0.get('device_path')}. "
+                "Rimuovi GO2_VIDEO_INDEX_0/6 errati sulla NX: log.0 = D456 (8086:0b5c), "
+                "log.6 = D435i (8086:0b3a). Tab Scene → frecce su log.0/log.6."
+            ),
+        }
+    elif (
+        wrist_backend == "orbbec"
+        and isinstance(s0, dict)
+        and "realsense" in str(s0.get("sysfs_name") or "").lower()
+    ):
+        summary["_conflict"] = {
+            "ok": False,
+            "reason": "log0_is_realsense",
+            "hint_it": (
+                f"log.0 è mappato su RealSense ({s0.get('device_path')}) ma il backend polso è Orbbec. "
+                "Imposta GO2_WRIST_DEPTH_BACKEND=realsense oppure correggi GO2_VIDEO_INDEX_0."
+            ),
+        }
     return summary
 
 
@@ -211,6 +278,15 @@ def _depth_sysfs_hint_rows(
 
 def _robot_camera_jpeg(device: int) -> bytes | None:
     if go2_local() and cv2 is not None:
+        if int(device) == 0:
+            stats0 = CAMERA_CACHE.stats().get("0", {}) if hasattr(CAMERA_CACHE, "stats") else {}
+            stream_kind = str(stats0.get("stream_kind") or "")
+            rgb_like = bool(stats0.get("rgb_like"))
+            force_rs = os.environ.get("GO2_LOG0_FORCE_RS_COLOR", "1").strip().lower() in {"1", "true", "yes", "on"}
+            if force_rs and (stream_kind in {"mono_or_ir", "depth"} or not rgb_like):
+                rs_jpg = _wrist_realsense_color_jpeg()
+                if rs_jpg:
+                    return rs_jpg
         jpg = CAMERA_CACHE.get_jpeg(device, wait_s=2.0)
         if jpg:
             return jpg

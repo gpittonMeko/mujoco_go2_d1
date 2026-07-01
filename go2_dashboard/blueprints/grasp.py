@@ -136,13 +136,13 @@ def grasp_detection_debug_manifest() -> Any:
 
 @bp.route("/detection_debug/<tag>.jpg", methods=["GET"])
 def grasp_detection_debug_jpg(tag: str) -> Any:
-    """JPEG annotato con bbox (tag: front, wrist, wrist_orbbec)."""
+    """JPEG annotato con bbox (tag: front, wrist, wrist_realsense, wrist_orbbec alias)."""
     safe = "".join(c for c in (tag or "").strip() if c.isalnum() or c in {"_", "-"})
     if not safe:
         return Response("bad tag", status=400)
     path = PROJECT_ROOT / "data" / f"grasp_debug_{safe}.jpg"
     if not path.is_file():
-        return Response("snapshot not found — run POST /api/grasp/run_full first", status=404)
+        return Response("snapshot not found — premi «Foto SDK (metrica)» o ▸ Prendi", status=404)
     try:
         data = path.read_bytes()
     except OSError:
@@ -202,10 +202,11 @@ def grasp_calibrate_color() -> Any:
         }
         try:
             from go2_dashboard.grasp_detect_debug import save_detection_snapshot
+            from go2_dashboard.orbbec_wrist_grasp import _wrist_debug_tag
 
             snap = save_detection_snapshot(
                 frame, det if isinstance(det, dict) else None,
-                tag="wrist_orbbec", logical_camera=0, step="color_calibration",
+                tag=_wrist_debug_tag(), logical_camera=0, step="color_calibration",
             )
             out["debug_image_url"] = snap.get("image_url")
         except Exception:
@@ -469,6 +470,140 @@ def grasp_side_approach_status() -> Any:
     from go2_dashboard.grasp_side_approach import side_approach_status
 
     return jsonify(side_approach_status()), 200
+
+
+@bp.route("/autonomous_run", methods=["POST"])
+def grasp_autonomous_run() -> Any:
+    from go2_dashboard.grasp_autonomous_loop import start_autonomous_grasp
+
+    body = request.get_json(silent=True) or {}
+    out, code = start_autonomous_grasp(
+        instruction=str(body.get("instruction") or body.get("task") or ""),
+        confirm=body.get("confirm"),
+        color_hint=body.get("color_hint"),
+        max_cycles=body.get("max_cycles"),
+        use_supervisor=body.get("use_supervisor"),
+    )
+    return jsonify(out), code
+
+
+@bp.route("/autonomous_status", methods=["GET"])
+def grasp_autonomous_status() -> Any:
+    from go2_dashboard.grasp_autonomous_loop import autonomous_grasp_status
+
+    return jsonify(autonomous_grasp_status()), 200
+
+
+@bp.route("/collect", methods=["POST"])
+def grasp_collect() -> Any:
+    from go2_dashboard.grasp_collection_mission import start_collect_mission
+
+    body = request.get_json(silent=True) or {}
+    targets = body.get("targets")
+    if isinstance(targets, str):
+        targets = [t.strip() for t in targets.split(",") if t.strip()]
+    try:
+        front_cam = int(body.get("front_camera", 6))
+    except (TypeError, ValueError):
+        front_cam = 6
+    out, code = start_collect_mission(
+        targets=targets if isinstance(targets, list) else None,
+        instruction=str(body.get("instruction") or ""),
+        confirm=body.get("confirm"),
+        max_picks=body.get("max_picks"),
+        front_camera=front_cam,
+    )
+    return jsonify(out), code
+
+
+@bp.route("/collect_status", methods=["GET"])
+def grasp_collect_status() -> Any:
+    from go2_dashboard.grasp_collection_mission import collect_mission_status
+
+    return jsonify(collect_mission_status()), 200
+
+
+@bp.route("/teach_run", methods=["POST"])
+def grasp_teach_run() -> Any:
+    """Flusso unificato teach: scan j90 → gate → presa singola o raccolta."""
+    import json
+    import time
+
+    from go2_dashboard.grasp_teach_flow import start_teach_flow
+    from go2_dashboard.paths import PROJECT_ROOT
+
+    # #region agent log
+    _t0 = time.perf_counter()
+
+    def _dbg_teach(hypothesis_id: str, message: str, data: dict) -> None:
+        try:
+            p = PROJECT_ROOT / "data" / "debug-16a61f.ndjson"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "16a61f",
+                            "hypothesisId": hypothesis_id,
+                            "location": "grasp.py:teach_run",
+                            "message": message,
+                            "data": data,
+                            "timestamp": int(time.time() * 1000),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+
+    _dbg_teach("H2", "teach_run_handler_enter", {})
+    # #endregion
+
+    body = request.get_json(silent=True) or {}
+    try:
+        front_cam = int(body.get("front_camera", 6))
+    except (TypeError, ValueError):
+        front_cam = 6
+    out, code = start_teach_flow(
+        instruction=str(body.get("instruction") or body.get("task") or ""),
+        confirm=body.get("confirm"),
+        color_hint=body.get("color_hint"),
+        max_cycles=body.get("max_cycles"),
+        max_picks=body.get("max_picks"),
+        front_camera=front_cam,
+        use_supervisor=body.get("use_supervisor"),
+    )
+
+    # #region agent log
+    _dbg_teach(
+        "H2",
+        "teach_run_handler_exit",
+        {
+            "handler_ms": round((time.perf_counter() - _t0) * 1000.0, 2),
+            "http_code": int(code),
+            "started": bool(out.get("started")),
+            "reason": out.get("reason"),
+        },
+    )
+    # #endregion
+    return jsonify(out), code
+
+
+@bp.route("/teach_status", methods=["GET"])
+def grasp_teach_status() -> Any:
+    from go2_dashboard.grasp_teach_flow import teach_flow_status
+
+    return jsonify(teach_flow_status()), 200
+
+
+@bp.route("/teach_cancel", methods=["POST"])
+def grasp_teach_cancel() -> Any:
+    from go2_dashboard.grasp_teach_flow import cancel_teach_flow
+
+    body = request.get_json(silent=True) or {}
+    out = cancel_teach_flow(reason_it=str(body.get("reason_it") or "").strip() or None)
+    return jsonify(out), 200
 
 
 @bp.route("/execute_phased", methods=["POST"])

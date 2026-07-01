@@ -1823,6 +1823,117 @@ pre.status-dump {
   color: #fee2e2;
 }
 
+.op-grasp-teach-error {
+  display: block;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.op-grasp-teach-error strong {
+  color: #fee2e2;
+}
+.op-grasp-teach-error .grasp-teach-hint {
+  display: block;
+  margin-top: 6px;
+  color: #fcd34d;
+  font-size: 0.78rem;
+}
+
+.op-teach-calib-hero {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(30, 58, 95, 0.35);
+}
+.op-teach-main-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.op-teach-main-actions .op-grasp-go-btn {
+  font-weight: 700;
+}
+.op-teach-calib-hero-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.op-teach-calib-hero-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.op-teach-calib-hero-row .op-btn.ok {
+  font-weight: 700;
+}
+.op-teach-calib-hero-status {
+  min-height: 2.4em;
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.op-teach-calib-box--compact {
+  line-height: 1.45;
+}
+
+.op-teach-log {
+  margin-top: 10px;
+  max-height: 200px;
+  min-height: 72px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(71, 85, 105, 0.55);
+  background: rgba(15, 23, 42, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.op-teach-log--hero {
+  max-height: 160px;
+  border-color: rgba(34, 211, 238, 0.35);
+  background: rgba(10, 25, 45, 0.75);
+}
+.op-teach-log .log-info { color: #94a3b8; }
+.op-teach-log .log-warn { color: #fcd34d; }
+.op-teach-log .log-error { color: #fca5a5; }
+
+.op-teach-cam-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .op-teach-cam-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.op-teach-sdk-empty {
+  min-height: 120px;
+  background: rgba(15, 23, 42, 0.85);
+  object-fit: contain;
+}
+#graspTeachStealOrbbecBtn.active {
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45);
+}
+
 /* --- Switch a 3 flussi (Locale · VLA · Teaching) ------------------------- */
 .op-grasp-flow-switch-card {
   border-color: rgba(96, 165, 250, 0.35);

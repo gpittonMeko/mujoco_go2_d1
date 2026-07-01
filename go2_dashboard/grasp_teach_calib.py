@@ -1,6 +1,6 @@
 """Calibrazione presa manuale: detection Orbbec → rilascio giunti → operatore posa braccio → memoria.
 
-Flusso (default 4 s hold + 15 s teach):
+Flusso (default 5 s hold + 15 s teach):
   1. Acquisizione metrica (oggetto rilevato + piano IK grasp).
   2. Attesa con coppia attiva (braccio fermo).
   3. ``motor_release`` (funcode 5 mode 0) — giunti liberi per posizionamento manuale.
@@ -38,6 +38,7 @@ _STATE: dict[str, Any] = {
     "remaining_s": 0.0,
     "error": None,
     "last_sample": None,
+    "last_release": None,
     "cancel_requested": False,
 }
 
@@ -122,9 +123,10 @@ def teach_calib_status() -> dict[str, Any]:
         "remaining_s": round(float(st.get("remaining_s") or 0.0), 1),
         "error": st.get("error"),
         "last_sample": st.get("last_sample"),
+        "last_release": st.get("last_release"),
         "samples_count": len(store.get("samples") or []),
         "calib_path": str(_CALIB_PATH),
-        "hold_s_default": _env_float("GO2_GRASP_TEACH_HOLD_S", 4.0),
+        "hold_s_default": _env_float("GO2_GRASP_TEACH_HOLD_S", 5.0),
         "manual_s_default": _env_float("GO2_GRASP_TEACH_MANUAL_S", 15.0),
     }
 
@@ -147,14 +149,22 @@ def _sleep_abortable(total_s: float, phase: str, label_it: str) -> bool:
     return True
 
 
-def _metric_plan_for_teach(instruction: str = "") -> dict[str, Any]:
+def _metric_plan_for_teach(instruction: str = "", *, fast_capture: bool | None = None) -> dict[str, Any]:
     from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
     from go2_dashboard.orbbec_wrist_grasp import plan_wrist_grasp_metric
 
     servo_now, diag = read_servo_deg_with_diag(PROJECT_ROOT)
     if servo_now is None or len(servo_now) < 6:
         return {"ok": False, "reason": "no_servo_feedback", "diag": diag}
-    return plan_wrist_grasp_metric([float(x) for x in servo_now[:7]], instruction=instruction or None)
+    if fast_capture is None:
+        fast = os.environ.get("GO2_GRASP_TEACH_FAST", "1").lower() in {"1", "true", "yes", "on"}
+    else:
+        fast = bool(fast_capture)
+    return plan_wrist_grasp_metric(
+        [float(x) for x in servo_now[:7]],
+        instruction=instruction or None,
+        fast_capture=fast,
+    )
 
 
 def _build_sample_from_metric(
@@ -207,6 +217,49 @@ def _build_sample_from_metric(
     }
 
 
+def _teach_open_gripper(open_deg: float) -> dict[str, Any]:
+    """Apre solo pinza (J6) senza sessione live giunti — evita plane_busy al rilascio teach."""
+    from go2_dashboard.d1_jog import program_runner, service as jog_svc
+
+    fb = jog_svc.read_servo_deg(fast=True)
+    if not fb.get("ok") or not fb.get("servo_deg"):
+        return {"ok": False, "reason": "no_servo_feedback", "action": "teach_open_gripper"}
+    cur = [round(float(x), 3) for x in fb["servo_deg"][:7]]
+    target = list(cur)
+    target[6] = round(float(open_deg), 3)
+    pin = {i: cur[i] for i in range(6)}
+    return program_runner.move_to_servo_deg_smooth(
+        target,
+        keep_lock=False,
+        pin_joints=pin,
+        max_step_deg=8.0,
+    )
+
+
+def _release_for_teach_manual(jog_svc: Any) -> dict[str, Any]:
+    """Rilascio esplicito per teach: niente re-hold funcode 2 prima del mode 0."""
+    from go2_dashboard import d1_arm_motion
+    from go2_dashboard.d1_jog.motion_guard import force_idle as motion_force_idle
+
+    jog_svc._halt_cartesian_stream(wait_idle=True)
+    d1_arm_motion.end_live_session(skip_hold=True)
+    motion_force_idle()
+    rel = jog_svc.motor_release()
+    if rel.get("ok"):
+        return rel
+    for attempt in range(3):
+        reason = str(rel.get("reason") or "")
+        if not reason.startswith("plane_busy"):
+            break
+        time.sleep(0.35 + 0.15 * attempt)
+        d1_arm_motion.end_live_session(skip_hold=True)
+        motion_force_idle()
+        rel = jog_svc.motor_release()
+        if rel.get("ok"):
+            return rel
+    return rel
+
+
 def _teach_worker(
     *,
     hold_s: float,
@@ -215,23 +268,35 @@ def _teach_worker(
     pending: dict[str, Any],
 ) -> None:
     try:
-        if not _sleep_abortable(hold_s, "hold", f"Coppia attiva — preparati ({hold_s:.0f}s)…"):
+        try:
+            open_deg = _env_float("GO2_GRASP_COACH_GRIPPER_OPEN_DEG", 22.0)
+            _teach_open_gripper(open_deg)
+        except Exception:
+            pass
+
+        if not _sleep_abortable(hold_s, "hold", f"Coppia attiva — pinza aperta, preparati ({hold_s:.0f}s)…"):
             _set_state(active=False, phase="cancelled", phase_label_it="Annullato", remaining_s=0.0)
             return
 
         from go2_dashboard.d1_jog import service as jog_svc
 
         _set_state(phase="releasing", phase_label_it="Rilascio giunti (coppia OFF)…", remaining_s=0.0)
-        rel = jog_svc.motor_release()
+        rel = _release_for_teach_manual(jog_svc)
+        _set_state(last_release=rel)
         if not rel.get("ok"):
             _set_state(
                 active=False,
                 phase="error",
                 error=rel.get("reason") or "motor_release_failed",
-                phase_label_it=(rel.get("hint_it") or "Errore rilascio giunti"),
+                phase_label_it=(rel.get("hint_it") or "Errore rilascio giunti — chiudi tab Giunti e riprova"),
             )
             return
 
+        _set_state(
+            phase="teach_manual",
+            phase_label_it=f"Giunti liberi — porta il braccio in posa di presa ({manual_s:.0f}s)…",
+            remaining_s=manual_s,
+        )
         if not _sleep_abortable(
             manual_s,
             "teach_manual",
@@ -302,19 +367,28 @@ def teach_calib_start(
     if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes", "on"}:
         return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM_off"}
 
-    hold = hold_s if hold_s is not None else _env_float("GO2_GRASP_TEACH_HOLD_S", 4.0)
+    hold = hold_s if hold_s is not None else _env_float("GO2_GRASP_TEACH_HOLD_S", 5.0)
     manual = manual_s if manual_s is not None else _env_float("GO2_GRASP_TEACH_MANUAL_S", 15.0)
     hold = max(1.0, min(hold, 30.0))
     manual = max(5.0, min(manual, 120.0))
 
     mp = _metric_plan_for_teach(instruction)
     det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
-    if require_detection and (not mp.get("ok") or not det.get("ok")):
+    partial_rgb = bool(det.get("ok")) and (
+        bool(mp.get("partial_rgb_ok")) or bool(mp.get("rgb_depth_fallback"))
+    )
+    det_ok = bool(det.get("ok"))
+    plan_ok = bool(mp.get("ok")) or partial_rgb
+    if require_detection and (not det_ok or not plan_ok):
         return {
             "ok": False,
             "reason": mp.get("reason") or "no_detection",
-            "hint_it": "Esegui prima «Acquisizione e stima» con oggetto visibile, poi calibra.",
-            "metric_plan": {"ok": mp.get("ok"), "reason": mp.get("reason")},
+            "hint_it": (
+                "Scatola non visibile al polso — START +90° e ripeti «① Dove pensa la scatola»."
+                if not det_ok
+                else "Esegui prima «① Dove pensa la scatola» con oggetto visibile, poi calibra."
+            ),
+            "metric_plan": {"ok": mp.get("ok"), "reason": mp.get("reason"), "partial_rgb_ok": partial_rgb},
         }
 
     from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
@@ -492,6 +566,220 @@ def _apply_joint_offset_to_stage(st: dict[str, Any], delta_servo: list[float]) -
     return True
 
 
+def _vision_issue_hints(mp: dict[str, Any], det: dict[str, Any], dist_m: float | None) -> tuple[list[str], list[str]]:
+    """Etichette issue + messaggi operatore per capire cosa è sbagliato."""
+    issues: list[str] = []
+    hints: list[str] = []
+    if not det.get("ok"):
+        issues.append("no_detection")
+        hints.append("La scatola non è nel frame polso — controlla START +90° e illuminazione.")
+    depth_src = str(mp.get("depth_source") or "")
+    if mp.get("rgb_depth_fallback") or depth_src == "rgb_bbox_area":
+        issues.append("depth_rgb_estimate")
+        hints.append(
+            "Depth D456 assente nel bbox: distanza stimata dalla dimensione del riquadro — "
+            "spesso sbagliata di decine di cm."
+        )
+    elif mp.get("reason") in ("no_depth_support", "depth_failed"):
+        issues.append("depth_missing")
+        hints.append("Nessun pixel depth valido sul centro oggetto — target 3D inaffidabile.")
+    tgt = mp.get("grasp_display_base_link_m")
+    if isinstance(tgt, (list, tuple)) and len(tgt) >= 3:
+        try:
+            z = float(tgt[2])
+            if z < -0.35:
+                issues.append("target_below_floor")
+                hints.append(f"Target Z={z:.2f} m sotto il pavimento — errore depth o frame camera polso.")
+            if abs(float(tgt[1])) > 0.55:
+                issues.append("target_lateral_extreme")
+                hints.append("Target molto laterale — verifica asse camera↔base_link.")
+        except (TypeError, ValueError):
+            pass
+    if mp.get("reachable") is False:
+        issues.append("out_of_reach")
+        hints.append("IK dice fuori reach — spesso depth troppo lontana (>1.5 m).")
+    if dist_m is not None and dist_m > 0.45:
+        issues.append("vision_far_from_tcp")
+        hints.append(
+            f"Punta utensile e target visione distano {dist_m:.2f} m — normale prima del movimento; "
+            "se dopo «Vai dove pensa» sei lontano dalla scatola, calibra con Teach."
+        )
+    if not mp.get("teach_calib_applied"):
+        store = load_calibration_store()
+        if not (store.get("samples") or []):
+            hints.append("Nessun campione teach — fai «Teach posa corretta» dopo il test movimento.")
+    return issues, hints
+
+
+def vision_calib_diagnostic(
+    *, instruction: str = "", metric_plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Dove pensa la box, dove è la punta ora, delta e ipotesi errore (senza movimento)."""
+    if metric_plan is None or not isinstance(metric_plan, dict):
+        try:
+            from go2_dashboard.grasp_teach_flow import _teach_wrist_camera_prepare
+
+            _teach_wrist_camera_prepare()
+        except Exception:
+            pass
+    mp = metric_plan if isinstance(metric_plan, dict) and metric_plan else _metric_plan_for_teach(
+        instruction, fast_capture=False
+    )
+    det = mp.get("object_detection") if isinstance(mp.get("object_detection"), dict) else {}
+    from go2_dashboard.d1_arm_publish_lite import current_tool_tip_base_link_m
+
+    cur_tip, _ = current_tool_tip_base_link_m()
+    vision = mp.get("grasp_display_base_link_m")
+    if not isinstance(vision, (list, tuple)) or len(vision) < 3:
+        vision = None
+    err_vec: list[float] | None = None
+    dist_m: float | None = None
+    if vision and isinstance(cur_tip, (list, tuple)) and len(cur_tip) >= 3:
+        err_vec = [round(float(vision[i]) - float(cur_tip[i]), 4) for i in range(3)]
+        dist_m = round(math.sqrt(sum(float(err_vec[i]) ** 2 for i in range(3))), 4)
+
+    issues, hints = _vision_issue_hints(mp, det, dist_m)
+    store = load_calibration_store()
+    samples = [s for s in (store.get("samples") or []) if isinstance(s, dict)]
+    last_sample = samples[-1] if samples else None
+    best_sample, match_score = find_best_teach_sample(det, vision if isinstance(vision, list) else None)
+
+    out: dict[str, Any] = {
+        "ok": bool(det.get("ok")),
+        "reason": mp.get("reason") if not mp.get("ok") else None,
+        "vision_target_base_link_m": vision,
+        "tool_tip_base_link_m_now": cur_tip,
+        "error_vision_minus_tcp_m": err_vec,
+        "error_vision_tcp_distance_m": dist_m,
+        "depth_m": mp.get("depth_m"),
+        "depth_source": mp.get("depth_source")
+        or ((mp.get("depth_observation") or {}).get("source") if isinstance(mp.get("depth_observation"), dict) else None),
+        "rgb_depth_fallback": bool(mp.get("rgb_depth_fallback")),
+        "camera_xyz_m": mp.get("camera_xyz_m"),
+        "reachable": mp.get("reachable"),
+        "reach_m": mp.get("reach_m"),
+        "detection": {
+            "ok": det.get("ok"),
+            "confidence": det.get("confidence"),
+            "bbox_center_px": det.get("bbox_center_px"),
+            "bbox_xyxy": det.get("bbox_xyxy"),
+            "norm": det.get("norm"),
+        },
+        "issues": issues,
+        "hints_it": hints,
+        "teach_samples_count": len(samples),
+        "teach_calib_applied": bool(mp.get("teach_calib_applied")),
+        "teach_calib_sample_id": mp.get("teach_calib_sample_id"),
+        "teach_calib_delta_tcp_m": mp.get("teach_calib_delta_tcp_m"),
+        "best_teach_match_score": round(match_score, 4) if best_sample else None,
+        "last_teach_sample": (
+            {
+                "id": last_sample.get("id"),
+                "delta_tcp_m": (last_sample.get("delta") or {}).get("tcp_base_link_m"),
+                "delta_servo_deg": (last_sample.get("delta") or {}).get("servo_deg"),
+                "vision_at_teach_m": (last_sample.get("metric") or {}).get("target_base_link_m"),
+            }
+            if last_sample
+            else None
+        ),
+        "label_it": (
+            "Oggetto visto — confronta target visione con posa reale."
+            if det.get("ok")
+            else f"Nessun target affidabile ({mp.get('reason') or 'no_detection'})"
+        ),
+    }
+    try:
+        from go2_dashboard.operator_plan_cache import set_last_grasp_plan
+
+        if isinstance(mp, dict) and mp.get("grasp_display_base_link_m"):
+            set_last_grasp_plan(mp)
+    except Exception:
+        pass
+    # #region agent log
+    try:
+        log_path = PROJECT_ROOT / "data" / "debug-16a61f.ndjson"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "sessionId": "16a61f",
+                        "hypothesisId": "H9",
+                        "location": "grasp_teach_calib.py:vision_calib_diagnostic",
+                        "message": "vision_calib_diagnostic",
+                        "data": {
+                            "vision": vision,
+                            "tcp": cur_tip,
+                            "dist_m": dist_m,
+                            "depth_m": mp.get("depth_m"),
+                            "rgb_fb": bool(mp.get("rgb_depth_fallback")),
+                            "issues": issues,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
+    return out
+
+
+def goto_vision_target(
+    *,
+    instruction: str = "",
+    approach_blend: float | None = None,
+    fresh: bool = True,
+) -> dict[str, Any]:
+    """Muove il braccio verso ``grasp_display_base_link_m`` dell'ultima stima visione."""
+    if os.environ.get("GO2_ENABLE_REAL_ARM", "0").lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": False, "reason": "GO2_ENABLE_REAL_ARM_off"}
+
+    mp: dict[str, Any] = {}
+    if fresh:
+        mp = _metric_plan_for_teach(instruction)
+    xyz = mp.get("grasp_display_base_link_m") if mp else None
+    if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
+        from go2_dashboard.d1_arm_publish_lite import pick_tool_target_base_link_m_from_plan
+        from go2_dashboard.operator_plan_cache import get_last_grasp_plan
+
+        cached = get_last_grasp_plan()
+        if isinstance(cached, dict):
+            xyz = pick_tool_target_base_link_m_from_plan(cached)
+    if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
+        return {
+            "ok": False,
+            "reason": "no_vision_target",
+            "hint_it": "Prima «① Dove pensa la box» (acquisizione metrica).",
+        }
+
+    blend = approach_blend if approach_blend is not None else _env_float("GO2_CALIB_GOTO_BLEND", 0.42)
+    blend = max(0.12, min(0.85, float(blend)))
+    from go2_dashboard.d1_arm_publish_lite import goto_tool_target_base_link_m_partial
+
+    motion = goto_tool_target_base_link_m_partial(
+        [float(xyz[i]) for i in range(3)],
+        approach_blend=blend,
+        delay_ms=None,
+    )
+    diag = vision_calib_diagnostic(instruction=instruction, metric_plan=mp if mp else None)
+    return {
+        "ok": bool(motion.get("ok")),
+        "motion": motion,
+        "approach_blend": blend,
+        "vision_target_base_link_m": [round(float(xyz[i]), 4) for i in range(3)],
+        "diagnostic": diag,
+        "hint_it": (
+            "Braccio mosso verso il target che la visione crede corretto. "
+            "Se non sei sulla scatola → «Teach posa corretta»."
+            if motion.get("ok")
+            else (motion.get("hint_it") or motion.get("reason") or "movimento fallito")
+        ),
+    }
+
+
 def apply_teach_to_metric_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Applica offset calibrazione teach al piano metrico dinamico (in-place).
 
@@ -499,6 +787,16 @@ def apply_teach_to_metric_plan(plan: dict[str, Any]) -> dict[str, Any]:
     con i giunti smollati (errore sistematico IK / camera / pinza).
     """
     if not plan.get("ok"):
+        return plan
+    try:
+        from go2_dashboard.orbbec_wrist_grasp import depth_plausible_m
+
+        depth_ok = depth_plausible_m(plan.get("depth_m"))
+    except Exception:
+        depth_ok = True
+    if plan.get("reachable") is False or not depth_ok:
+        plan["teach_calib_applied"] = False
+        plan["teach_calib_skipped_reason"] = "depth_unreachable_or_implausible"
         return plan
     det = plan.get("object_detection") if isinstance(plan.get("object_detection"), dict) else {}
     if not det.get("ok"):

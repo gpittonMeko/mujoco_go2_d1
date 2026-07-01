@@ -15,7 +15,7 @@ while true; do
   export GO2_DASHBOARD_PORT="$GO2_FOCUS_PORT"
   export HERMES_OPERATOR_URL="http://127.0.0.1:${GO2_FOCUS_PORT}"
   export GO2_HERMES_INTEGRATED=1
-  if [ "${GO2_FOCUS_PICK_YOLO:-1}" = "1" ] && [ -f "${GO2_YOLO_MODEL:-models/yolov8n.pt}" ]; then
+  if [ "${GO2_FOCUS_PICK_YOLO:-0}" = "1" ] && [ -f "${GO2_YOLO_MODEL:-models/yolov8n.pt}" ]; then
     export GO2_YOLO_MODEL="${GO2_YOLO_MODEL:-/home/unitree/go2_visual_dashboard/models/yolov8n.pt}"
     export D1_PICK_DETECT_BACKEND=yolo
     export D1_PICK_COLOR_ONLY=0

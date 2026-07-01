@@ -18,13 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from go2_dashboard.hermes import create_hermes_app
-
 
 def main() -> None:
     os.environ.setdefault("HERMES_OPERATOR_URL", "http://127.0.0.1:5052")
     port = int(os.environ.get("HERMES_PORT", "5054"))
     bind = os.environ.get("HERMES_BIND", "0.0.0.0")
+    from go2_dashboard.hermes import create_hermes_app
+
     app = create_hermes_app()
     print(f"Hermes http://{bind}:{port}/")
     app.run(host=bind, port=port, threaded=True, use_reloader=False)

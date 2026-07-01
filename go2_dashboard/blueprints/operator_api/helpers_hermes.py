@@ -4,6 +4,9 @@ import copy
 import math
 import os
 import re
+import shutil
+import subprocess
+import sys
 from typing import Any
 
 from go2_dashboard.d1_arm_publish_lite import (
@@ -228,6 +231,26 @@ def _hermes_apply_intent(intent: dict[str, Any], *, dry_run: bool) -> dict[str, 
         if stop_on_err and _hermes_step_failed(step):
             return {"ok": False, "dry_run": False, "steps": steps, "intent": intent}
 
+    co = intent.get("collect_objects")
+    if isinstance(co, dict):
+        from go2_dashboard.grasp_collection_mission import CONFIRM_TOKEN as COLLECT_CONFIRM
+        from go2_dashboard.grasp_collection_mission import start_collect_mission
+
+        instr = str(co.get("instruction") or "").strip()
+        targets = co.get("targets")
+        if isinstance(targets, str):
+            targets = [t.strip() for t in targets.split(",") if t.strip()]
+        r, code = start_collect_mission(
+            targets=targets if isinstance(targets, list) else None,
+            instruction=instr,
+            confirm=COLLECT_CONFIRM,
+            max_picks=co.get("max_picks"),
+        )
+        step = {"kind": "collect_objects", "instruction": instr, "http_status": code, "result": r}
+        steps.append(step)
+        if stop_on_err and _hermes_step_failed(step):
+            return {"ok": False, "dry_run": False, "steps": steps, "intent": intent}
+
     bm = intent.get("base_motion")
     if isinstance(bm, dict) and bm.get("mode"):
         body = dict(bm)
@@ -378,6 +401,38 @@ def hermes_apply_go2_base_lexicon_from_user_text(
     return out, notes
 
 
+def _hermes_allow_collect(caps: dict[str, Any]) -> bool:
+    if os.environ.get("GO2_HERMES_COLLECT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return bool(caps.get("allow_openvla_plan")) and _hermes_allow_grasp_full(caps)
+
+
+_COLLECT_VERB_RE = re.compile(
+    r"(?i)\b(raccogli(?:ere)?|collect|pick\s+up\s+all|gather)\b"
+)
+
+
+def hermes_apply_collect_lexicon_from_user_text(
+    user_text: str, intent: dict[str, Any], caps: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    notes: list[str] = []
+    if not _hermes_allow_collect(caps):
+        return intent, notes
+    raw = (user_text or "").strip()
+    if not raw or not _COLLECT_VERB_RE.search(raw):
+        return intent, notes
+    if _hermes_intent_has_arm_motion(intent):
+        return intent, notes
+    out = copy.deepcopy(intent)
+    out["arm_preset"] = None
+    out["arm_joint_delta"] = None
+    out["arm_tool_target"] = None
+    out["grasp_full"] = None
+    out["collect_objects"] = {"instruction": raw[:400], "max_picks": 3}
+    notes.append("Routing server: frase interpretata come RACCOLTA autonoma scatole colorate.")
+    return out, notes
+
+
 def hermes_apply_grasp_full_lexicon_from_user_text(
     user_text: str, intent: dict[str, Any], caps: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -395,6 +450,8 @@ def hermes_apply_grasp_full_lexicon_from_user_text(
     if len(raw) > 400:
         raw = raw[:400]
     if not _GRASP_VERB_RE.search(raw):
+        return intent, notes
+    if intent.get("collect_objects"):
         return intent, notes
     # Non sovrascrivere un jog/preset/IK già richiesto chiaramente in questo turno.
     if _hermes_intent_has_arm_motion(intent):
@@ -623,6 +680,28 @@ def _hermes_sanitize_intent(intent: dict[str, Any], caps: dict[str, Any]) -> tup
             out["grasp_full"] = None
             warnings.append("`grasp_full` deve essere object — scartato.")
 
+    co = out.get("collect_objects")
+    if co is not None:
+        if not _hermes_allow_collect(caps):
+            out["collect_objects"] = None
+            warnings.append("Raccolta autonoma disabilitata (GO2_HERMES_COLLECT=1).")
+        elif isinstance(co, dict):
+            instr = str(co.get("instruction") or "").strip()[:400]
+            mp = co.get("max_picks")
+            try:
+                mp_i = int(mp) if mp is not None else 3
+            except (TypeError, ValueError):
+                mp_i = 3
+            mp_i = max(1, min(mp_i, 12))
+            out["collect_objects"] = {"instruction": instr, "max_picks": mp_i}
+            out["arm_preset"] = None
+            out["arm_joint_delta"] = None
+            out["arm_tool_target"] = None
+            out["grasp_full"] = None
+        else:
+            out["collect_objects"] = None
+            warnings.append("`collect_objects` deve essere object — scartato.")
+
     ap = out.get("arm_preset")
     if isinstance(ap, str) and ap.strip():
         if not caps.get("allow_arm_presets"):
@@ -751,6 +830,115 @@ def hermes_try_play_tts_mp3_on_local_host(b64_mp3: str) -> bool:
         return False
 
     return True
+
+
+def hermes_synthesize_and_play_local(text: str) -> dict[str, Any]:
+    """Piper TTS locale + playback Go2 via ``pc_go2_webrtc_speak.py`` (Hermes offline)."""
+    from go2_dashboard.hermes_agent import hermes_tts_engine
+
+    out: dict[str, Any] = {
+        "tts_engine": hermes_tts_engine(),
+        "tts_playback_go2": False,
+        "tts_playback_go2_webrtc": False,
+        "tts_playback_nx": False,
+        "tts_format": "wav",
+    }
+    t = " ".join((text or "").split())
+    if not t:
+        out["tts_error"] = "empty_text"
+        return out
+    max_c = int((os.environ.get("HERMES_SPEAK_MAX_CHARS") or os.environ.get("GO2_HERMES_TTS_MAX_CHARS") or "220").strip() or "220")
+    if len(t) > max_c:
+        t = t[: max_c - 3] + "..."
+
+    script = PROJECT_ROOT / "scripts" / "pc_go2_webrtc_speak.py"
+    if not script.is_file():
+        out["tts_error"] = "missing_pc_go2_webrtc_speak"
+        return out
+
+    prefer_webrtc = (os.environ.get("GO2_HERMES_PREFER_WEBRTC") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    play_go2 = (os.environ.get("GO2_HERMES_PLAY_ON_GO2") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    play_wrtc = (os.environ.get("GO2_HERMES_PLAY_ON_GO2_WEBRTC") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if play_go2 and play_wrtc and prefer_webrtc:
+        cmd = [sys.executable, str(script), "--text", t]
+        timeout_s = float((os.environ.get("GO2_HERMES_TTS_LOCAL_TIMEOUT_S") or "90").strip() or "90")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+            ok = proc.returncode == 0
+            out["tts_playback_go2_webrtc"] = ok
+            out["tts_playback_go2"] = ok
+            if not ok:
+                out["tts_stderr"] = (proc.stderr or proc.stdout or "")[:500]
+        except Exception as exc:
+            out["tts_error"] = repr(exc)
+
+    if not out.get("tts_playback_go2") and (os.environ.get("GO2_HERMES_PLAY_ON_NX") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        try:
+            from go2_dashboard.hermes.tts_local import synthesize_wav
+
+            wav = synthesize_wav(t)
+            if wav and wav.is_file():
+                if shutil.which("ffplay"):
+                    subprocess.Popen(
+                        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(wav)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    out["tts_playback_nx"] = True
+                elif shutil.which("aplay"):
+                    subprocess.Popen(
+                        ["aplay", "-q", str(wav)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    out["tts_playback_nx"] = True
+        except Exception as exc:
+            out.setdefault("tts_error", repr(exc))
+
+    return out
+
+
+def hermes_tts_engine() -> str:
+    from go2_dashboard.hermes_agent import hermes_tts_engine as _eng
+
+    return _eng()
+
+
+def hermes_use_local_tts() -> bool:
+    from go2_dashboard.hermes_agent import hermes_use_local_tts as _use
+
+    return _use()
+
+
+def hermes_offline_mode() -> bool:
+    from go2_dashboard.hermes_agent import hermes_offline_mode as _off
+
+    return _off()
 
 
 def _operator_memory_event_matches_hermes(ev: dict[str, Any]) -> bool:

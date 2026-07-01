@@ -26,6 +26,13 @@ D1.apiJson = async function (path, opts) {
     if (e && e.name === 'AbortError') {
       throw new Error('Timeout richiesta (' + Math.round(timeoutMs / 1000) + ' s) — ' + path);
     }
+    var msg = String(e || '');
+    if (msg.indexOf('Failed to fetch') >= 0 || msg.indexOf('NetworkError') >= 0) {
+      throw new Error(
+        'Rete interrotta (Failed to fetch) su ' + path +
+        ' — il server può essersi riavviato (es. reset Orbbec con fuser sulla dashboard). Ricarica la pagina e riprova; in Pick teach usa «Ruba Orbbec» se Scene tiene la camera.'
+      );
+    }
     throw e;
   }
   clearTimeout(tid);

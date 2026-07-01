@@ -13,6 +13,7 @@ export GO2_ENABLE_BASE_MOTION="${GO2_ENABLE_BASE_MOTION:-1}"
 export GO2_ENABLE_REAL_ARM="${GO2_ENABLE_REAL_ARM:-1}"
 export GO2_FOCUS_PORT="${GO2_FOCUS_PORT:-5056}"
 export GO2_DASHBOARD_PORT="$GO2_FOCUS_PORT"
+export GO2_FOCUS_PICK_YOLO="${GO2_FOCUS_PICK_YOLO:-0}"
 
 if [ "${GO2_FOCUS_STOP_OPERATOR:-1}" = "1" ]; then
   pkill -f '[s]cripts/nx_dashboard_supervise.sh' 2>/dev/null || true

@@ -127,6 +127,20 @@ def _sport_steps_all_ok(steps: dict[str, Any]) -> bool:
     return True
 
 
+def _sport_steps_ok_allow_benign_stop_move(steps: dict[str, Any]) -> bool:
+    """StopMove può restituire -1 se il cane è già fermo — non invalidare StandDown/StandUp riusciti."""
+    sm = steps.get("stop_move")
+    sm_code = int(sm.get("code", 0)) if isinstance(sm, dict) else 0
+    for key, val in steps.items():
+        if key == "stop_move":
+            continue
+        if isinstance(val, dict) and "code" in val and int(val["code"]) != 0:
+            return False
+    if sm_code in {0, -1}:
+        return True
+    return False
+
+
 def _sport_motion_prepare_steps() -> dict[str, Any]:
     """
     MotionSwitcher opzionale prima di StandUp/StandDown (pattern da ``go2_stand_example.py`` / motion_switcher_example).
@@ -312,7 +326,7 @@ def sport_accompany(
                 code = sc.BalanceStand()
                 steps["balance_stand"] = {"code": code}
                 steps = _steps_with_meanings(steps)
-                ok = _sport_steps_all_ok(steps)
+                ok = _sport_steps_ok_allow_benign_stop_move(steps)
                 out: dict[str, Any] = {
                     "ok": ok,
                     "mode": "stand_up",
@@ -334,7 +348,7 @@ def sport_accompany(
                 code = sc.StandDown()
                 steps["stand_down"] = {"code": code}
                 steps = _steps_with_meanings(steps)
-                ok = _sport_steps_all_ok(steps)
+                ok = _sport_steps_ok_allow_benign_stop_move(steps)
                 out_c: dict[str, Any] = {
                     "ok": ok,
                     "mode": "crouch",

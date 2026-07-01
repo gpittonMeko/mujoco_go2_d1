@@ -1,4 +1,4 @@
-"""Descrizione scena da JPEG camera (OpenAI vision o fallback breve)."""
+"""Descrizione scena da JPEG camera (OpenAI vision o fallback locale)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,62 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
+
+
+def _local_vision_fallback(jpeg: bytes, *, camera_label: str, error: Exception) -> tuple[str, dict[str, Any]]:
+    kb = max(1, len(jpeg) // 1024)
+    meta: dict[str, Any] = {"backend": "local_vision_fallback", "cloud_error": repr(error), "bytes": len(jpeg)}
+    try:
+        import cv2  # type: ignore
+        import numpy as np
+
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise RuntimeError("jpeg_decode_failed")
+        h, w = frame.shape[:2]
+        meta["frame_size_px"] = [int(w), int(h)]
+        try:
+            import sys
+
+            from go2_dashboard.paths import PROJECT_ROOT
+
+            scripts_dir = str(PROJECT_ROOT / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from box_object_detector import detect_all_objects, detector_status
+
+            det = detect_all_objects(frame)
+            boxes = list(det.get("boxes") or [])
+            meta["detector_status"] = detector_status()
+            meta["detections"] = boxes[:5]
+            if boxes:
+                best = boxes[0]
+                label = best.get("label") or "oggetto"
+                conf = best.get("confidence")
+                return (
+                    f"Cloud non disponibile. Analisi locale: frame {camera_label} {w}x{h}, rilevo {label}"
+                    + (f" confidenza {conf}." if conf is not None else "."),
+                    meta,
+                )
+            return (
+                f"Cloud non disponibile. Frame {camera_label} ricevuto ({kb} KB, {w}x{h}); "
+                "analisi locale: nessun oggetto affidabile rilevato.",
+                meta,
+            )
+        except Exception as det_exc:
+            meta["local_detector_error"] = repr(det_exc)
+            return (
+                f"Cloud non disponibile. Frame {camera_label} ricevuto ({kb} KB, {w}x{h}); "
+                "detector locale non disponibile.",
+                meta,
+            )
+    except Exception as exc:
+        meta["decode_error"] = repr(exc)
+        return (
+            f"Cloud non disponibile. Ho comunque ricevuto un frame dalla camera {camera_label} ({kb} KB).",
+            meta,
+        )
 
 
 def _openai_vision(jpeg: bytes, prompt: str) -> tuple[str, dict[str, Any]]:
@@ -58,15 +114,11 @@ def _openai_vision(jpeg: bytes, prompt: str) -> tuple[str, dict[str, Any]]:
 def describe_jpeg(jpeg: bytes, *, camera_label: str = "frontale") -> tuple[str, dict[str, Any]]:
     prompt = (
         f"Camera robot Go2 ({camera_label}), vista davanti al robot. "
-        "Descrivi SOLO ciò che è chiaramente visibile nel frame, in italiano, massimo 3 frasi brevi. "
-        "Non inventare oggetti o persone. Se non sei sicuro, scrivi «non è chiaro». "
-        "Se l'immagine è scura, sfocata o vuota, dillo esplicitamente."
+        "Descrivi SOLO cio' che e' chiaramente visibile nel frame, in italiano, massimo 3 frasi brevi. "
+        "Non inventare oggetti o persone. Se non sei sicuro, scrivi 'non e' chiaro'. "
+        "Se l'immagine e' scura, sfocata o vuota, dillo esplicitamente."
     )
     try:
         return _openai_vision(jpeg, prompt)
     except (urllib.error.URLError, urllib.error.HTTPError, Exception) as exc:
-        kb = max(1, len(jpeg) // 1024)
-        return (
-            f"Ho ricevuto un frame dalla camera {camera_label} ({kb} KB) ma la visione cloud non è disponibile: {exc!s}.",
-            {"backend": "vision_fallback", "error": repr(exc)},
-        )
+        return _local_vision_fallback(jpeg, camera_label=camera_label, error=exc)

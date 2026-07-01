@@ -35,6 +35,28 @@ _RS_PANEL_CACHE: dict[str, dict[str, Any]] = {
     "wrist": {"ts": 0.0, "panels": {}},
     "front": {"ts": 0.0, "panels": {}},
 }
+_TUNING_CYCLES_PATH = PROJECT_ROOT / "data" / "pick_tuning_cycles.jsonl"
+
+
+def _color_stream_source_setting(camera_role: str) -> str:
+    role = _normalize_camera_role(camera_role)
+    env_key = "D1_PICK_WRIST_COLOR_SOURCE" if role == "wrist" else "D1_PICK_FRONT_COLOR_SOURCE"
+    default = "realsense_first" if role == "wrist" else "cache_first"
+    val = str(os.environ.get(env_key, default) or default).strip().lower()
+    if val not in {"cache_first", "realsense_first", "cache_only", "realsense_only"}:
+        val = default
+    return val
+
+
+def _color_stream_source_order(camera_role: str) -> list[str]:
+    mode = _color_stream_source_setting(camera_role)
+    if mode == "cache_only":
+        return ["cache"]
+    if mode == "realsense_only":
+        return ["realsense"]
+    if mode == "cache_first":
+        return ["cache", "realsense"]
+    return ["realsense", "cache"]
 
 
 def _normalize_camera_role(raw: Any) -> str:
@@ -114,6 +136,21 @@ def _pick_scene_jpeg() -> Response:
     if not path.is_file():
         return jsonify({"ok": False, "reason": "no_scene_overlay"}), 404
     return send_file(path, mimetype="image/jpeg", max_age=0)
+
+
+def _last_detection_payload() -> dict[str, Any]:
+    preset = pick_preset.load_preset()
+    ld = preset.get("last_detection") if isinstance(preset, dict) else None
+    overlay = pick_vision.scene_overlay_path()
+    ts = int(time.time())
+    return {
+        "ok": True,
+        "has_last_detection": isinstance(ld, dict),
+        "last_detection": ld if isinstance(ld, dict) else None,
+        "preview_available": overlay.is_file(),
+        "preview_url": f"/api/pick/scene.jpg?t={ts}" if overlay.is_file() else None,
+        "camera_select": _camera_pref(),
+    }
 
 
 def _detect_on_logical_camera(logical: int) -> dict[str, Any]:
@@ -307,6 +344,64 @@ def _teach_model_active() -> tuple[bool, dict[str, Any]]:
         return False, {"ok": False, "reason": "teach_model_status_error", "error": str(exc)}
 
 
+def _read_tuning_cycles(limit: int = 80) -> list[dict[str, Any]]:
+    p = _TUNING_CYCLES_PATH
+    if not p.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+    except Exception:
+        return []
+    if limit > 0:
+        rows = rows[-int(limit):]
+    return rows
+
+
+def _append_tuning_cycle(body: dict[str, Any]) -> dict[str, Any]:
+    _TUNING_CYCLES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    item: dict[str, Any] = {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "side": str(body.get("side") or body.get("scan_variant") or "unknown"),
+        "result": str(body.get("result") or "unknown"),
+        "error_cm": body.get("error_cm"),
+        "note": str(body.get("note") or "").strip()[:300],
+    }
+    if body.get("detect") is not None:
+        item["detect"] = bool(body.get("detect"))
+    try:
+        item["error_cm"] = round(float(item.get("error_cm") or 0.0), 2)
+    except Exception:
+        item["error_cm"] = None
+    try:
+        preset = pick_preset.load_preset()
+        ld = preset.get("last_detection") if isinstance(preset, dict) else None
+        if isinstance(ld, dict):
+            item["last_detection"] = {
+                "label": ld.get("label"),
+                "confidence": ld.get("confidence"),
+                "orientation_deg": ld.get("orientation_deg"),
+                "grip_center_px": ld.get("grip_center_px"),
+            }
+        if isinstance(preset, dict):
+            item["joint_offset_deg"] = preset.get("joint_offset_deg")
+            item["manual_orient_offset_deg"] = preset.get("manual_orient_offset_deg")
+    except Exception:
+        pass
+    with _TUNING_CYCLES_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(item, ensure_ascii=True) + "\n")
+    return item
+
+
 # --- Braccio D1 (stesse API di :5053) — Pick teach integrato su :5052 ---
 @bp.route("/api/joints/feedback", methods=["GET"])
 def joints_feedback() -> Response:
@@ -358,6 +453,33 @@ def joints_session_end() -> Response:
 
 @bp.route("/api/joints/release", methods=["POST"])
 def joints_release() -> Response:
+    body = request.get_json(silent=True) or {}
+    release_enabled = os.environ.get("GO2_ENABLE_JOINT_RELEASE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not release_enabled:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "release_globally_disabled",
+                    "hint_it": "Release giunti disabilitato globalmente (GO2_ENABLE_JOINT_RELEASE=0).",
+                }
+            ),
+            403,
+        )
+    allow_unsafe = os.environ.get("GO2_ALLOW_UNSAFE_RELEASE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    has_confirm = str(body.get("confirm") or "").strip().upper() == "ARM_RELEASE_JOINTS"
+    has_ack = bool(body.get("ack_gravity_risk"))
+    if not allow_unsafe and not (has_confirm and has_ack):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "release_requires_explicit_confirm",
+                    "hint_it": "Release bloccato: invia confirm=ARM_RELEASE_JOINTS e ack_gravity_risk=true.",
+                }
+            ),
+            403,
+        )
     out = service.motor_release()
     out["funcode"] = 5
     out["action"] = "motor_release"
@@ -454,16 +576,28 @@ def _panel_placeholder_jpeg(cv2: Any, *, camera_role: str, panel: str) -> bytes:
     return vision_streams.encode_jpeg(ph, cv2) or b""
 
 
+def _cache_stats_rgb_usable(stats: Any) -> bool:
+    """Accept a camera-cache frame only when diagnostics confirm real color."""
+    if not isinstance(stats, dict) or not stats.get("available"):
+        return False
+    return stats.get("rgb_like") is True and str(stats.get("stream_kind") or "").lower() == "rgb"
+
+
 def _read_color_jpeg_from_cache(cameras_mod: Any, *, camera_role: str) -> bytes | None:
     logical = _logical_for_role(camera_role)
     try:
         cameras_mod.CAMERA_CACHE.start(logical)
         stats = cameras_mod.CAMERA_CACHE.stats().get(str(logical), {})
-        fresh = bool(stats.get("available"))
-        jpg = cameras_mod.CAMERA_CACHE.peek_jpeg(logical) if fresh else None
-        if jpg is None:
-            jpg = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=0.8)
-        return jpg
+        if not _cache_stats_rgb_usable(stats):
+            return None
+        jpg = cameras_mod.CAMERA_CACHE.peek_jpeg(logical)
+        if jpg is not None:
+            return jpg
+        jpg = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=0.8)
+        # The cache can change source while waiting (for example when an SDK
+        # depth capture releases V4L). Re-check before publishing the frame.
+        stats = cameras_mod.CAMERA_CACHE.stats().get(str(logical), {})
+        return jpg if jpg is not None and _cache_stats_rgb_usable(stats) else None
     except Exception:
         return None
 
@@ -539,10 +673,14 @@ def _pick_vision_stream_generator(panel: str, *, camera_role: str = "wrist"):
         try:
             jpg: bytes | None = None
             if panel == "color" and cameras_mod is not None:
-                jpg = _read_color_jpeg_from_cache(cameras_mod, camera_role=role)
-                if jpg is None:
-                    # Fallback robusto: cattura on-demand RealSense (evita frame stale/pausa cache).
-                    jpg = _cached_panel_jpeg(role, "color", cv2=cv2)
+                for source in _color_stream_source_order(role):
+                    if source == "cache" and cameras_mod is not None:
+                        jpg = _read_color_jpeg_from_cache(cameras_mod, camera_role=role)
+                    elif source == "realsense":
+                        # Fallback robusto: cattura on-demand RealSense (evita frame stale/pausa cache).
+                        jpg = _cached_panel_jpeg(role, "color", cv2=cv2)
+                    if jpg:
+                        break
             else:
                 jpg = _cached_panel_jpeg(role, panel, cv2=cv2)
             if jpg:
@@ -563,6 +701,75 @@ def api_pick_vision_stream_mjpg() -> Response:
         mimetype="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+@bp.route("/api/pick/vision/rgb_health")
+def api_pick_vision_rgb_health() -> Response:
+    role = _normalize_camera_role(request.args.get("camera", "wrist"))
+    logical = _logical_for_role(role)
+    camera_cache_stats: dict[str, Any] = {}
+    try:
+        from go2_dashboard import cameras as cameras_mod
+
+        cameras_mod.CAMERA_CACHE.start(logical)
+        camera_cache_stats = cameras_mod.CAMERA_CACHE.stats().get(str(logical), {}) or {}
+    except Exception as exc:
+        camera_cache_stats = {"available": False, "error": str(exc)}
+
+    with _RS_PANEL_LOCK:
+        st = _RS_PANEL_CACHE.get(role, {"ts": 0.0, "panels": {}})
+        last_ts = float(st.get("ts") or 0.0)
+        panels = st.get("panels") or {}
+    age_s = round(max(0.0, time.time() - last_ts), 3) if last_ts > 0 else None
+    return jsonify(
+        {
+            "ok": True,
+            "camera": role,
+            "logical": logical,
+            "color_source_mode": _color_stream_source_setting(role),
+            "color_source_order": _color_stream_source_order(role),
+            "camera_cache": camera_cache_stats,
+            "panel_cache": {
+                "age_s": age_s,
+                "has_color": bool(panels.get("color")),
+                "has_depth": bool(panels.get("depth")),
+                "has_ir1": bool(panels.get("ir1")),
+                "has_ir2": bool(panels.get("ir2")),
+            },
+        }
+    )
+
+
+@bp.route("/api/pick/vision/realsense/reset", methods=["POST"])
+def api_pick_vision_realsense_reset() -> Response:
+    body = request.get_json(silent=True) or {}
+    role = _normalize_camera_role(body.get("camera") or body.get("role") or "wrist")
+    logical = _logical_for_role(role)
+    try:
+        from go2_dashboard import realsense_pyrs as rp
+    except Exception as exc:
+        return jsonify({"ok": False, "reason": "realsense_module_unavailable", "error": str(exc)}), 503
+
+    try:
+        rp.stop()
+    except Exception:
+        pass
+    time.sleep(float(os.environ.get("D1_PICK_RS_RESET_PAUSE_S", "0.45")))
+    cap = rp.capture_aligned_on_demand(role=role, fast=False, include_ir=True)
+
+    try:
+        from go2_dashboard import cameras as cameras_mod
+
+        cameras_mod.CAMERA_CACHE.start(logical)
+        _ = cameras_mod.CAMERA_CACHE.get_jpeg(logical, wait_s=0.8)
+    except Exception:
+        pass
+
+    with _RS_PANEL_LOCK:
+        _RS_PANEL_CACHE[role] = {"ts": 0.0, "panels": {}}
+
+    code = 200 if cap.get("ok") else 503
+    return jsonify({"ok": bool(cap.get("ok")), "camera": role, "logical": logical, "capture": cap}), code
 
 
 @bp.route("/api/pick/camera/select", methods=["GET", "POST"])
@@ -773,6 +980,20 @@ def pick_preset_nudge() -> Response:
     code = 200 if out.get("ok") else 400
     return jsonify(out), code
 
+
+@bp.route("/api/pick/tuning/cycles", methods=["GET", "POST"])
+def pick_tuning_cycles() -> Response:
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        item = _append_tuning_cycle(body)
+        return jsonify({"ok": True, "saved": item, "count": len(_read_tuning_cycles(limit=0))})
+    try:
+        limit = int(str(request.args.get("limit", "80")))
+    except ValueError:
+        limit = 80
+    rows = _read_tuning_cycles(limit=max(1, min(limit, 300)))
+    return jsonify({"ok": True, "count": len(rows), "items": rows})
+
 @bp.route("/api/pick/vision/crop", methods=["GET"])
 def pick_vision_crop_get() -> Response:
     from go2_dashboard.d1_jog import pick_vision_crop
@@ -882,6 +1103,11 @@ def pick_detect() -> Response:
     _apply_pick_detection_to_preset(out)
     code = 200 if out.get("ok") else 502
     return jsonify(out), code
+
+
+@bp.route("/api/pick/detection/last")
+def pick_detection_last() -> Response:
+    return jsonify(_last_detection_payload())
 
 @bp.route("/api/pick/diagnostic")
 def pick_diagnostic() -> Response:

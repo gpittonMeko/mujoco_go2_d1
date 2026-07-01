@@ -1,7 +1,14 @@
 (function () {
   "use strict";
 
+  var SR = window.__HERMES_SCRIPT_ROOT__ || "";
   var history = [];
+
+  function api(path) {
+    if (!path) path = "/";
+    if (path.charAt(0) !== "/") path = "/" + path;
+    return SR + path;
+  }
 
   function addMsg(role, text) {
     var log = document.getElementById("chatLog");
@@ -32,7 +39,7 @@
     setStatus("elaboro…");
     document.getElementById("chatLog").appendChild(pending);
 
-    fetch("/api/hermes/chat", {
+    fetch(api("/api/hermes/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: msg, history: history, speak: true }),
@@ -62,19 +69,21 @@
       })
       .catch(function (e) {
         pending.textContent = "Errore: " + e;
+        setStatus("rete/API — ricarica la pagina");
       });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    fetch("/api/hermes/health")
+    fetch(api("/api/hermes/health"))
       .then(function (r) { return r.json(); })
       .then(function (j) {
         var tts = j.tts || {};
         var active = tts.active_engine || tts.last_engine;
         var eng = tts.configured_engine || "?";
         var voice = "TTS " + eng + (active ? " · ultimo " + active : "");
-        var cam = j.operator_reachable ? " · operator 5052 online" : " · standalone (no 5052)";
-        setStatus("Hermes · " + voice + cam);
+        var mode = j.integrated ? " · integrato operator" : (j.standalone ? " · standalone" : "");
+        var cam = j.operator_reachable ? " · stack online" : " · operator offline";
+        setStatus("Hermes · " + voice + mode + cam);
       })
       .catch(function () { setStatus("offline"); });
 

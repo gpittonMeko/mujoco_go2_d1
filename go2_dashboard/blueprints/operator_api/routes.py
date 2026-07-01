@@ -18,18 +18,22 @@ from go2_dashboard.blueprints.grasp import grasp_health_payload
 from go2_dashboard.grasp_coach_agent import (
     grasp_coach_enabled,
     grasp_coach_feedback,
+    grasp_coach_lateral_metric_only_enabled,
     grasp_coach_model,
     grasp_coach_model_ladder_it,
     grasp_coach_preview_metric,
     grasp_coach_step,
+    grasp_coach_supervisor_enabled,
 )
 from go2_dashboard.grasp_coach_memory import read_recent_grasp_coach_events
 from go2_dashboard.grasp_teach_calib import (
+    goto_vision_target,
     teach_calib_cancel,
     teach_calib_clear,
     teach_calib_list_samples,
     teach_calib_start,
     teach_calib_status,
+    vision_calib_diagnostic,
 )
 from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
 from go2_dashboard.cameras import (
@@ -45,6 +49,7 @@ from go2_dashboard.cameras import (
     v4l_candidates_for_logical_slot,
     v4l_index_in_usb_inventory,
     v4l_usb_inventory,
+    wrist_depth_backend,
 )
 from go2_dashboard import d1_arm_motion
 from go2_dashboard.d1_arm_publish_lite import (
@@ -72,14 +77,17 @@ from go2_dashboard.d1_arm_publish_lite import (
 from go2_dashboard.hermes_agent import (
     hermes_enabled,
     hermes_effective_tts_voice,
+    hermes_llm_ready,
     hermes_model,
     hermes_normalize_intent_reply,
+    hermes_offline_mode,
     hermes_openai_base_url,
     hermes_personality_labels_it,
     hermes_resolve_personality,
     hermes_runtime_context_block,
     hermes_skills_status_payload,
     hermes_tts_voice,
+    hermes_use_local_tts,
     openai_api_key,
     openai_tts_mp3_base64,
     route_natural_language,
@@ -92,8 +100,37 @@ from go2_dashboard.operator_session_memory import (
 from go2_dashboard.operator_scene import build_grasp_pipeline_stub, build_scene_3d_payload
 from go2_dashboard.operator_stack import go2_local, nx_stack_status
 from go2_dashboard.paths import PROJECT_ROOT
+
+# #region agent log
+def _dbg149a4f(
+    location: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    *,
+    hypothesis_id: str = "",
+) -> None:
+    try:
+        payload = {
+            "sessionId": "149a4f",
+            "timestamp": int(time.time() * 1000),
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "hypothesisId": hypothesis_id,
+        }
+        with (PROJECT_ROOT / "debug-149a4f.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# #endregion
 from go2_dashboard.scene_meshes import send_scene_mesh_file
-from go2_dashboard.sport_lane import accompany_execute_json, accompany_mode_handle, sport_last_payload
+from go2_dashboard.sport_lane import (
+    accompany_execute_json,
+    accompany_mode_handle,
+    sport_connectivity_probe,
+    sport_env_payload,
+    sport_last_payload,
+)
 from go2_dashboard import tag5_calibration_lite as t5
 from . import bp, _PROCESS_STARTED_AT
 from .helpers_hermes import (
@@ -104,8 +141,10 @@ from .helpers_hermes import (
     hermes_append_turn_log_memory,
     hermes_apply_go2_base_lexicon_from_user_text,
     hermes_apply_grasp_full_lexicon_from_user_text,
+    hermes_apply_collect_lexicon_from_user_text,
     hermes_operator_memory_block_for_prompt,
     hermes_should_log_turn_to_memory,
+    hermes_synthesize_and_play_local,
     hermes_try_play_tts_mp3_on_go2_speaker,
     hermes_try_play_tts_mp3_on_go2_webrtc,
     hermes_try_play_tts_mp3_on_local_host,
@@ -212,6 +251,35 @@ def api_health() -> Any:
     )
 
 
+@bp.route("/api/debug/agent_log", methods=["GET"])
+def api_debug_agent_log() -> Any:
+    """Ultime righe NDJSON debug agent (lab) — file su NX ``data/debug-16a61f.ndjson``."""
+    from go2_dashboard.debug_agent_log import agent_log_path
+
+    try:
+        tail_n = max(1, min(int(request.args.get("tail", 40)), 200))
+    except (TypeError, ValueError):
+        tail_n = 40
+    path = agent_log_path()
+    lines: list[str] = []
+    try:
+        from pathlib import Path
+
+        p = Path(path)
+        if p.is_file():
+            raw = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = raw[-tail_n:]
+    except OSError as exc:
+        return jsonify({"ok": False, "reason": "read_failed", "detail": repr(exc)}), 500
+    entries: list[Any] = []
+    for ln in lines:
+        try:
+            entries.append(json.loads(ln))
+        except json.JSONDecodeError:
+            entries.append({"raw": ln})
+    return jsonify({"ok": True, "path": path, "count": len(entries), "entries": entries})
+
+
 @bp.route("/api/status", methods=["GET"])
 def api_status() -> Any:
     return jsonify({"ok": True, "operator_dashboard": True, "pid": os.getpid()})
@@ -219,14 +287,26 @@ def api_status() -> Any:
 
 @bp.route("/api/hermes/status", methods=["GET"])
 def api_hermes_status() -> Any:
+    offline = hermes_offline_mode()
+    try:
+        from go2_dashboard.hermes.tts_local import tts_status
+
+        tts_local_status = tts_status()
+    except Exception as exc:
+        tts_local_status = {"error": repr(exc)}
     payload: dict[str, Any] = {
         "ok": True,
         "GO2_ENABLE_HERMES_AGENT": hermes_enabled(),
+        "GO2_HERMES_OFFLINE": offline,
         "has_openai_api_key": bool(openai_api_key()),
+        "hermes_llm_ready": hermes_llm_ready(),
         "openai_base_url": hermes_openai_base_url(),
         "model": hermes_model(),
+        "tts_engine": (os.environ.get("GO2_HERMES_TTS_ENGINE") or os.environ.get("HERMES_TTS_ENGINE") or ("piper" if offline else "openai")),
+        "tts_local_supported": hermes_use_local_tts(),
+        "tts_local": tts_local_status,
         "tts_voice": hermes_tts_voice(),
-        "tts_openai_supported": bool(openai_api_key()),
+        "tts_openai_supported": bool(openai_api_key()) and not offline,
         "personality_presets": hermes_personality_labels_it(),
         "personality_env": (os.environ.get("GO2_HERMES_PERSONALITY") or "").strip(),
         "personality_note_it": (
@@ -289,9 +369,18 @@ def api_hermes_status() -> Any:
     robot_only_tts_env = (os.environ.get("GO2_HERMES_TTS_ROBOT_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}
     payload["tts_paths_it"] = (
         "Hermes è prima **chat testuale** (`assistant_reply_it`) + JSON azioni (Sport, braccio, jog giunti). "
-        "La voce è opzionale: checkbox «Cloud TTS» → MP3 OpenAI; sul Go2 servono DDS (`GO2_HERMES_PLAY_ON_GO2`) "
-        "e/o WebRTC (`GO2_HERMES_PLAY_ON_GO2_WEBRTC` + `GO2_WEBRTC_IP` + pip). "
-        "Se il cane è muto e non hai `GO2_HERMES_TTS_ROBOT_ONLY` né `GO2_HERMES_SUPPRESS_BROWSER_MP3`, il browser può fare fallback."
+        + (
+            "Modalità **offline**: voce **Piper** locale → WebRTC sul Go2 (automatica, niente Cloud TTS). "
+            "LLM locale Gemma via llama-server su "
+            + hermes_openai_base_url()
+            + "."
+            if offline
+            else (
+                "La voce è opzionale: checkbox «Cloud TTS» → MP3 OpenAI; sul Go2 servono DDS (`GO2_HERMES_PLAY_ON_GO2`) "
+                "e/o WebRTC (`GO2_HERMES_PLAY_ON_GO2_WEBRTC` + `GO2_WEBRTC_IP` + pip). "
+                "Se il cane è muto e non hai `GO2_HERMES_TTS_ROBOT_ONLY` né `GO2_HERMES_SUPPRESS_BROWSER_MP3`, il browser può fare fallback."
+            )
+        )
     )
     payload["tts_env"] = {
         "GO2_HERMES_PLAY_ON_GO2": play_go2,
@@ -337,14 +426,14 @@ def api_hermes_command() -> Any:
             ),
             503,
         )
-    if not openai_api_key():
+    if not hermes_llm_ready():
         return (
             jsonify(
                 merge_http_timing_into_json_dict(
                     {
                         "ok": False,
                         "reason": "missing_OPENAI_API_KEY",
-                        "hint_it": "Imposta OPENAI_API_KEY (o GO2_OPENAI_API_KEY) nell'ambiente — mai nel codice o git.",
+                        "hint_it": "Imposta OPENAI_API_KEY (cloud) oppure GO2_HERMES_OFFLINE=1 + llama-server locale.",
                     }
                 )
             ),
@@ -386,6 +475,16 @@ def api_hermes_command() -> Any:
     vision_pairs: list[tuple[str, bytes]] | None = None
     vision_jpeg_legacy: bytes | None = None
     if bool(body.get("attach_camera")) and go2_local():
+        if hermes_offline_mode():
+            return jsonify(
+                merge_http_timing_into_json_dict(
+                    {
+                        "ok": False,
+                        "reason": "hermes_vision_unavailable_offline",
+                        "hint_it": "Visione camere disabilitata in modalità offline (Gemma 1B test-only).",
+                    }
+                )
+            ), 400
         dual = os.environ.get("GO2_HERMES_VISION_DUAL_CAMERA", "1").lower() in {"1", "true", "yes", "on"}
         if dual:
             vision_pairs = []
@@ -422,10 +521,11 @@ def api_hermes_command() -> Any:
         return jsonify(merge_http_timing_into_json_dict({"ok": False, "reason": "hermes_llm_failed", "detail": repr(exc)})), 502
 
     intent_llm, lex_notes = hermes_apply_go2_base_lexicon_from_user_text(base_cmd, intent_llm, caps)
+    intent_llm, collect_notes = hermes_apply_collect_lexicon_from_user_text(base_cmd, intent_llm, caps)
     intent_llm, grasp_notes = hermes_apply_grasp_full_lexicon_from_user_text(base_cmd, intent_llm, caps)
     intent_llm, inject_notes = hermes_inject_arm_joint_delta_from_user_text(base_cmd, intent_llm, caps)
     intent_eff, warnings_it = _hermes_sanitize_intent(intent_llm, caps)
-    server_notes = [str(x) for x in list(lex_notes) + list(grasp_notes) + list(inject_notes) if str(x).strip()]
+    server_notes = [str(x) for x in list(lex_notes) + list(collect_notes) + list(grasp_notes) + list(inject_notes) if str(x).strip()]
     if server_notes:
         warnings_it = server_notes + list(warnings_it)
         br = str(intent_eff.get("assistant_reply_it") or "").strip()
@@ -465,7 +565,34 @@ def api_hermes_command() -> Any:
         "action_digest_it": hermes_summarize_intent_it(intent_eff),
     }
 
-    if bool(body.get("tts_openai")) and reply:
+    want_cloud_tts = bool(body.get("tts_openai")) and reply and not hermes_offline_mode()
+    want_local_tts = bool(reply) and (hermes_offline_mode() or hermes_use_local_tts())
+
+    if want_local_tts and not want_cloud_tts:
+        local_out = hermes_synthesize_and_play_local(reply)
+        payload.update(local_out)
+        robot_only_tts = (os.environ.get("GO2_HERMES_TTS_ROBOT_ONLY") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        playback_remote = bool(local_out.get("tts_playback_go2") or local_out.get("tts_playback_nx"))
+        payload["tts_suppress_client_audio"] = bool(
+            playback_remote or robot_only_tts or hermes_offline_mode()
+        )
+        payload["tts_robot_only_env"] = robot_only_tts
+        if not playback_remote:
+            if local_out.get("tts_error"):
+                payload["tts_playback_hint_it"] = (
+                    f"TTS Piper locale fallito: {local_out.get('tts_error')}. "
+                    "Verifica binario/modello Piper e WebRTC (GO2_WEBRTC_IP, unitree-webrtc-connect)."
+                )
+            elif robot_only_tts:
+                payload["tts_playback_hint_it"] = (
+                    "GO2_HERMES_TTS_ROBOT_ONLY=1: Piper ok ma sul Go2 non è partito nulla — verifica WebRTC."
+                )
+    elif want_cloud_tts:
         try:
             voice_eff = hermes_effective_tts_voice(body_voice=body.get("tts_voice"), personality=personality_eff)
             payload["tts_voice_used"] = voice_eff
@@ -499,7 +626,6 @@ def api_hermes_command() -> Any:
             payload["tts_playback_go2_webrtc"] = played_go2_webrtc
             payload["tts_playback_nx"] = played_nx
             playback_remote = played_go2 or played_nx
-            # Solo se esplicitamente GO2_HERMES_SUPPRESS_BROWSER_MP3=1 si muta il browser anche quando il cane non riproduce nulla.
             force_suppress_browser = (os.environ.get("GO2_HERMES_SUPPRESS_BROWSER_MP3") or "").strip().lower() in {
                 "1",
                 "true",
@@ -618,6 +744,14 @@ def api_grasp_coach_status() -> Any:
                 "model": grasp_coach_model(),
                 "go2_local": go2_local(),
                 "openai_configured": bool(openai_api_key()),
+                "lateral_metric_only": grasp_coach_lateral_metric_only_enabled(),
+                "supervisor_enabled": grasp_coach_supervisor_enabled(),
+                "coach_mode_hint_it": (
+                    "▸ Prendi = Orbbec metrico + IK (default lab). "
+                    "Step coach con START laterale = solo metrico se lateral_metric_only; "
+                    "GPT vision solo con START frontale o lateral_metric_only=0. "
+                    "Supervisor OpenAI = veto nel loop autonomo, non chat."
+                ),
                 "openai_api": "POST /v1/chat/completions",
                 "note_it": "Vision multimodale + response_format json_object. Stessa chiave di Hermes.",
                 "model_ladder_it": grasp_coach_model_ladder_it(),
@@ -650,6 +784,7 @@ def api_grasp_coach_preview() -> Any:
     out = grasp_coach_preview_metric(
         instruction=str(body.get("instruction") or body.get("task") or ""),
         start_variant=body.get("start_variant"),
+        light=body.get("light") in (True, 1, "1", "true", "yes", "on"),
     )
     return jsonify(merge_http_timing_into_json_dict(out))
 
@@ -661,6 +796,43 @@ def api_grasp_coach_feedback() -> Any:
     return jsonify(merge_http_timing_into_json_dict(grasp_coach_feedback(body)))
 
 
+@bp.route("/api/grasp_coach/vision_diagnostic", methods=["GET", "POST"])
+def api_grasp_coach_vision_diagnostic() -> Any:
+    """Dove pensa la box (visione) vs punta utensile — senza movimento."""
+    body = request.get_json(silent=True) or {}
+    instr = str(body.get("instruction") or request.args.get("instruction") or "")
+    return jsonify(merge_http_timing_into_json_dict(vision_calib_diagnostic(instruction=instr)))
+
+
+@bp.route("/api/grasp_coach/goto_vision_target", methods=["POST"])
+def api_grasp_coach_goto_vision_target() -> Any:
+    """IK parziale verso il target 3D dell'ultima stima metrica (test calibrazione)."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "MOVE_VISION_TARGET":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "confirm_required",
+                    "hint_it": 'Invia JSON {"confirm":"MOVE_VISION_TARGET"}.',
+                }
+            ),
+            400,
+        )
+    blend = body.get("approach_blend")
+    try:
+        blend_f = float(blend) if blend is not None else None
+    except (TypeError, ValueError):
+        blend_f = None
+    out = goto_vision_target(
+        instruction=str(body.get("instruction") or ""),
+        approach_blend=blend_f,
+        fresh=body.get("fresh", True) is not False,
+    )
+    code = 200 if out.get("ok") else 503
+    return jsonify(merge_http_timing_into_json_dict(out)), code
+
+
 @bp.route("/api/grasp_coach/teach_calib/status", methods=["GET"])
 def api_grasp_coach_teach_calib_status() -> Any:
     return jsonify(merge_http_timing_into_json_dict(teach_calib_status()))
@@ -668,7 +840,7 @@ def api_grasp_coach_teach_calib_status() -> Any:
 
 @bp.route("/api/grasp_coach/teach_calib/start", methods=["POST"])
 def api_grasp_coach_teach_calib_start() -> Any:
-    """Calibrazione manuale: detection → 4s hold → rilascio giunti → 15s teach → salva posa."""
+    """Calibrazione manuale: detection → 5s hold → rilascio giunti → 15s teach → salva posa."""
     body = request.get_json(silent=True) or {}
     hold_s = body.get("hold_s")
     manual_s = body.get("manual_s")
@@ -700,6 +872,60 @@ def api_grasp_coach_teach_calib_samples() -> Any:
     if request.method == "DELETE":
         return jsonify(merge_http_timing_into_json_dict(teach_calib_clear()))
     return jsonify(merge_http_timing_into_json_dict(teach_calib_list_samples()))
+
+
+@bp.route("/api/grasp/wrist_camera_health", methods=["GET"])
+def api_grasp_wrist_camera_health() -> Any:
+    """Badge UI: la camera depth polso e' vista e dà profondità reale?"""
+    # #region agent log
+    t0 = time.perf_counter()
+    _dbg149a4f(
+        "routes.py:api_grasp_wrist_camera_health",
+        "request_start",
+        {"remote": request.remote_addr},
+        hypothesis_id="H4",
+    )
+    # #endregion
+    try:
+        from go2_dashboard.orbbec_wrist_grasp import wrist_camera_health
+
+        out = wrist_camera_health()
+    except Exception as exc:  # noqa: BLE001
+        out = {"ok": False, "reason": "health_exception", "detail": repr(exc)}
+    # #region agent log
+    _dbg149a4f(
+        "routes.py:api_grasp_wrist_camera_health",
+        "request_done",
+        {
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+            "ok": bool(out.get("ok")),
+            "reason": out.get("reason"),
+        },
+        hypothesis_id="H2,H3,H5",
+    )
+    # #endregion
+    # Sempre 200: è una diagnostica eseguita con successo, l'esito è nel campo ``ok``.
+    return jsonify(merge_http_timing_into_json_dict(out)), 200
+
+
+@bp.route("/api/grasp/wrist_depth_bbox_probe", methods=["GET"])
+def api_grasp_wrist_depth_bbox_probe() -> Any:
+    """Numeri depth nel bbox scatola (diagnostica laboratorio)."""
+    hint = (request.args.get("color_hint") or "blue").strip() or "blue"
+    manual_bbox = None
+    raw_bbox = (request.args.get("bbox") or "").strip()
+    if raw_bbox:
+        try:
+            manual_bbox = [float(x.strip()) for x in raw_bbox.split(",")[:4]]
+        except ValueError:
+            manual_bbox = None
+    try:
+        from go2_dashboard.orbbec_wrist_grasp import wrist_depth_bbox_probe
+
+        out = wrist_depth_bbox_probe(color_hint=hint, manual_bbox_xyxy=manual_bbox)
+    except Exception as exc:  # noqa: BLE001
+        out = {"ok": False, "reason": "probe_exception", "detail": repr(exc)}
+    return jsonify(merge_http_timing_into_json_dict(out)), 200
 
 
 @bp.route("/api/operator_session/memory", methods=["GET"])
@@ -856,10 +1082,22 @@ def api_cameras_status() -> Any:
             "6": v4l_candidates_for_logical_slot(6),
         }
         payload["v4l_pick_note_it"] = (
-            "Indici ammessi per log.0: tutti i nodi USB Orbbec 2bc5:080b o Sonix 0735:0269. "
-            "Per log.6: tutti i nodi Intel RealSense 8086:0b3a. "
+            "Indici ammessi per log.0: nodi USB polso "
+            + (
+                "Intel RealSense D456 (8086:0b5c)."
+                if wrist_depth_backend() == "realsense"
+                else "Orbbec 2bc5:080b o Sonix 0735:0269."
+            )
+            + " Per log.6: Intel RealSense D435i (8086:0b3a). "
             "Scegli di solito il nodo con stream RGB (se vedi IR/depth, prova il successivo)."
         )
+        payload["wrist_depth_backend"] = wrist_depth_backend()
+        try:
+            from go2_dashboard.realsense_pyrs import list_devices
+
+            payload["realsense_devices"] = list_devices()
+        except Exception as exc:
+            payload["realsense_devices_error"] = repr(exc)
         payload["v4l_index_by_logical"] = {str(d): _v4l_index_for_logical_camera(d) for d in CAMERA_DEVICES}
         payload["sysfs_card_name_by_logical"] = {
             str(d): _v4l_sysfs_card_name(_v4l_index_for_logical_camera(d)) for d in CAMERA_DEVICES
@@ -876,6 +1114,12 @@ def api_cameras_status() -> Any:
         payload["orbbec_rgb_v4l_sysfs_hints"] = _orbbec_rgb_sysfs_hints(inv_now)
     rgb_hints = payload.get("orbbec_rgb_v4l_sysfs_hints") or []
     summary = payload.get("camera_summary") or {}
+    conflict = summary.get("_conflict") if isinstance(summary, dict) else None
+    if isinstance(conflict, dict) and conflict.get("hint_it"):
+        payload["camera_conflict_warning_it"] = str(conflict["hint_it"])
+        payload["camera_conflict"] = {
+            k: conflict.get(k) for k in ("ok", "reason", "hint_it") if conflict.get(k) is not None
+        }
     v4l_by_log = payload.get("v4l_index_by_logical") or {}
     s0 = summary.get("0")
     if (
@@ -1443,6 +1687,17 @@ def api_base_sport_last() -> Any:
     return jsonify(sport_last_payload())
 
 
+@bp.route("/api/base/sport_env", methods=["GET"])
+def api_base_sport_env() -> Any:
+    return jsonify(sport_env_payload())
+
+
+@bp.route("/api/base/sport_connectivity", methods=["GET"])
+def api_base_sport_connectivity() -> Any:
+    payload, code = sport_connectivity_probe()
+    return jsonify(payload), code
+
+
 @bp.route("/api/base/accompany_mode", methods=["GET", "POST"])
 def api_base_accompany_mode() -> Any:
     payload, code = accompany_mode_handle(request)
@@ -1644,6 +1899,34 @@ def api_arm_joints_release() -> Any:
     """Rilascia coppia motori (funcode 5 mode 0) — giunti liberi per teach manuale."""
     from go2_dashboard.d1_jog import service as jog_svc
 
+    body = request.get_json(silent=True) or {}
+    release_enabled = os.environ.get("GO2_ENABLE_JOINT_RELEASE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not release_enabled:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "release_globally_disabled",
+                    "hint_it": "Release giunti disabilitato globalmente (GO2_ENABLE_JOINT_RELEASE=0).",
+                }
+            ),
+            403,
+        )
+    allow_unsafe = os.environ.get("GO2_ALLOW_UNSAFE_RELEASE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    has_confirm = str(body.get("confirm") or "").strip().upper() == "ARM_RELEASE_JOINTS"
+    has_ack = bool(body.get("ack_gravity_risk"))
+    if not allow_unsafe and not (has_confirm and has_ack):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "reason": "release_requires_explicit_confirm",
+                    "hint_it": "Release bloccato: invia confirm=ARM_RELEASE_JOINTS e ack_gravity_risk=true.",
+                }
+            ),
+            403,
+        )
+
     out = jog_svc.motor_release()
     code = 200 if out.get("ok") else 409
     return jsonify(out), code
@@ -1818,10 +2101,24 @@ def api_arm_file_poses_status() -> Any:
 @bp.route("/api/arm/at_start_check", methods=["GET"])
 def api_arm_at_start_check() -> Any:
     """Il braccio è sulla START salvata? (confronto servo feedback vs preset scelto)."""
+    from go2_dashboard.debug_agent_log import dbg_agent_log
+
     variant = normalize_start_variant(request.args.get("start_variant"))
     out = check_at_saved_start_pose(start_variant=variant)
-    code = 200 if out.get("ok") else 409
-    return jsonify(out), code
+    dbg_agent_log(
+        "operator_api/routes.py:at_start_check",
+        "at_start_check",
+        {
+            "start_variant": variant,
+            "ok": out.get("ok"),
+            "max_error_deg": out.get("max_error_deg"),
+            "worst_joint": out.get("worst_joint"),
+            "referer": (request.headers.get("Referer") or "")[:120],
+        },
+        hypothesis_id="H-START",
+    )
+    # Sempre HTTP 200: ok=false nel JSON (evita 409 rosso in console — non è un blocco).
+    return jsonify(out), 200
 
 
 @bp.route("/api/arm/goto_true_zero", methods=["POST"])

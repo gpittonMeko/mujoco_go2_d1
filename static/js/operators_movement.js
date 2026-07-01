@@ -157,46 +157,20 @@
       });
   }
 
-  /** Stand / crouch: GET + sync=1 (come dashboard monolite). */
+  /** Stand / crouch: delega a operators_core (timeout + poll sport_last). */
   function movementBaseStand(mode) {
-    var u =
-      api("/api/base/accompany_mode") +
-      "?mode=" +
-      encodeURIComponent(mode) +
-      "&enable=1&sync=1&_=" +
-      Date.now();
-    setPill(mode + "…", "warn");
-    fetch(u, {
-      method: "GET",
-      credentials: "same-origin",
-      cache: "no-store",
-    })
-      .then(function (r) {
-        return r.text().then(function (t) {
-          return { status: r.status, text: t };
-        });
-      })
-      .then(function (pack) {
-        var data = {};
-        try {
-          data = pack.text ? JSON.parse(pack.text) : {};
-        } catch (eJ) {
-          data = { ok: false, raw: String(pack.text).slice(0, 400) };
-        }
-        data._http_status = pack.status;
-        logPre(data);
-        var okish = pack.status >= 200 && pack.status < 300 && data.ok !== false;
-        setPill(mode + " · HTTP " + pack.status, okish ? "ok" : "err");
-        if (!okish) {
-          issueErrMov("Base · " + mode, "stand/crouch fallito", data);
-        }
-        movementPollSportLast();
-      })
-      .catch(function (e) {
-        logPre(String(e));
-        setPill("rete", "err");
-        issueErrMov("Base · stand/crouch", String(e), null);
-      });
+    if (!window.operatorsBaseStandMotion) {
+      issueErrMov("Base · " + mode, "operatorsBaseStandMotion non caricato", null);
+      setPill(mode + " · JS mancante", "err");
+      return;
+    }
+    window.operatorsBaseStandMotion(mode, {
+      issueSource: "Base · " + mode,
+      onPill: function (text, kind) {
+        setPill(text, kind);
+      },
+      onLog: logPre,
+    });
   }
 
   function movementVelocityOnce(vx, vy, vyaw, preBalance) {

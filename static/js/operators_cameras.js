@@ -155,10 +155,20 @@
     var wrap = document.getElementById("cameraLog0Warn");
     var tx = document.getElementById("cameraLog0WarnText");
     var s0 = j && j.camera_summary && j.camera_summary["0"];
+    var s6 = j && j.camera_summary && j.camera_summary["6"];
     if (!wrap || !tx) {
       return;
     }
-    if (s0 && s0.color_ok === false && s0.fix_it) {
+    if (j && j.camera_conflict_warning_it) {
+      wrap.style.display = "block";
+      tx.textContent = j.camera_conflict_warning_it;
+    } else if (s0 && s6 && s0.device_path && s0.device_path === s6.device_path) {
+      wrap.style.display = "block";
+      tx.textContent =
+        "log.0 e log.6 usano lo stesso " +
+        s0.device_path +
+        " — polso e frontale sono confusi. Tab Scene: log.0 → Orbbec, log.6 → RealSense.";
+    } else if (s0 && s0.color_ok === false && s0.fix_it) {
       wrap.style.display = "block";
       tx.textContent = s0.fix_it;
     } else if (s0 && s0.color_ok === false) {
@@ -202,6 +212,8 @@
     setBadge("cam6LiveBadge", sum, 6);
     setBadge("graspDockCam0Badge", sum, 0);
     setBadge("graspCoachLiveBadge", sum, 0);
+    setBadge("graspTeachCam0Badge", sum, 0);
+    setBadge("graspTeachCam6Badge", sum, 6);
     if (j && j.openvla_jpeg_urls) {
       window.__operatorsOpenvlaJpegUrls = j.openvla_jpeg_urls;
     }

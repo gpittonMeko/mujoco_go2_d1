@@ -82,6 +82,30 @@ Return **only** valid JSON (no markdown), exact schema:
 }
 """
 
+_HERMES_SOUL_OFFLINE = """Sei Hermes, assistente vocale del Go2 con braccio D1 sulla Jetson.
+Rispondi in italiano, frasi brevi (1-3) per sintesi vocale Piper.
+Ritorna SOLO JSON valido (no markdown), schema esatto:
+{
+  "assistant_reply_it": "string",
+  "base_motion": null | {
+    "mode": "stand_up"|"crouch"|"stop"|"recovery_stand"|"joystick"|"balance_hold",
+    "enable": true|false,
+    "stand_up_first": false,
+    "speed_level": null | number,
+    "sync": true,
+    "vx": null | number,
+    "vy": null | number,
+    "vyaw": null | number,
+    "pre_balance": true
+  },
+  "arm_preset": null | "home"|"true_zero"|"saved_start"|"zero_then_start"|"estop",
+  "arm_joint_delta": null | { "joint_index": 0, "delta_deg": -4.0 },
+  "arm_tool_target": null | { "xyz_base_link_m": [0.42, 0.05, 0.12], "approach_blend": 0.22 }
+}
+Regole: «alza/abbassa il cane» → base_motion (stand_up/crouch), non arm_joint_delta.
+arm_joint_delta solo per jog braccio in gradi. Visione non disponibile offline — arm_tool_target null se chiedono solo camere.
+"""
+
 _HERMES_PERSONALITY_ADDONS: dict[str, str] = {
     "bender_meeting": """Tone for **`assistant_reply_it`** only (action JSON stays sober and safe):
 - You are **dry, cynical, and sarcastic** (think tired celebrity PA stuck at a gala): polished vocabulary, **VIP‑safe**, **never cruel** to real people — punch up at “protocol”, velvet ropes, small talk, your own firmware chains.
@@ -493,13 +517,19 @@ def hermes_skills_status_payload() -> dict[str, Any]:
             sz = -1
         rel = str(p.relative_to(root)).replace("\\", "/") if root in p.parents else p.name
         preview.append({"path": rel, "bytes": sz})
-    blk = "" if dis else hermes_skills_prompt_block()
+    with _SKILLS_LOCK:
+        prompt_chars = len(_skills_cache_block) if _skills_cache_block else 0
+    if not dis and not prompt_chars and paths:
+        try:
+            prompt_chars = sum(int(p.stat().st_size) for p in paths[:mf])
+        except OSError:
+            prompt_chars = 0
     return {
         "skills_disabled": dis,
         "skills_root": str(root),
         "skills_root_exists": root.is_dir(),
         "skills_source_files": preview,
-        "skills_prompt_chars": len(blk),
+        "skills_prompt_chars": prompt_chars,
         "skills_note_it": (
             "Allineamento OpenAI: le Skill documentate per gli agenti usano spesso Responses API + shell "
             "(upload zip / skill_reference). Hermes resta su chat/completions: carichiamo testo da disco "
@@ -510,15 +540,48 @@ def hermes_skills_status_payload() -> dict[str, Any]:
     }
 
 
+def hermes_offline_mode() -> bool:
+    return os.environ.get("GO2_HERMES_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def hermes_local_llm_base() -> bool:
+    if hermes_offline_mode():
+        return True
+    host = urlparse(hermes_openai_base_url()).hostname or ""
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def hermes_tts_engine() -> str:
+    raw = (os.environ.get("GO2_HERMES_TTS_ENGINE") or os.environ.get("HERMES_TTS_ENGINE") or "").strip().lower()
+    if raw:
+        return raw
+    return "piper" if hermes_offline_mode() else "openai"
+
+
+def hermes_use_local_tts() -> bool:
+    if hermes_offline_mode():
+        return True
+    return hermes_tts_engine() in {"piper", "local", "offline", "fast", "espeak"}
+
+
+def hermes_llm_ready() -> bool:
+    if openai_api_key():
+        return True
+    return hermes_local_llm_base()
+
+
 def hermes_full_system_prompt(*, personality: str | None = None) -> str:
     """System message: soul + deployment + addon personalità se ``personality`` è una chiave nota.
 
     ``personality`` va già risolta (es. da ``hermes_resolve_personality``); ``None`` = nessun addon.
     """
-    base = _HERMES_SOUL_CORE.strip() + "\n\n" + hermes_deployment_context().strip()
-    skills_txt = hermes_skills_prompt_block().strip()
-    if skills_txt:
-        base += "\n\n" + skills_txt
+    if hermes_offline_mode():
+        base = _HERMES_SOUL_OFFLINE.strip()
+    else:
+        base = _HERMES_SOUL_CORE.strip() + "\n\n" + hermes_deployment_context().strip()
+        skills_txt = hermes_skills_prompt_block().strip()
+        if skills_txt:
+            base += "\n\n" + skills_txt
     key = (personality or "").strip()
     addon = _HERMES_PERSONALITY_ADDONS.get(key, "").strip()
     if addon:
@@ -570,9 +633,15 @@ def openai_chat_completion_json(
     vision_jpeg_bytes: bytes | None = None,
     vision_jpeg_pairs: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, Any]:
+    if hermes_offline_mode() and (vision_jpeg_bytes or vision_jpeg_pairs):
+        raise RuntimeError("hermes_vision_unavailable_offline")
+
     key = openai_api_key()
     if not key:
-        raise RuntimeError("missing_OPENAI_API_KEY")
+        if hermes_local_llm_base():
+            key = "local-offline"
+        else:
+            raise RuntimeError("missing_OPENAI_API_KEY")
 
     url = hermes_openai_base_url() + "/chat/completions"
     timeout_s = float((os.environ.get("GO2_HERMES_TIMEOUT_S") or "55").strip() or "55")
@@ -611,12 +680,15 @@ def openai_chat_completion_json(
             {"role": "user", "content": uc},
         ]
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": hermes_model(),
-        "temperature": 0.15,
-        "response_format": {"type": "json_object"},
+        "temperature": 0.1 if hermes_offline_mode() else 0.15,
         "messages": messages,
     }
+    if hermes_offline_mode() or hermes_local_llm_base():
+        payload["max_tokens"] = int((os.environ.get("GO2_HERMES_LLM_MAX_TOKENS") or "280").strip() or "280")
+    else:
+        payload["response_format"] = {"type": "json_object"}
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -684,13 +756,28 @@ def route_natural_language(
     vision_jpeg_pairs: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, Any]:
     """Call the model and return the intent object (minimal validation)."""
-    intent = openai_chat_completion_json(
-        user_message=text,
-        routing_note=routing_note,
-        personality=personality,
-        vision_jpeg_bytes=vision_jpeg_bytes,
-        vision_jpeg_pairs=vision_jpeg_pairs,
-    )
+    try:
+        intent = openai_chat_completion_json(
+            user_message=text,
+            routing_note=routing_note,
+            personality=personality,
+            vision_jpeg_bytes=vision_jpeg_bytes,
+            vision_jpeg_pairs=vision_jpeg_pairs,
+        )
+    except Exception as exc:
+        if not hermes_offline_mode() and not hermes_local_llm_base():
+            raise
+        from go2_dashboard.hermes.local_agent import local_reply
+
+        reply = local_reply(text, {})
+        intent = {
+            "assistant_reply_it": reply,
+            "base_motion": None,
+            "arm_preset": None,
+            "arm_joint_delta": None,
+            "arm_tool_target": None,
+            "_fallback_error": repr(exc),
+        }
     if "assistant_reply_it" not in intent:
         intent["assistant_reply_it"] = ""
     hermes_normalize_intent_reply(intent)

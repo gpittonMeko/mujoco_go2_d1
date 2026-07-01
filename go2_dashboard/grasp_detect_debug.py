@@ -157,6 +157,7 @@ def save_detection_snapshot(
         "reason": det.get("reason"),
         "image_url": payload["image_url"],
         "json_path": str(json_path),
+        "saved_at": payload["saved_at"],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 

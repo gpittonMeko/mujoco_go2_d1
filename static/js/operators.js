@@ -42,9 +42,18 @@
     if (wire) {
       wire(document.getElementById("cam0Preview"));
       wire(document.getElementById("cam6Preview"));
+    }
+    window.operatorsWireGraspDockStreams = function () {
+      if (!wire || window.__graspDockStreamsWired) {
+        return;
+      }
       wire(document.getElementById("graspDockCam0"));
       wire(document.getElementById("graspDockCam6"));
-    }
+      window.__graspDockStreamsWired = true;
+      if (window.operatorsGraspDockBumpPreviews) {
+        window.operatorsGraspDockBumpPreviews();
+      }
+    };
     window.operatorsBumpMjpegStreams();
     document.addEventListener("click", function (ev) {
       var t = ev.target;
@@ -88,7 +97,6 @@
       });
       window.operatorsRefreshGraspPreviewFrame();
     }
-    window.operatorsGraspDockBumpPreviews();
     if (window.operatorsGraspRefreshStartPoseBadge) {
       window.operatorsGraspRefreshStartPoseBadge();
     }

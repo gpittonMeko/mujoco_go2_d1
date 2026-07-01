@@ -1,4 +1,4 @@
-"""Riconoscimento oggetto su snapshot Orbbec (solo indicazione centro presa — non muove il braccio)."""
+"""Riconoscimento oggetto su snapshot camera polso (RealSense D456 o Orbbec legacy)."""
 
 from __future__ import annotations
 
@@ -220,7 +220,7 @@ def _detect_on_frame(frame: Any, *, snapshot_name: str) -> dict[str, Any]:
 
 def capture_and_detect() -> dict[str, Any]:
     """Nuova foto RGB + rilevamento sulla stessa immagine (una sola operazione)."""
-    cap = orbbec_capture.capture_orbbec_jpeg()
+    cap = _capture_wrist_rgb_jpeg()
     if not cap.get("ok"):
         return {
             "ok": False,
@@ -241,6 +241,36 @@ def capture_and_detect() -> dict[str, Any]:
     out["capture"] = cap
     out["image_url"] = cap.get("image_url")
     return out
+
+
+def _capture_wrist_rgb_jpeg() -> dict[str, Any]:
+    try:
+        from go2_dashboard.cameras import CAMERA_CACHE, wrist_depth_backend
+    except Exception:
+        return orbbec_capture.capture_orbbec_jpeg()
+
+    if wrist_depth_backend() != "realsense":
+        return orbbec_capture.capture_orbbec_jpeg()
+
+    CAMERA_CACHE.start(0)
+    jpg = CAMERA_CACHE.get_jpeg(0, wait_s=float(os.environ.get("D1_PICK_REALSENSE_WAIT_S", "3.0")))
+    if not jpg:
+        return {
+            "ok": False,
+            "reason": "realsense_wrist_capture_failed",
+            "hint": "Nessun frame RGB dalla RealSense D456 polso (logical 0). Controlla /api/cameras/status.",
+            "stream_kind": "rgb",
+            "via": "camera_cache_logical_0",
+        }
+    return orbbec_capture._save_jpeg(
+        jpg,
+        source="camera_cache:logical0:wrist_realsense_d456",
+        extra={
+            "via": "camera_cache_logical_0",
+            "camera_backend": "realsense",
+            "stream_kind": "rgb_cache",
+        },
+    )
 
 
 def detect_on_latest_snapshot(*, capture_if_missing: bool = True) -> dict[str, Any]:

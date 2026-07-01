@@ -13,12 +13,15 @@ import time
 from datetime import datetime
 from typing import Any
 
+from go2_dashboard.operator_stack import go2_local
 from go2_dashboard.paths import PROJECT_ROOT
 
 _LOG = logging.getLogger(__name__)
 
 GO2_DDS_DOMAIN = int(os.environ.get("GO2_DDS_DOMAIN", "0"))
 GO2_DDS_INTERFACE = os.environ.get("GO2_DDS_INTERFACE", "").strip()
+GO2_HOST = os.environ.get("GO2_HOST", "192.168.123.18").strip()
+GO2_DASHBOARD_BIND = os.environ.get("GO2_DASHBOARD_BIND", "0.0.0.0").strip()
 
 LAST_SPORT_RPC: dict[str, Any] = {
     "updated_at": None,
@@ -272,3 +275,92 @@ def sport_last_payload() -> dict[str, Any]:
     with LAST_SPORT_RPC_LOCK:
         snap = {k: v for k, v in LAST_SPORT_RPC.items()}
     return {"ok": True, **snap}
+
+
+def sport_env_payload() -> dict[str, Any]:
+    """Diagnostica DDS/Sport per la UI operator (stesso contratto del monolite)."""
+    iface_raw = (GO2_DDS_INTERFACE or "").strip()
+    port = int(os.environ.get("GO2_DASHBOARD_PORT", "5052"))
+    return {
+        "ok": True,
+        "sport_uses_dashboard_http_ip_for_rpc": False,
+        "dashboard_bind_host": GO2_DASHBOARD_BIND,
+        "dashboard_port": port,
+        "go2_host_env": GO2_HOST,
+        "go2_local": go2_local(),
+        "go2_enable_base_motion_env": (os.environ.get("GO2_ENABLE_BASE_MOTION") or "").strip(),
+        "dds_domain": GO2_DDS_DOMAIN,
+        "dds_interface_env": iface_raw or None,
+        "dds_interface_effective": iface_raw if iface_raw else "(vuoto — Cyclone DDS sceglie interfaccia di default)",
+        "sport_async_stand_modes_env": (os.environ.get("GO2_SPORT_ASYNC_STAND_MODES") or "").strip(),
+        "sport_subprocess_stand_modes_env": (os.environ.get("GO2_SPORT_SUBPROCESS_STAND_MODES") or "").strip(),
+        "hint_it": (
+            f"Sport RPC via DDS (domain {GO2_DDS_DOMAIN}, interfaccia "
+            f"{iface_raw or 'default'}). Crouch/Stand: GET /api/base/accompany_mode?mode=crouch&sync=1. "
+            "Serve GO2_LOCAL=1 e GO2_ENABLE_BASE_MOTION=1 sul processo dashboard."
+        ),
+        "sport_connectivity_probe_get": "/api/base/sport_connectivity",
+    }
+
+
+def sport_connectivity_probe() -> tuple[dict[str, Any], int]:
+    """MotionSwitcher.CheckMode in subprocess — nessun movimento."""
+    if not go2_local():
+        return (
+            {
+                "ok": False,
+                "reason": "GO2_LOCAL!=1 — esegui questo probe sulla NX accanto al cane.",
+            },
+            403,
+        )
+    timeout_s = float(os.environ.get("GO2_SPORT_CONNECTIVITY_TIMEOUT_S", "15"))
+    script = PROJECT_ROOT / "scripts" / "dds_motion_ping_once.py"
+    if not script.is_file():
+        return {"ok": False, "reason": "missing_scripts/dds_motion_ping_once.py"}, 500
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            {
+                "ok": False,
+                "reason": f"probe_timeout_after_{timeout_s}s",
+                "hint_it": "MotionSwitcher non ha risposto in tempo — DDS o cane irraggiungibile.",
+            },
+            504,
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": repr(exc)}, 502
+
+    if proc.returncode != 0:
+        return (
+            {
+                "ok": False,
+                "reason": "dds_motion_ping_subprocess_failed",
+                "returncode": proc.returncode,
+                "stderr": (proc.stderr or "")[:4000],
+                "stdout": (proc.stdout or "")[:1200],
+                "hint_it": "Il probe DDS è uscito con codice ≠0 (spesso segfault libreria nativa).",
+            },
+            502,
+        )
+    try:
+        result = json.loads((proc.stdout or "").strip() or "{}")
+    except json.JSONDecodeError as exc:
+        return (
+            {
+                "ok": False,
+                "reason": f"json_decode:{exc!s}",
+                "stdout": (proc.stdout or "")[:1200],
+                "stderr": (proc.stderr or "")[:800],
+            },
+            502,
+        )
+    status = 200 if isinstance(result, dict) and result.get("ok") else 502
+    return result, status

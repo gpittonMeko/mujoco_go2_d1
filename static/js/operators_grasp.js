@@ -53,6 +53,9 @@
     if (typeof window.operatorsGraspRefreshStartPoseBadge === "function") {
       window.operatorsGraspRefreshStartPoseBadge();
     }
+    if (typeof window.operatorsGraspTeachRefreshCoachBadge === "function") {
+      window.operatorsGraspTeachRefreshCoachBadge();
+    }
   };
 
   window.operatorsStartVariantInit = function () {
@@ -1412,6 +1415,17 @@
       })
       .then(function (o) {
         var j = o.j || {};
+        _dbgAgentLog(
+          "operators_grasp.js:at_start_badge",
+          "at_start_check_response",
+          {
+            http_status: o.status,
+            ok: j.ok,
+            max_error_deg: j.max_error_deg,
+            start_variant: variant,
+          },
+          "H-JS-START"
+        );
         var vLabel = variant === "frontal" ? "frontale" : "laterale";
         if (j.ok) {
           badge.className = "op-grasp-front-badge is-ok";
@@ -1420,9 +1434,9 @@
         } else {
           badge.className = "op-grasp-front-badge is-fail";
           badge.textContent =
-            "START " + vLabel + ": NON in posa" +
+            "START salvata " + vLabel + ": NON in posa" +
             (j.max_error_deg != null ? " (max err " + j.max_error_deg + "°)" : "") +
-            " — usa «Prendi oggetto» (non dry-run)";
+            " — OK dopo «START +90°» (pose diverse)";
         }
         return j;
       })
@@ -1895,7 +1909,9 @@
     vla:
       "<strong>VLA AWS:</strong> piano dal worker EC2 (OpenVLA) e poi esecuzione manuale (fasi / IK / FK). Health worker → Piano VLA → Esegui. Richiede worker raggiungibile + validazione verde.",
     teach:
-      "<strong>Teaching:</strong> coach GPT-nano (OpenAI vision) passo-passo, con memoria e feedback. Usalo per recovery dopo un fallimento o per insegnare micro-correzioni, non come piano primario."
+      "<strong>Teaching · presa metrica:</strong> <strong>▸ Prendi</strong> = Orbbec SDK + IK autonomo (default lab). " +
+      "<strong>OpenAI</strong> = supervisor nascosto (veto) nel loop, <em>non</em> chat né controllo traiettoria. " +
+      "Step coach GPT solo in Avanzato con START <strong>frontale</strong> — non è Hermes."
   };
 
   function graspSetFlow(flow) {
@@ -1927,13 +1943,41 @@
         node.hidden = hideForTeach;
       }
     }
+    var progCard = document.getElementById("graspProgressCard");
+    if (progCard) {
+      progCard.hidden = hideForTeach;
+    }
     try {
       window.localStorage.setItem("go2GraspFlow", flow);
     } catch (e) {
       /* storage non disponibile: ignora */
     }
+    if (flow === "teach" && typeof window.operatorsGraspTeachOrbbecInit === "function") {
+      window.operatorsGraspTeachOrbbecInit();
+    }
   }
   window.operatorsGraspSetFlow = graspSetFlow;
+
+  function graspFlowDefault() {
+    try {
+      var q = new URLSearchParams(window.location.search || "");
+      var flowQ = String(q.get("flow") || "").trim();
+      if (flowQ === "teach" || flowQ === "guided" || flowQ === "vla") {
+        return flowQ;
+      }
+    } catch (_eQ) {
+      /* ignore */
+    }
+    try {
+      var saved = String(window.localStorage.getItem("go2GraspFlow") || "").trim();
+      if (saved === "teach" || saved === "guided" || saved === "vla") {
+        return saved;
+      }
+    } catch (_eS) {
+      /* ignore */
+    }
+    return "teach";
+  }
 
   function graspFlowInit() {
     var btns = document.querySelectorAll(".op-grasp-flow-btn");
@@ -1946,13 +1990,7 @@
         graspSetFlow(this.getAttribute("data-grasp-flow"));
       });
     }
-    var saved = null;
-    try {
-      saved = window.localStorage.getItem("go2GraspFlow");
-    } catch (e) {
-      saved = null;
-    }
-    graspSetFlow(saved || "guided");
+    graspSetFlow(graspFlowDefault());
   }
 
   function graspTabInit() {

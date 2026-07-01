@@ -13,6 +13,7 @@ from go2_dashboard.blueprints.grasp import bp as grasp_bp
 from go2_dashboard.blueprints.operator_api import bp as operator_api_bp
 from go2_dashboard.hermes.routes import bp as hermes_bp
 from go2_dashboard.operator_stack import go2_local
+from go2_dashboard.d1_jog import service as d1_service
 from go2_dashboard.paths import PROJECT_ROOT
 
 
@@ -86,6 +87,10 @@ def create_focus_app() -> Flask:
             asset_ver=_assets_version(),
         )
         return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+    @app.route("/api/arm/status")
+    def focus_arm_status() -> Response:
+        return jsonify({"ok": True, "arm_coupled": d1_service.arm_coupled()})
 
     @app.route("/focus/pick")
     def focus_pick() -> Response:

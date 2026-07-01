@@ -194,6 +194,14 @@ def _lateral_metric_only_enabled() -> bool:
     return os.environ.get("GO2_GRASP_COACH_LATERAL_METRIC_ONLY", "1").lower() in {"1", "true", "yes", "on"}
 
 
+def grasp_coach_lateral_metric_only_enabled() -> bool:
+    return _lateral_metric_only_enabled()
+
+
+def grasp_coach_supervisor_enabled() -> bool:
+    return _supervisor_enabled()
+
+
 def _default_coach_blend(body: dict[str, Any]) -> tuple[float, str]:
     blend = _clamp_blend(None)
     blend_source = "metric_default"
@@ -464,6 +472,16 @@ def _sanitize_xyz(raw: Any) -> list[float] | None:
     return [x, y, z]
 
 
+def _clip_xyz_workspace(xyz: list[float]) -> list[float]:
+    """Riduce un target 3D fuori sandbox al workspace parziale (approach coach)."""
+    x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+    return [
+        max(0.10, min(1.15, x)),
+        max(-0.88, min(0.88, y)),
+        max(0.05, min(1.05, z)),
+    ]
+
+
 def _nogo_zone_reason(xyz: list[float]) -> str | None:
     """NO-GO / NO-PICK guard (sicurezza dura): rifiuta target che colpirebbero testa/camera del cane.
 
@@ -515,6 +533,13 @@ def _coach_target_from_metric_plan(
     """
     preview = mp.get("preview") if isinstance(mp.get("preview"), dict) else {}
     plan = preview.get("plan") if isinstance(preview.get("plan"), list) else []
+    max_reach = float(os.environ.get("GO2_ARM_MAX_REACH_M", "0.55") or 0.55)
+    max_coach_m = float(os.environ.get("GO2_GRASP_MAX_COACH_TARGET_M", "0.55") or 0.55)
+    # Avanzamento di fase: se il TCP e' gia vicino al target di uno stadio intermedio
+    # (pre_grasp/approach) lo si salta e si punta lo stadio piu' profondo, cosi sopra
+    # l'oggetto il braccio SCENDE fino a `grasp` (e l'auto-close della pinza scatta).
+    advance_m = float(os.environ.get("GO2_GRASP_STAGE_ADVANCE_M", "0.05") or 0.05)
+    reachable_plan = mp.get("reachable") is not False
     for prefer in ("pre_grasp", "approach", "grasp", "lift"):
         for st in plan:
             if not isinstance(st, dict) or st.get("stage") != prefer or not st.get("ik_ok"):
@@ -527,8 +552,26 @@ def _coach_target_from_metric_plan(
                 continue
             if not lateral and cur_tip is not None and xyz[0] < cur_tip[0] - 0.02:
                 continue
+            if cur_tip is not None and len(cur_tip) >= 3:
+                d_tip = math.sqrt(sum((float(cur_tip[i]) - xyz[i]) ** 2 for i in range(3)))
+                if d_tip > max_coach_m:
+                    continue
+                # Gia su questo stadio intermedio -> avanza allo stadio successivo (scendi).
+                if prefer in ("pre_grasp", "approach") and d_tip <= advance_m:
+                    continue
+            if not reachable_plan and prefer in ("grasp", "lift"):
+                continue
             return _sanitize_xyz(xyz), prefer
-    return _sanitize_xyz(mp.get("grasp_display_base_link_m")), "grasp"
+    raw = mp.get("grasp_display_base_link_m")
+    san = _sanitize_xyz(raw)
+    if san is not None and reachable_plan:
+        if cur_tip is not None and len(cur_tip) >= 3:
+            d_tip = math.sqrt(sum((float(cur_tip[i]) - san[i]) ** 2 for i in range(3)))
+            if d_tip <= max_coach_m:
+                return san, "grasp"
+        elif san[2] >= 0.05:
+            return san, "grasp"
+    return None, None
 
 
 def grasp_coach_feedback(body: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +609,106 @@ def grasp_coach_feedback(body: dict[str, Any]) -> dict[str, Any]:
     out["ok"] = True
     out["appended"] = True
     return out
+
+
+_SUPERVISOR_SYSTEM = """You are GraspSupervisor — second-check ONLY for a metric Orbbec grasp plan.
+You NEVER output target XYZ or joint angles. You only approve or veto execution based on the RGB image.
+
+The operator requested a colored box. Check:
+- object_matches_instruction: does the highlighted/detected box match the requested color?
+- object_visible: is a graspable box clearly visible?
+- approve: true only if safe to execute partial approach this step
+- suggested_blend: 0.12-0.35 or null to keep default
+- reason_it: short Italian explanation
+
+JSON keys (all required):
+{
+  "approve": true|false,
+  "object_matches_instruction": true|false,
+  "object_visible": true|false,
+  "suggested_blend": null | number,
+  "reason_it": "string"
+}"""
+
+
+def _supervisor_enabled() -> bool:
+    return os.environ.get("GO2_GRASP_COACH_SUPERVISOR", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def grasp_supervisor_review(
+    *,
+    instruction: str,
+    metric_plan: dict[str, Any],
+    rgb_jpeg: bytes | None = None,
+    color_hint: str | None = None,
+) -> dict[str, Any]:
+    """GPT-nano second check before autonomous/metric execute. Does not replace IK target."""
+    out: dict[str, Any] = {"ok": False, "skipped": False, "approve": True}
+    if not _supervisor_enabled():
+        out.update({"ok": True, "skipped": True, "approve": True, "reason_it": "supervisor_off"})
+        return out
+    if not grasp_coach_enabled() or not openai_api_key():
+        out.update({"ok": True, "skipped": True, "approve": True, "reason_it": "no_openai_key"})
+        return out
+    det = metric_plan.get("object_detection") if isinstance(metric_plan.get("object_detection"), dict) else {}
+    summary = {
+        "instruction": instruction,
+        "color_hint": color_hint or det.get("color_hint"),
+        "detection_label": det.get("label"),
+        "confidence": det.get("confidence"),
+        "depth_m": metric_plan.get("depth_m"),
+        "grasp_xyz": metric_plan.get("grasp_display_base_link_m"),
+        "reachable": metric_plan.get("reachable"),
+        "teach_calib_applied": metric_plan.get("teach_calib_applied"),
+        "online_calib_applied": metric_plan.get("online_calib_applied"),
+    }
+    user_blob = (
+        "Metric plan summary (IK target is fixed server-side — do NOT propose coordinates):\n"
+        + json.dumps(summary, ensure_ascii=False)
+        + "\nApprove partial arm motion toward this object?"
+    )
+    img = rgb_jpeg
+    if not img and go2_local():
+        try:
+            CAMERA_CACHE.start()
+            img = CAMERA_CACHE.get_jpeg(0, wait_s=1.5) or CAMERA_CACHE.peek_jpeg(0)
+        except Exception:
+            img = None
+    if not img:
+        out.update({"ok": True, "skipped": True, "approve": True, "reason_it": "no_rgb_frame"})
+        return out
+    small = _shrink_jpeg_bytes(img, max_side=320, jpeg_quality=34)
+    try:
+        llm, ms = _openai_coach_call(
+            user_text=user_blob,
+            rgb_jpeg=small,
+            system_prompt=_SUPERVISOR_SYSTEM,
+            depth_jpeg=None,
+            rgb_label="Robot wrist camera (logical 0)",
+        )
+        out["openai_ms"] = ms
+        out["supervisor_json"] = llm
+        approve = bool(llm.get("approve", False))
+        obj_match = bool(llm.get("object_matches_instruction", approve))
+        visible = bool(llm.get("object_visible", approve))
+        out.update(
+            {
+                "ok": True,
+                "approve": approve and obj_match and visible,
+                "object_matches_instruction": obj_match,
+                "object_visible": visible,
+                "reason_it": str(llm.get("reason_it") or ""),
+                "suggested_blend": llm.get("suggested_blend"),
+            }
+        )
+        return out
+    except Exception as exc:
+        out["reason"] = "supervisor_openai_failed"
+        out["detail"] = repr(exc)
+        out["approve"] = True
+        out["skipped"] = True
+        out["reason_it"] = "Supervisor fallito — procedo con metrica (fallback)."
+        return out
 
 
 def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
@@ -1112,10 +1255,70 @@ def grasp_coach_step(body: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | None = None) -> dict[str, Any]:
-    """Anteprima presa dalla posa servo attuale (Orbbec metrico) — senza OpenAI e senza movimento.
+def _grasp_coach_preview_light(*, instruction: str, out: dict[str, Any]) -> dict[str, Any]:
+    """Capture polso + detect + snapshot JPEG — senza piano IK (veloce per «Foto SDK»)."""
+    import sys
+    import time
 
-    Usata dal tab Teaching per mostrare bbox, asse di presa e traiettoria IK prima di eseguire.
+    from go2_dashboard.orbbec_wrist_grasp import _filter_wrist_detection, _wrist_debug_tag, capture_aligned
+    from go2_dashboard.paths import PROJECT_ROOT
+
+    t0 = time.perf_counter()
+    cap = capture_aligned()
+    out["capture_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+    if not cap.get("ok"):
+        out["reason"] = cap.get("reason", "capture_failed")
+        out["hint_it"] = cap.get("hint_it") or cap.get("detail")
+        out["label_it"] = "Acquisizione SDK fallita — attendi 2 s e riprova."
+        return out
+    out["depth_nonzero_px"] = cap.get("depth_nonzero_px")
+    s = str(PROJECT_ROOT / "scripts")
+    if s not in sys.path:
+        sys.path.insert(0, s)
+    from box_object_detector import detect_box_object, parse_color_from_instruction
+
+    hint = parse_color_from_instruction(instruction or "")
+    color = cap["color_bgr"]
+    intr = cap["intrinsics"]
+    det = _filter_wrist_detection(detect_box_object(color, color_hint=hint), intr)
+    debug_snap: dict[str, Any] = {}
+    try:
+        from go2_dashboard.grasp_detect_debug import save_detection_snapshot
+
+        debug_snap = save_detection_snapshot(
+            color,
+            det if isinstance(det, dict) else None,
+            tag=_wrist_debug_tag(),
+            logical_camera=0,
+            step="wrist_snapshot_light",
+        )
+    except Exception as exc:
+        debug_snap = {"saved": False, "error": repr(exc)}
+    out["debug_snapshot"] = debug_snap
+    if debug_snap.get("image_url"):
+        out["metric_viz_url"] = str(debug_snap["image_url"])
+    out["object_detection"] = det
+    partial = bool(det.get("ok"))
+    out["object_visible"] = partial
+    out["ok"] = partial
+    out["reason"] = "" if partial else str(det.get("reason") or "no_detection")
+    out["label_it"] = (
+        "SDK OK — oggetto rilevato."
+        if partial
+        else f"SDK acquisito, nessun oggetto ({out['reason']}) — metti la scatola in vista log.0."
+    )
+    return out
+
+
+def grasp_coach_preview_metric(
+    *,
+    instruction: str = "",
+    start_variant: str | None = None,
+    light: bool = False,
+) -> dict[str, Any]:
+    """Anteprima presa dalla posa servo attuale (metrico polso) — senza OpenAI e senza movimento.
+
+    ``light=True``: solo capture SDK + detect + JPEG debug (~3–5 s), senza IK completa.
     """
     lateral = normalize_start_variant(start_variant) == START_VARIANT_LATERAL or _lateral_grasp_mode(
         {"start_variant": start_variant}
@@ -1128,10 +1331,13 @@ def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | No
         "interpreted": {},
         "start_variant": normalize_start_variant(start_variant),
         "lateral_grasp_mode": lateral,
+        "light": bool(light),
     }
     if not go2_local():
         out["reason"] = "not_go2_local"
         return out
+    if light:
+        return _grasp_coach_preview_light(instruction=instruction, out=out)
     try:
         from go2_dashboard.d1_arm_publish_lite import current_tool_tip_base_link_m
         from go2_dashboard.d1_servo_feedback import read_servo_deg_with_diag
@@ -1235,13 +1441,20 @@ def grasp_coach_preview_metric(*, instruction: str = "", start_variant: str | No
             "target_source": out["target_source"],
             "nogo_blocked": False,
         }
+        try:
+            from go2_dashboard.operator_plan_cache import set_last_grasp_plan
+
+            if isinstance(mp, dict) and mp.get("grasp_display_base_link_m"):
+                set_last_grasp_plan(mp)
+        except Exception:
+            pass
         if mp.get("ok"):
             out["label_it"] = "Anteprima OK: oggetto visto dal polso, traiettoria IK calcolata."
         elif partial_rgb:
             out["label_it"] = (
-                "RGB Orbbec OK, depth insufficiente ("
+                "RGB polso OK, depth insufficiente ("
                 + str(mp.get("reason") or "depth")
-                + ") — riprova o avvicina la scatola."
+                + ") — premi «Foto SDK (metrica)» o avvicina la scatola."
             )
         else:
             out["label_it"] = f"Anteprima: nessun oggetto metrico ({mp.get('reason') or 'unknown'})."

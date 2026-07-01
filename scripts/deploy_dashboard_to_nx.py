@@ -315,6 +315,10 @@ export GO2_ENABLE_BASE_MOTION=1
 # Interfaccia Ethernet Jetson→subnet Unitree (di solito 192.168.123.x). Se usi WiFi verso l'AP del cane: wlan0.
 export GO2_DDS_DOMAIN=0
 export GO2_DDS_INTERFACE=eth0
+# Do NOT hard-pin GO2_VIDEO_INDEX_0/6 by default: let USB auto-map + runtime recovery
+# keep D456 (log.0) and D435i (log.6) separated even when /dev/videoN ordering shifts.
+# export GO2_VIDEO_INDEX_0=2
+# export GO2_VIDEO_INDEX_6=10
 # Cyclone + iceoryx: i binari D1 sulla NX sono compatibili con il backup SDK che esporta
 # ``free_iox_chunk``; le libddsc piu' nuove in /usr/local/lib non lo esportano.
 _D1_SDK_BACKUP="$HOME/sdk_reinstall_backup_19700225_160102"
@@ -527,6 +531,7 @@ export GO2_ORBBEC_DEPTH_ROI_SHRINK=0.12
 # export D1_ORBBEC_RGB_ONLY=1
 export D1_PICK_DETECT_BACKEND=color
 export D1_PICK_COLOR_ONLY=1
+export GO2_FOCUS_PICK_YOLO=0
 # Probe RGB Orbbec: più passaggi (MJPEG/YUYV, soglia bordi default 0.26). IR puntini → alza GO2_ORBBEC_MAX_EDGE_DENSITY o GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED
 # export GO2_ORBBEC_MAX_EDGE_DENSITY=0.32
 # export GO2_ORBBEC_MAX_EDGE_DENSITY_RELAXED=0.48

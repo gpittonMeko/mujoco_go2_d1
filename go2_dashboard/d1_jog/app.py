@@ -170,6 +170,21 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/joints/release", methods=["POST"])
     def joints_release() -> Response:
+        body = request.get_json(silent=True) or {}
+        allow_unsafe = os.environ.get("GO2_ALLOW_UNSAFE_RELEASE", "0").strip().lower() in {"1", "true", "yes", "on"}
+        has_confirm = str(body.get("confirm") or "").strip().upper() == "ARM_RELEASE_JOINTS"
+        has_ack = bool(body.get("ack_gravity_risk"))
+        if not allow_unsafe and not (has_confirm and has_ack):
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "reason": "release_requires_explicit_confirm",
+                        "hint_it": "Release bloccato: invia confirm=ARM_RELEASE_JOINTS e ack_gravity_risk=true.",
+                    }
+                ),
+                403,
+            )
         out = service.motor_release()
         out["funcode"] = 5
         out["action"] = "motor_release"

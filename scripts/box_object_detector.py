@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,59 @@ _MODEL_META_CACHE: dict[str, dict[str, Any]] = {}
 # si risolvono con priorita' env > file di calibrazione > default. Permette di tarare il
 # colore dal vivo (auto-calibrazione dal polso) senza riavviare la dashboard.
 _COLOR_CALIB_CACHE: dict[str, Any] = {"mtime": -1.0, "data": {}}
+_COLOR_PROFILES_CACHE: dict[str, Any] = {"mtime": -1.0, "data": {}}
 # Se True, _color_int/_color_float ignorano data/color_box_calib.json (fallback detection).
 _IGNORE_COLOR_CALIB = False
+
+
+def _profiles_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "data" / "color_profiles.json"
+
+
+def _load_color_profiles_doc() -> dict[str, Any]:
+    p = _profiles_path()
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _COLOR_PROFILES_CACHE["mtime"]:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        _COLOR_PROFILES_CACHE["data"] = data if isinstance(data, dict) else {}
+        _COLOR_PROFILES_CACHE["mtime"] = mtime
+    return _COLOR_PROFILES_CACHE["data"]
+
+
+def parse_color_from_instruction(text: str) -> str | None:
+    """Estrae profilo colore da frase operatore (blu / rosso / verde / grigio)."""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if re.search(r"\b(blu|blue|azzurr\w*)\b", t):
+        return "blu"
+    if re.search(r"\b(ross[oae]|red)\b", t):
+        return "rosso"
+    if re.search(r"\b(verd[eiae]|green)\b", t):
+        return "verde"
+    if re.search(r"\b(grigi[oaie]?|grey|gray|cilindr\w*)\b", t):
+        return "grigio"
+    return None
+
+
+def _resolve_color_profile(color_hint: str | None) -> dict[str, Any] | None:
+    if not color_hint:
+        return None
+    profiles = (_load_color_profiles_doc().get("profiles") or {})
+    key = str(color_hint).strip().lower()
+    if key in profiles and isinstance(profiles[key], dict):
+        return dict(profiles[key])
+    aliases = {"blue": "blu", "red": "rosso", "green": "verde", "gray": "grigio", "grey": "grigio"}
+    alias = aliases.get(key)
+    if alias and alias in profiles and isinstance(profiles[alias], dict):
+        return dict(profiles[alias])
+    return None
 
 
 def _calib_path() -> Path:
@@ -356,16 +408,53 @@ def _apply_detect_roi_crop(mask: np.ndarray) -> np.ndarray:
     return _apply_gripper_exclude_crop(mask)
 
 
-def _color_box_hsv_mask(frame: np.ndarray) -> np.ndarray:
-    """Maschera HSV per scatoletta blu (tunable via env)."""
+def _color_box_hsv_mask(frame: np.ndarray, profile: dict[str, Any] | None = None) -> np.ndarray:
+    """Maschera HSV per scatoletta colorata (tunable via env o color_profiles.json)."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h_min = _color_int("D1_COLOR_BOX_H_MIN", 95)
-    h_max = _color_int("D1_COLOR_BOX_H_MAX", 130)
-    s_min = _color_int("D1_COLOR_BOX_S_MIN", 45)
-    v_min = _color_int("D1_COLOR_BOX_V_MIN", 35)
-    lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
-    upper = np.array([min(179, h_max), 255, 255], dtype=np.uint8)
-    mask = cv2.inRange(hsv, lower, upper)
+    if profile:
+        s_min = int(profile.get("s_min", 45))
+        s_max = int(profile.get("s_max", 255))
+        v_min = int(profile.get("v_min", 35))
+        v_max = int(profile.get("v_max", 255))
+        if profile.get("h_any"):
+            lower = np.array([0, max(0, s_min), max(0, v_min)], dtype=np.uint8)
+            upper = np.array([179, min(255, s_max), min(255, v_max)], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+        elif profile.get("h_wrap"):
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            for hr in profile.get("h_ranges") or []:
+                if isinstance(hr, (list, tuple)) and len(hr) >= 2:
+                    h0, h1 = int(hr[0]), int(hr[1])
+                    lower = np.array([max(0, h0), max(0, s_min), max(0, v_min)], dtype=np.uint8)
+                    upper = np.array([min(179, h1), min(255, s_max), min(255, v_max)], dtype=np.uint8)
+                    mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lower, upper))
+        else:
+            h_min = int(profile.get("h_min", 95))
+            h_max = int(profile.get("h_max", 130))
+            lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
+            upper = np.array([min(179, h_max), min(255, s_max), min(255, v_max)], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+        h, w = mask.shape[:2]
+        x_min_frac = profile.get("x_min_frac")
+        x_max_frac = profile.get("x_max_frac")
+        y_min_frac = profile.get("y_min_frac")
+        y_max_frac = profile.get("y_max_frac")
+        if x_min_frac is not None:
+            mask[:, : int(w * float(x_min_frac))] = 0
+        if x_max_frac is not None:
+            mask[:, int(w * float(x_max_frac)) :] = 0
+        if y_min_frac is not None:
+            mask[: int(h * float(y_min_frac)), :] = 0
+        if y_max_frac is not None:
+            mask[int(h * float(y_max_frac)) :, :] = 0
+    else:
+        h_min = _color_int("D1_COLOR_BOX_H_MIN", 95)
+        h_max = _color_int("D1_COLOR_BOX_H_MAX", 130)
+        s_min = _color_int("D1_COLOR_BOX_S_MIN", 45)
+        v_min = _color_int("D1_COLOR_BOX_V_MIN", 35)
+        lower = np.array([max(0, h_min), max(0, s_min), max(0, v_min)], dtype=np.uint8)
+        upper = np.array([min(179, h_max), 255, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower, upper)
     k = max(3, _parse_int_env("D1_COLOR_BOX_MORPH_K", 5))
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -428,6 +517,8 @@ def _detection_from_color_contour(
     score: float,
     elapsed_s: float,
     solidity: float = 0.0,
+    label: str = "blue_box",
+    backend: str = "color_blue_box",
 ) -> dict[str, Any]:
     h, w = int(frame.shape[0]), int(frame.shape[1])
     cnt_area = float(cv2.contourArea(cnt))
@@ -465,8 +556,8 @@ def _detection_from_color_contour(
     long_side = max(rw_f, rh_f)
     base = {
         "ok": True,
-        "backend": "color_blue_box",
-        "label": "blue_box",
+        "backend": backend,
+        "label": label,
         "confidence": conf,
         "bbox_xyxy": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
         "bbox_center_px": [round(cx_f, 1), round(cy_f, 1)],
@@ -493,11 +584,13 @@ def _detection_from_color_contour(
     return base
 
 
-def _detect_color_box_core(frame: np.ndarray) -> dict[str, Any]:
-    """Rileva scatoletta blu per maschera HSV + minAreaRect (posizione e rotazione reali)."""
+def _detect_color_box_core(frame: np.ndarray, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Rileva scatoletta colorata per maschera HSV + minAreaRect."""
     t0 = time.perf_counter()
     h, w = frame.shape[:2]
-    mask = _color_box_hsv_mask(frame)
+    label = str((profile or {}).get("label") or "blue_box")
+    backend = "color_box_" + label.replace("_box", "")
+    mask = _color_box_hsv_mask(frame, profile=profile)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return {
@@ -513,7 +606,7 @@ def _detect_color_box_core(frame: np.ndarray) -> dict[str, Any]:
     best_score = -1.0
     best_solidity = 0.0
     max_cy_frac = _parse_float_env("D1_COLOR_BOX_MAX_CY_FRAC", 0.68)
-    max_bbox_h_frac = _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.34)
+    max_bbox_h_frac = float((profile or {}).get("max_bbox_h_frac", _parse_float_env("D1_COLOR_BOX_MAX_BBOX_H_FRAC", 0.34)))
     for cnt in cnts:
         area = float(cv2.contourArea(cnt))
         if area < min_area or area > max_area:
@@ -560,12 +653,14 @@ def _detect_color_box_core(frame: np.ndarray) -> dict[str, Any]:
         score=best_score,
         elapsed_s=time.perf_counter() - t0,
         solidity=best_solidity,
+        label=label,
+        backend=backend,
     )
 
 
-def _detect_color_box(frame: np.ndarray) -> dict[str, Any]:
+def _detect_color_box(frame: np.ndarray, profile: dict[str, Any] | None = None) -> dict[str, Any]:
     """Detection HSV con fallback se la calibrazione salvata è troppo stretta per la luce attuale."""
-    det = _detect_color_box_core(frame)
+    det = _detect_color_box_core(frame, profile=profile)
     if det.get("ok"):
         return det
     cal = _load_color_calib()
@@ -946,14 +1041,20 @@ def _color_only_pick_detect() -> bool:
     return True
 
 
-def detect_box_object(frame: np.ndarray) -> dict[str, Any]:
-    """Rilevamento pezzo per presa D1 — default: color_blue_box + orientamento minAreaRect."""
+def detect_box_object(frame: np.ndarray, *, color_hint: str | None = None) -> dict[str, Any]:
+    """Rilevamento pezzo per presa D1 — default: color box HSV + orientamento minAreaRect."""
+    profile = _resolve_color_profile(color_hint)
     if _color_only_pick_detect():
-        return _detect_color_box(frame)
+        out = _detect_color_box(frame, profile=profile)
+        if color_hint and isinstance(out, dict):
+            out["color_hint"] = color_hint
+        return out
 
     backend = _pick_detect_backend()
     if backend in {"color", "blue", "color_blue", "color_blue_box", "color_then_yolo"}:
-        out = _detect_color_box(frame)
+        out = _detect_color_box(frame, profile=profile)
+        if color_hint and isinstance(out, dict):
+            out["color_hint"] = color_hint
         if out.get("ok") or backend != "color_then_yolo":
             return out
 

@@ -38,7 +38,7 @@ def _settle_ms() -> int:
         return 900
 
 
-def _detect_on_camera(camera: int) -> dict[str, Any]:
+def _detect_on_camera(camera: int, *, color_hint: str | None = None) -> dict[str, Any]:
     """Detection NX-side sul frame logico ``camera`` con il detector buono (floor_object_saliency).
 
     Restituisce ``{"ok": bool, "detection": {...}|None, "reason": str}``. La detection include
@@ -64,7 +64,7 @@ def _detect_on_camera(camera: int) -> dict[str, Any]:
         sys.path.insert(0, s_scripts)
     from box_object_detector import detect_box_object
 
-    det = detect_box_object(frame)
+    det = detect_box_object(frame, color_hint=color_hint)
     if isinstance(det, dict):
         det.setdefault("frame_size_px", [int(frame.shape[1]), int(frame.shape[0])])
         det.setdefault("logical_camera", camera)

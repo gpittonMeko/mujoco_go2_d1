@@ -16,6 +16,10 @@ import wave
 from pathlib import Path
 from typing import Any
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _LOG = logging.getLogger("go2_speak")
 

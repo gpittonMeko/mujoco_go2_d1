@@ -224,6 +224,7 @@ def move_to_servo_deg_smooth(
     keep_lock: bool = False,
     stop_check: Callable[[], bool] | None = None,
     pin_joints: dict[int, float] | None = None,
+    max_step_deg: float | None = None,
 ) -> dict[str, Any]:
     """Interpola in spazio giunti con funcode 2 mode 1."""
     if not keep_lock:
@@ -237,7 +238,9 @@ def move_to_servo_deg_smooth(
             return {"ok": False, "reason": fb.get("reason", "no_feedback")}
         cur = fb["servo_deg"]
         target = service.clamp_servo_deg(target_servo_deg)
-        waypoints = plan_joint_waypoints(cur, target, pin_joints=pin_joints)
+        waypoints = plan_joint_waypoints(
+            cur, target, pin_joints=pin_joints, max_step_deg=max_step_deg
+        )
         delay_ms = motion_profile.stream_delay_ms()
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}

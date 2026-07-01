@@ -250,6 +250,70 @@
     return role === "front" ? "Frontale" : "Polso";
   }
 
+  function renderDetectionMonitor(payload, sourceLabel) {
+    var img = $("detectMonitorImg");
+    var meta = $("detectMonitorMeta");
+    if (!payload) return;
+    var det = payload.last_detection || payload.detection || null;
+    var preview = payload.preview_url || null;
+    if (img && preview) img.src = api(preview + (preview.indexOf("?") >= 0 ? "&" : "?") + "_=" + Date.now());
+    if (!meta) return;
+    if (!det) {
+      meta.textContent = "Nessuna detection disponibile.";
+      return;
+    }
+    var lines = [];
+    if (sourceLabel) lines.push("source: " + sourceLabel);
+    lines.push("camera: " + cameraLabel((payload.detect_camera || det.detect_camera || ((payload.camera_select || {}).detect_camera) || "wrist")));
+    lines.push("label: " + (det.label || "-"));
+    lines.push("confidence: " + (det.confidence != null ? Number(det.confidence).toFixed(3) : "-"));
+    lines.push("orientation_deg: " + (det.orientation_deg != null ? det.orientation_deg : "-"));
+    lines.push("grip_center_px: " + (det.grip_center_px ? JSON.stringify(det.grip_center_px) : "-"));
+    lines.push("bbox_xyxy: " + (det.bbox_xyxy ? JSON.stringify(det.bbox_xyxy) : "-"));
+    lines.push("at: " + (det.at || "-"));
+    meta.textContent = lines.join("\n");
+  }
+
+  function loadDetectionMonitor() {
+    return json("/api/pick/detection/last?_=" + Date.now()).then(function (j) {
+      renderDetectionMonitor(j, "last_detection");
+      return j;
+    });
+  }
+
+  function loadRgbHealth() {
+    var cam = currentDetectCamera();
+    return json("/api/pick/vision/rgb_health?camera=" + encodeURIComponent(cam) + "&_=" + Date.now()).then(function (j) {
+      var el = $("rgbHealthStatus");
+      if (!el) return j;
+      if (!j || j.ok === false) {
+        el.textContent = "RGB health: errore";
+        return j;
+      }
+      var cc = j.camera_cache || {};
+      var pc = j.panel_cache || {};
+      el.textContent = "RGB health " + cameraLabel(cam) + ": mode=" + (j.color_source_mode || "-") +
+        " | cache.available=" + (!!cc.available) +
+        " | panel.age_s=" + (pc.age_s != null ? pc.age_s : "-") +
+        " | panel.color=" + (!!pc.has_color);
+      return j;
+    });
+  }
+
+  function resetRgbCamera() {
+    var cam = currentDetectCamera();
+    pill("reset realsense...", "warn");
+    log("Reset RealSense richiesto", { camera: cam });
+    return post("/api/pick/vision/realsense/reset", { camera: cam }).then(function (j) {
+      log("Reset RealSense", j, j.ok ? "info" : "error");
+      pill(j.ok ? "realsense reset ok" : "realsense reset err", j.ok ? "ok" : "err");
+      return loadRgbHealth().then(function () { return loadDetectionMonitor().then(function () { return j; }); });
+    }).catch(function (e) {
+      pill("realsense reset err", "err");
+      log(String(e), null, "error");
+    });
+  }
+
   function currentDetectCamera() {
     var el = $("focusDetectCamera");
     return el && el.value === "front" ? "front" : "wrist";
@@ -463,8 +527,56 @@
       if (kind === "nudge") {
         return "[" + ts + "] nudge J" + r.joint + " delta=" + r.delta_deg + " ok=" + (!!r.ok);
       }
+      if (kind === "cycle") {
+        var err = r.error_cm != null ? Number(r.error_cm).toFixed(1) + "cm" : "-";
+        return "[" + ts + "] cycle lato=" + (r.side || "-") + " esito=" + (r.result || "-") + " err=" + err + (r.note ? " note=" + r.note : "");
+      }
       return "[" + ts + "] " + JSON.stringify(r);
     }).join("\n");
+  }
+
+  function loadTuneCycles() {
+    return json("/api/pick/tuning/cycles?limit=30&_=" + Date.now()).then(function (j) {
+      if (!j || j.ok === false || !Array.isArray(j.items)) return j;
+      var rows = j.items.map(function (r) {
+        return {
+          ts: r.at || now(),
+          kind: "cycle",
+          side: r.side || "unknown",
+          result: r.result || "unknown",
+          error_cm: r.error_cm,
+          note: r.note || "",
+        };
+      });
+      var locals = tuneHistory.filter(function (r) {
+        return r.kind === "detect" || r.kind === "nudge";
+      });
+      tuneHistory = rows.concat(locals).slice(-40);
+      saveTuneHistory();
+      renderTuneHistory();
+      return j;
+    });
+  }
+
+  function saveTuneCycle() {
+    var side = (($("tuneSide") && $("tuneSide").value) || activeVariant || "j90").trim();
+    var result = (($("tuneResult") && $("tuneResult").value) || "undershoot").trim();
+    var errorCm = Number((($("tuneErrorCm") && $("tuneErrorCm").value) || 0));
+    var note = (($("tuneNote") && $("tuneNote").value) || "").trim();
+    var body = { side: side, result: result, error_cm: errorCm, note: note };
+    return post("/api/pick/tuning/cycles", body).then(function (j) {
+      if (j && j.ok && j.saved) {
+        pushTuneHistory({
+          ts: j.saved.at || now(),
+          kind: "cycle",
+          side: j.saved.side,
+          result: j.saved.result,
+          error_cm: j.saved.error_cm,
+          note: j.saved.note || "",
+        });
+      }
+      return loadPresetInfo().then(function () { return j; });
+    });
   }
 
   function loadPresetInfo() {
@@ -497,6 +609,7 @@
         confidence: det.confidence,
         orientation_deg: det.orientation_deg,
       });
+      renderDetectionMonitor(j, "snapshot");
       return j;
     });
   }
@@ -511,6 +624,10 @@
       pushTuneHistory({ ts: now(), kind: "nudge", joint: joint, delta_deg: delta, ok: !!j.ok, reason: j.reason || null });
       return loadPresetInfo().then(function () { return j; });
     });
+  }
+
+  function releasePayload() {
+    return { confirm: "ARM_RELEASE_JOINTS", ack_gravity_risk: true };
   }
 
   function json(path, opts) {
@@ -689,6 +806,7 @@
         setSvcAck("depth", j.ok ? "err" : "idle");
         summary(j.hint_it || j.reason || "Oggetto non rilevato.");
       }
+      renderDetectionMonitor(j, "snapshot");
       return j;
     }).catch(function (e) {
       pill("foto err", "err");
@@ -716,6 +834,52 @@
       pill("errore", "err");
       setProgress(8, "Movimento 90 fallito", "err", "move90");
       log(String(e), null, "error");
+    });
+  }
+
+  function runSafeCycle() {
+    var detectCamera = currentDetectCamera();
+    var graspCamera = currentGraspCamera();
+    var variants = ["j90_left", "j90"];
+    var report = [];
+    pill("test ciclo", "warn");
+    setProgress(4, "Test ciclo sicuro avviato", "warn", "move90");
+    log("Test ciclo sicuro avviato", { detect_camera: detectCamera, grasp_camera: graspCamera });
+    return post("/api/arm/joints/couple", { with_power: true }).then(function (couple) {
+      report.push({ step: "couple", ok: !!(couple && couple.ok), reason: couple && couple.reason });
+      if (!couple || !couple.ok) throw new Error("coppia non disponibile");
+      var p = Promise.resolve();
+      variants.forEach(function (variant, idx) {
+        p = p.then(function () {
+          setProgress(10 + idx * 40, "Muovo " + labelForVariant(variant), "warn", "move90");
+          return post("/api/presets/scan/goto", { variant: variant });
+        }).then(function (mv) {
+          report.push({ step: "scan_" + variant, ok: !!(mv && mv.ok), reason: mv && mv.reason });
+          if (!mv || !mv.ok) throw new Error("scan fail " + variant + ": " + (mv && mv.reason));
+          setProgress(22 + idx * 40, "Snapshot " + labelForVariant(variant), "warn", "rgbd");
+          return post("/api/pick/snapshot", { detect_camera: detectCamera });
+        }).then(function (snap) {
+          report.push({ step: "snapshot_" + variant, ok: !!(snap && snap.ok), detect_ok: !!(snap && snap.detection_ok), reason: snap && snap.reason });
+          renderDetectionMonitor(snap, "safe_cycle");
+          if (!snap || !snap.ok) throw new Error("snapshot fail " + variant + ": " + (snap && snap.reason));
+          setProgress(34 + idx * 40, "Goto presa " + labelForVariant(variant), "warn", "execute");
+          return post("/api/pick/grasp/goto", { scan_variant: variant, grasp_camera: graspCamera });
+        }).then(function (gt) {
+          report.push({ step: "goto_" + variant, ok: !!(gt && gt.ok), reason: gt && gt.reason });
+          if (!gt || !gt.ok) throw new Error("goto fail " + variant + ": " + (gt && gt.reason));
+        });
+      });
+      return p;
+    }).then(function () {
+      setProgress(100, "Test ciclo sicuro completato", "ok", "verify");
+      pill("test ciclo ok", "ok");
+      log("Test ciclo sicuro completato", { report: report });
+      return { ok: true, report: report };
+    }).catch(function (e) {
+      pill("test ciclo err", "err");
+      setProgress(45, "Test ciclo interrotto", "err", "execute");
+      log("Test ciclo sicuro fallito", { error: String(e), report: report }, "error");
+      return { ok: false, reason: String(e), report: report };
     });
   }
 
@@ -907,7 +1071,7 @@
     return countdown(5, "Preparati al release", 18, "teach").then(function () {
       setProgress(30, "Release completo giunti", "warn", "teach");
       log("Release completo giunti braccio");
-      return post("/api/arm/joints/release", {});
+      return post("/api/arm/joints/release", releasePayload());
     }).then(function (rel) {
       log("release giunti", rel, rel.ok ? "info" : "warn");
       return countdown(20, "Porta il braccio sulla presa", 55, "teach");
@@ -953,7 +1117,7 @@
       return countdown(5, "Preparati al release", 35, "teach");
     }).then(function () {
       setProgress(42, "Release giunti", "warn", "teach");
-      return post("/api/arm/joints/release", {});
+      return post("/api/arm/joints/release", releasePayload());
     }).then(function (rel) {
       log("release giunti", rel, rel.ok ? "info" : "warn");
       return countdown(20, "Muovi il braccio sulla presa", 55, "teach");
@@ -1020,10 +1184,10 @@
   }
 
   function armRelease() {
-    if (!confirm("Rilasciare i giunti del braccio? Il braccio sara' libero manualmente.")) return;
+    if (!confirm("Rilasciare i giunti del braccio? ATTENZIONE: il braccio diventa libero e puo' cadere per gravita'.")) return;
     pill("release...", "warn");
     setProgress(10, "Release giunti", "warn", "teach");
-    return post("/api/arm/joints/release", {}).then(function (j) {
+    return post("/api/arm/joints/release", releasePayload()).then(function (j) {
       log("release manuale", j, j.ok ? "info" : "error");
       pill(j.ok ? "release ok" : "release err", kindFromOk(j.ok));
       return status();
@@ -1046,6 +1210,7 @@
     bindBtn("btnStartGrasp", startGrasp);
     bindBtn("btnAutoGrasp", startAutoGrasp);
     bindBtn("btnGripperClose", gripperCloseOnly);
+    bindBtn("btnSafeCycle", runSafeCycle);
     bindBtn("btnTeachPosition", function () { return teachPosition("teaching posizione da pulsante"); });
     bindBtn("btnMarkGraspFailed", function () { return teachPosition("operatore: presa fallita"); });
     bindBtn("btnGraspLeft", function () { return graspGoto("j90_left"); });
@@ -1076,14 +1241,27 @@
     if (btnTuneMinus) btnTuneMinus.addEventListener("click", function () { tuneNudge(-1); });
     var btnTunePlus = $("btnTuneNudgePlus");
     if (btnTunePlus) btnTunePlus.addEventListener("click", function () { tuneNudge(1); });
+    var btnTuneSaveCycle = $("btnTuneSaveCycle");
+    if (btnTuneSaveCycle) btnTuneSaveCycle.addEventListener("click", saveTuneCycle);
+    var btnDetectRefresh = $("btnDetectRefresh");
+    if (btnDetectRefresh) btnDetectRefresh.addEventListener("click", loadDetectionMonitor);
+    var btnDetectSnapshot = $("btnDetectSnapshot");
+    if (btnDetectSnapshot) btnDetectSnapshot.addEventListener("click", function () { return snapshot(); });
+    var btnRgbReset = $("btnRgbReset");
+    if (btnRgbReset) btnRgbReset.addEventListener("click", resetRgbCamera);
     dbgBtn("page", "dom_ready", { buttons: Object.keys(DBG.buttons) });
     resetSvcAck();
     log("Dashboard presa caricata (ACK servizi + Home attivi)");
     loadCameraSelection();
     refreshStreamCatalog();
     renderTuneHistory();
+    loadTuneCycles();
     loadPresetInfo();
+    loadDetectionMonitor();
+    loadRgbHealth();
     status();
     setInterval(status, 5000);
+    setInterval(loadDetectionMonitor, 4000);
+    setInterval(loadRgbHealth, 6000);
   });
 })();

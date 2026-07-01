@@ -112,14 +112,14 @@ def begin_live_session(*, servo_deg: list[float] | None = None) -> dict[str, Any
     return out
 
 
-def end_live_session() -> dict[str, Any]:
+def end_live_session(*, skip_hold: bool = False) -> dict[str, Any]:
     global _live_session_active
     _live_session_active = False
     if not prefer_sdk_backend():
         return {"ok": True}
     from go2_dashboard.d1_jog import service as jog_svc
 
-    return jog_svc.joint_control_end()
+    return jog_svc.joint_control_end(skip_hold=skip_hold)
 
 
 def kill_command_processes() -> dict[str, Any]:
