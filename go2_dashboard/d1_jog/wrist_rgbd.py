@@ -110,6 +110,25 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
             profile = pipe.start(cfg)
             align = rs.align(rs.stream.color)
             depth_sensor = profile.get_device().first_depth_sensor()
+            # La scatola stampata assorbe molto IR: High Density + laser massimo
+            # aumenta il supporto senza applicare hole-filling geometrico.
+            option_values = (
+                (rs.option.visual_preset, float(os.environ.get("D1_WRIST_RS_VISUAL_PRESET", "4"))),
+                (rs.option.emitter_enabled, float(os.environ.get("D1_WRIST_RS_EMITTER_ENABLED", "1"))),
+            )
+            for option, value in option_values:
+                try:
+                    if depth_sensor.supports(option):
+                        depth_sensor.set_option(option, value)
+                except Exception:
+                    pass
+            try:
+                if depth_sensor.supports(rs.option.laser_power):
+                    laser_range = depth_sensor.get_option_range(rs.option.laser_power)
+                    requested = float(os.environ.get("D1_WRIST_RS_LASER_POWER", str(laser_range.max)))
+                    depth_sensor.set_option(rs.option.laser_power, min(laser_range.max, max(laser_range.min, requested)))
+            except Exception:
+                pass
             depth_scale = float(depth_sensor.get_depth_scale())
             warm = max(3, int(warmup_frames or os.environ.get("D1_WRIST_RGBD_WARMUP", "10")))
             for _ in range(warm):
