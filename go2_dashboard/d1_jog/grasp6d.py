@@ -202,7 +202,10 @@ def estimate_plane_ransac(points: np.ndarray, *, iterations: int = 140) -> dict[
             best_count, best_normal, best_d = count, normal.copy(), d
     if best_normal is None or best_count < max(100, int(len(pts) * 0.18)):
         return {"ok": False, "reason": "floor_plane_not_found", "inliers": best_count}
-    if best_normal[1] > 0:  # RealSense Y points down: floor normal should point roughly upward.
+    # Orienta la normale dal pavimento verso l'origine camera. Vale sia con
+    # camera obliqua (normale circa -Y) sia con D456 quasi verticale (-Z).
+    # Per n·p+d=0, d positivo significa che l'origine è nel semispazio positivo.
+    if float(best_d) < 0.0:
         best_normal *= -1
         best_d = -float(best_d)
     return {
