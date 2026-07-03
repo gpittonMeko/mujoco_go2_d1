@@ -823,7 +823,9 @@
       });
       await refreshThermal();
     };
-    loadPickTuning();
+    if (typeof loadPickTuning === 'function') {
+      loadPickTuning();
+    }
     function initAeroFx() {
       let raf = 0;
       document.addEventListener('pointermove', function (ev) {
