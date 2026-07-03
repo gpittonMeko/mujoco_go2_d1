@@ -190,7 +190,7 @@
           <button id="btnHoldNow" class="danger">HOLD ORA</button>
           <button id="btnSaveZeroPose" class="warn">Memorizza ZERO POSE</button>
           <button id="btnGotoZeroPose" class="neutral">Vai a ZERO POSE</button>
-          <button id="btnSavePose" class="neutral">Salva posa</button>
+          <button id="btnSavePose" class="warn">Memorizza posa + HOLD</button>
         </div>
         <div class="sub" id="teachZeroStatus">ZERO POSE: —</div>
         <div class="sl">
@@ -208,7 +208,7 @@
         <div class="row">
           <button id="btnRefreshPrograms" class="neutral">Aggiorna programmi</button>
           <button id="btnCreateProgram" class="neutral">Nuovo programma</button>
-          <button id="btnAddWaypoint" class="neutral">Aggiungi punto</button>
+          <span class="sub">Dopo Release: sostieni il braccio, posizionalo e premi “Memorizza posa + HOLD”.</span>
         </div>
       </div>
 
@@ -219,70 +219,6 @@
           <button id="btnLeftScan">Vai a sinistra 90 e scannerizza</button>
           <button id="btnDetectNow" class="neutral">Solo detection</button>
           <button id="btnTestGrasp" class="warn">Prova presa</button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Parametri calibrazione presa</h3>
-        <div class="sl">
-          <label>Offset presa J0
-            <input id="graspJ0" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="graspJ0Val">0.0</span>
-          </label>
-          <label>Offset presa J1
-            <input id="graspJ1" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="graspJ1Val">0.0</span>
-          </label>
-          <label>Offset presa J2
-            <input id="graspJ2" type="range" min="-25" max="25" step="0.5" value="0" />
-            <span id="graspJ2Val">0.0</span>
-          </label>
-          <label>Orient presa J5 extra
-            <input id="graspJ5" type="range" min="-45" max="45" step="1" value="0" />
-            <span id="graspJ5Val">0</span>
-          </label>
-        </div>
-        <div class="row">
-          <button id="btnSaveGraspParams" class="neutral">Salva parametri presa</button>
-          <button id="btnLoadGraspParams" class="neutral">Ricarica parametri presa</button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Tuning avanzato presa</h3>
-        <div class="sl">
-          <label>PX -> J0
-            <input id="tunePxJ0" type="range" min="0" max="0.12" step="0.001" value="0.04" />
-            <span id="tunePxJ0Val">0.040</span>
-          </label>
-          <label>PX -> J1
-            <input id="tunePxJ1" type="range" min="0" max="0.12" step="0.001" value="0.035" />
-            <span id="tunePxJ1Val">0.035</span>
-          </label>
-          <label>PX -> J2
-            <input id="tunePxJ2" type="range" min="0" max="0.08" step="0.001" value="0.015" />
-            <span id="tunePxJ2Val">0.015</span>
-          </label>
-          <label>Gain orient
-            <input id="tuneOrientGain" type="range" min="0.2" max="2.0" step="0.05" value="1.0" />
-            <span id="tuneOrientGainVal">1.00</span>
-          </label>
-          <label>Cap orient
-            <input id="tuneOrientCap" type="range" min="2" max="30" step="1" value="12" />
-            <span id="tuneOrientCapVal">12</span>
-          </label>
-          <label>Smooth alpha
-            <input id="tuneOrientSmooth" type="range" min="0.05" max="1" step="0.05" value="0.4" />
-            <span id="tuneOrientSmoothVal">0.40</span>
-          </label>
-          <label>Offset orient
-            <input id="tuneOrientOffset" type="range" min="45" max="135" step="1" value="90" />
-            <span id="tuneOrientOffsetVal">90</span>
-          </label>
-        </div>
-        <div class="row">
-          <button id="btnSavePickTuning" class="neutral">Salva tuning</button>
-          <button id="btnLoadPickTuning" class="neutral">Ricarica tuning</button>
         </div>
       </div>
 
@@ -635,15 +571,13 @@
           return;
         }
         const name = (q('teachPointName').value || '').trim() || 'Punto';
-        const pose = await currentPoseFromFeedback();
-        const d = await api('/api/programs/' + encodeURIComponent(pid) + '/waypoints', 'POST', {
+        const d = await api('/api/programs/' + encodeURIComponent(pid) + '/teach_capture', 'POST', {
           name: name,
-          servo_deg: pose,
-        });
+        }, 70000);
         if (d.ok) {
           q('teachPointName').value = 'Punto ' + ((d.program && d.program.waypoints && d.program.waypoints.length) || '');
           await refreshTeachPrograms(pid);
-          setStatus('Punto memorizzato nel programma', true);
+          setStatus('Punto memorizzato e HOLD attivo', true);
         } else {
           setStatus(d.reason || 'Salvataggio punto fallito', false);
         }
@@ -799,17 +733,6 @@
     bindSlider('poseJ4', 'poseJ4Val', 1);
     bindSlider('poseJ5', 'poseJ5Val', 1);
     bindSlider('poseJ6', 'poseJ6Val', 1);
-    bindSlider('graspJ0', 'graspJ0Val', 1);
-    bindSlider('graspJ1', 'graspJ1Val', 1);
-    bindSlider('graspJ2', 'graspJ2Val', 1);
-    bindSlider('graspJ5', 'graspJ5Val', 0);
-    bindSlider('tunePxJ0', 'tunePxJ0Val', 3);
-    bindSlider('tunePxJ1', 'tunePxJ1Val', 3);
-    bindSlider('tunePxJ2', 'tunePxJ2Val', 3);
-    bindSlider('tuneOrientGain', 'tuneOrientGainVal', 2);
-    bindSlider('tuneOrientCap', 'tuneOrientCapVal', 0);
-    bindSlider('tuneOrientSmooth', 'tuneOrientSmoothVal', 2);
-    bindSlider('tuneOrientOffset', 'tuneOrientOffsetVal', 0);
     bindSlider('tempWarn', 'tempWarnVal', 0);
     bindSlider('tempCrit', 'tempCritVal', 0);
     bindMjpeg('wristStream', '/api/orbbec/live.mjpg', 'Camera polso');
@@ -831,7 +754,6 @@
     q('btnSavePose').onclick = addTeachWaypoint;
     q('btnRefreshPrograms').onclick = () => refreshTeachPrograms();
     q('btnCreateProgram').onclick = createTeachProgram;
-    q('btnAddWaypoint').onclick = addTeachWaypoint;
 
     q('btnRightScan').onclick = () => sideScanDetect('right');
     q('btnLeftScan').onclick = () => sideScanDetect('left');
@@ -839,75 +761,22 @@
       const d = await callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
       if (d) renderScanResult(d);
     };
-    q('btnTestGrasp').onclick = () => callAndShow('Prova presa', '/api/pick/grasp/goto', 'POST', {}, 120000);
+    q('btnTestGrasp').onclick = async () => {
+      const accepted = window.confirm(
+        'Eseguire la presa 6D completa? Verifica prima che il pregrasp sia libero e che nessuno sia vicino al braccio.'
+      );
+      if (!accepted) {
+        setStatus('Presa annullata: HOLD mantenuto.', true);
+        return;
+      }
+      await callAndShow(
+        'Prova presa', '/api/pick/grasp/goto', 'POST',
+        { confirm: 'EXECUTE_GRASP6D' }, 300000
+      );
+    };
     q('btnReadPose').onclick = readPoseToSliders;
     q('btnApplyPose').onclick = () => callAndShow('Applica posa', '/api/joints/jog', 'POST', { servo_deg: sliderPose() }, 70000);
     q('btnHoldPose').onclick = () => callAndShow('Hold posa', '/api/joints/hold', 'POST', { servo_deg: sliderPose() }, 70000);
-
-    q('btnSaveGraspParams').onclick = async () => {
-      const off = [Number(q('graspJ0').value), Number(q('graspJ1').value), Number(q('graspJ2').value), 0, 0, 0];
-      const j5 = Number(q('graspJ5').value);
-      setStatus('Salvo parametri presa...', null);
-      try {
-        const a = await api('/api/pick/preset', 'POST', { joint_offset_deg: off });
-        const b = await api('/api/pick/preset', 'POST', { manual_orient_offset_deg: j5 });
-        setStatus((a.ok && b.ok) ? 'Parametri presa salvati' : 'Errore salvataggio presa', !!(a.ok && b.ok));
-      } catch (e) { setStatus(String(e), false); }
-    };
-    q('btnLoadGraspParams').onclick = async () => {
-      try {
-        const d = await api('/api/pick/preset', 'GET');
-        const o = d.joint_offset_deg || [0, 0, 0, 0, 0, 0];
-        q('graspJ0').value = String(Number(o[0] || 0));
-        q('graspJ1').value = String(Number(o[1] || 0));
-        q('graspJ2').value = String(Number(o[2] || 0));
-        q('graspJ5').value = String(Number(d.manual_orient_offset_deg || 0));
-        q('graspJ0Val').textContent = Number(q('graspJ0').value).toFixed(1);
-        q('graspJ1Val').textContent = Number(q('graspJ1').value).toFixed(1);
-        q('graspJ2Val').textContent = Number(q('graspJ2').value).toFixed(1);
-        q('graspJ5Val').textContent = Number(q('graspJ5').value).toFixed(0);
-        setStatus('Parametri presa ricaricati', true);
-      } catch (e) { setStatus(String(e), false); }
-    };
-    async function loadPickTuning() {
-      try {
-        const d = await api('/api/pick/tuning', 'GET');
-        q('tunePxJ0').value = String(Number(d.px_to_j0_deg ?? 0.04));
-        q('tunePxJ1').value = String(Number(d.px_to_j1_deg ?? 0.035));
-        q('tunePxJ2').value = String(Number(d.px_to_j2_deg ?? 0.015));
-        q('tuneOrientGain').value = String(Number(d.orient_gain ?? 1.0));
-        q('tuneOrientCap').value = String(Number(d.orient_max_delta_deg ?? 12));
-        q('tuneOrientSmooth').value = String(Number(d.orient_smooth_alpha ?? 0.4));
-        q('tuneOrientOffset').value = String(Number(d.orient_perp_offset_deg ?? 90));
-        q('tunePxJ0Val').textContent = Number(q('tunePxJ0').value).toFixed(3);
-        q('tunePxJ1Val').textContent = Number(q('tunePxJ1').value).toFixed(3);
-        q('tunePxJ2Val').textContent = Number(q('tunePxJ2').value).toFixed(3);
-        q('tuneOrientGainVal').textContent = Number(q('tuneOrientGain').value).toFixed(2);
-        q('tuneOrientCapVal').textContent = Number(q('tuneOrientCap').value).toFixed(0);
-        q('tuneOrientSmoothVal').textContent = Number(q('tuneOrientSmooth').value).toFixed(2);
-        q('tuneOrientOffsetVal').textContent = Number(q('tuneOrientOffset').value).toFixed(0);
-      } catch (e) {
-        setStatus(String(e), false);
-      }
-    }
-    q('btnLoadPickTuning').onclick = loadPickTuning;
-    q('btnSavePickTuning').onclick = async () => {
-      setStatus('Salvo tuning presa...', null);
-      try {
-        const d = await api('/api/pick/tuning', 'POST', {
-          px_to_j0_deg: Number(q('tunePxJ0').value),
-          px_to_j1_deg: Number(q('tunePxJ1').value),
-          px_to_j2_deg: Number(q('tunePxJ2').value),
-          orient_gain: Number(q('tuneOrientGain').value),
-          orient_max_delta_deg: Number(q('tuneOrientCap').value),
-          orient_smooth_alpha: Number(q('tuneOrientSmooth').value),
-          orient_perp_offset_deg: Number(q('tuneOrientOffset').value),
-        });
-        setStatus(d.ok ? 'Tuning presa salvato' : 'Errore salvataggio tuning', !!d.ok);
-      } catch (e) {
-        setStatus(String(e), false);
-      }
-    };
 
     q('btnStand').onclick = () => baseMode('stand_up', true);
     q('btnCrouch').onclick = () => baseMode('crouch', true);

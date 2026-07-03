@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from werkzeug.exceptions import HTTPException
 
 from go2_dashboard.d1_jog import (
     cartesian,
+    grasp6d,
     jog_stream,
     orbbec_capture,
     pick_preset,
@@ -20,6 +22,7 @@ from go2_dashboard.d1_jog import (
     program_runner,
     program_store,
     service,
+    wrist_rgbd,
 )
 from go2_dashboard.paths import PROJECT_ROOT
 from go2_dashboard.sport_lane import (
@@ -801,9 +804,13 @@ def create_d1_jog_app() -> Flask:
             move["coupling"] = couple
             move["feedback_before"] = fb_before
             return jsonify(move), 502
-        detect = pick_vision.capture_and_detect()
-        _apply_pick_detection_to_preset(detect)
-        grasp_estimate = _scan_grasp_estimate(target, detect)
+        if os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            detect = _capture_grasp6d_plan()
+            grasp_estimate = detect.get("grasp_estimate") or {}
+        else:
+            detect = pick_vision.capture_and_detect()
+            _apply_pick_detection_to_preset(detect)
+            grasp_estimate = _scan_grasp_estimate(target, detect)
         ok_move = bool(move.get("ok") or move.get("skipped"))
         ok_all = ok_move and bool(detect.get("ok"))
         fb_after = service.read_servo_deg(fast=True)
@@ -1213,6 +1220,67 @@ def create_d1_jog_app() -> Flask:
             return jsonify({"ok": False, "reason": "program_not_found"}), 404
         return jsonify({"ok": True, "program": prog, "waypoint": wp})
 
+    @app.route("/api/programs/<program_id>/teach_capture", methods=["POST"])
+    def programs_teach_capture(program_id: str) -> Response:
+        """Cattura una posa in release, riattiva subito HOLD, poi la persiste.
+
+        L'ordine e' intenzionale: il braccio viene messo in sicurezza prima di
+        qualsiasi scrittura su disco. Il publisher resta il daemon hold esterno
+        usato da ``service.couple_and_hold_pose``.
+        """
+        if program_store.load_program(program_id) is None:
+            return jsonify({"ok": False, "reason": "program_not_found"}), 404
+        body = request.get_json(silent=True) or {}
+        feedback = service.read_servo_deg(fast=False)
+        raw = feedback.get("servo_deg")
+        if not feedback.get("ok") or not isinstance(raw, list) or len(raw) < 7:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": feedback.get("reason", "no_feedback_in_release"),
+                    "feedback": feedback,
+                    "safety": "Sostieni il braccio e premi HOLD ORA: la posa non e' stata salvata.",
+                }
+            ), 503
+        taught = service.clamp_servo_deg([float(x) for x in raw[:7]])
+        hold = service.couple_and_hold_pose(taught, with_power=True, force=True)
+        if not (hold.get("ok") or hold.get("skipped")):
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": hold.get("reason", "hold_failed"),
+                    "feedback": feedback,
+                    "hold": hold,
+                    "safety": "Posa non salvata perche' HOLD non e' stato confermato.",
+                }
+            ), 502
+        tcp_pose = cartesian.tcp_pose_m(taught)
+        prog, wp = program_store.add_waypoint(
+            program_id,
+            name=str(body.get("name", "")) or None,
+            servo_deg=taught,
+            tcp_pose=tcp_pose,
+        )
+        if prog is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "program_save_failed_after_hold",
+                    "hold": hold,
+                    "held_servo_deg": taught,
+                }
+            ), 500
+        return jsonify(
+            {
+                "ok": True,
+                "program": prog,
+                "waypoint": wp,
+                "held_servo_deg": taught,
+                "feedback": feedback,
+                "hold": hold,
+            }
+        )
+
     @app.route("/api/programs/<program_id>/waypoints/<waypoint_id>", methods=["DELETE"])
     def programs_delete_waypoint(program_id: str, waypoint_id: str) -> Response:
         prog = program_store.delete_waypoint(program_id, waypoint_id)
@@ -1585,6 +1653,129 @@ def create_d1_jog_app() -> Flask:
             }
         )
 
+    def _public_box6d(box: dict[str, Any]) -> dict[str, Any]:
+        out = dict(box)
+        for key in ("T_camera_box",):
+            value = out.get(key)
+            if hasattr(value, "tolist"):
+                out[key] = value.tolist()
+        plane = out.get("plane")
+        if isinstance(plane, dict):
+            plane = dict(plane)
+            if hasattr(plane.get("normal"), "tolist"):
+                plane["normal"] = plane["normal"].tolist()
+            out["plane"] = plane
+        return out
+
+    def _capture_grasp6d_plan() -> dict[str, Any]:
+        try:
+            frame = wrist_rgbd.capture_aligned()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": "wrist_rgbd_capture_failed",
+                "detail": str(exc),
+                "rgbd": wrist_rgbd.health(),
+            }
+        box = grasp6d.estimate_box_pose(frame.depth_m, frame.intrinsics)
+        public_box = _public_box6d(box)
+        if not box.get("ok"):
+            return {"ok": False, "reason": box.get("reason"), "rgbd": frame.public_info(), "box": public_box}
+        feedback = service.read_servo_deg(fast=True)
+        if not feedback.get("ok") or not isinstance(feedback.get("servo_deg"), list):
+            return {"ok": False, "reason": "arm_feedback_unavailable", "feedback": feedback, "box": public_box}
+        plan = grasp6d.plan_grasp(box, current_servo_deg=feedback["servo_deg"])
+        return {
+            "ok": bool(plan.get("ok")),
+            "reason": plan.get("reason"),
+            "source": "rgbd_cuboid_6d",
+            "rgbd": frame.public_info(),
+            "box": public_box,
+            "plan": plan,
+            "feedback": feedback,
+            "grasp_estimate": {
+                "detected": bool(box.get("ok")),
+                "label": "scatola 3D",
+                "metric_distance_m": round(float(box["center_camera_m"][2]), 3),
+                "metric_distance_available": True,
+                "grasp_servo_deg": ((plan.get("selected") or {}).get("grasp") or {}).get("servo_deg"),
+                "grasp_tcp_estimate": {
+                    "xyz_m": [
+                        row[3]
+                        for row in ((plan.get("selected") or {}).get("T_base_grasp") or [[0, 0, 0, 0]] * 4)[:3]
+                    ],
+                    "frame": "arm_base",
+                },
+            },
+        }
+
+    def _save_grasp6d_run(payload: dict[str, Any]) -> None:
+        import json
+
+        path = PROJECT_ROOT / "data" / "d1_grasp6d_last.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            pass
+
+    @app.route("/api/pick/rgbd/health", methods=["GET", "POST"])
+    def pick_rgbd_health() -> Response:
+        capture = request.method == "POST" or request.args.get("capture") in {"1", "true", "yes"}
+        out = wrist_rgbd.health(capture=capture)
+        return jsonify(out), (200 if out.get("ok") else 503)
+
+    @app.route("/api/pick/metric/preview", methods=["POST"])
+    def pick_metric_preview() -> Response:
+        out = _capture_grasp6d_plan()
+        _save_grasp6d_run({"mode": "preview", "at": time.time(), **out})
+        return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/metric/calibration/sample", methods=["POST"])
+    def pick_metric_calibration_sample() -> Response:
+        try:
+            frame = wrist_rgbd.capture_aligned(median_frames=2)
+        except Exception as exc:
+            return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc)}), 503
+        marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        if not marker.get("ok"):
+            return jsonify(marker), 422
+        feedback = service.read_servo_deg(fast=True)
+        raw = feedback.get("servo_deg")
+        if not feedback.get("ok") or not isinstance(raw, list) or len(raw) < 6:
+            return jsonify({"ok": False, "reason": "arm_feedback_unavailable", "feedback": feedback}), 503
+        import numpy as np
+
+        T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
+        out = grasp6d.append_handeye_sample(T_base_tool, np.asarray(marker["T_camera_target"], dtype=float))
+        out["marker"] = marker
+        out["rgbd"] = frame.public_info()
+        return jsonify(out)
+
+    @app.route("/api/pick/metric/calibration/build", methods=["POST"])
+    def pick_metric_calibration_build() -> Response:
+        out = grasp6d.build_handeye_calibration(grasp6d.list_handeye_samples())
+        return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/metric/calibration", methods=["GET", "DELETE"])
+    def pick_metric_calibration_status() -> Response:
+        if request.method == "DELETE":
+            try:
+                grasp6d.HAND_EYE_SAMPLES_PATH.unlink(missing_ok=True)
+            except OSError as exc:
+                return jsonify({"ok": False, "reason": "sample_reset_failed", "detail": str(exc)}), 500
+        cal = grasp6d.load_calibration()
+        cal.pop("T_tool_camera_np", None)
+        return jsonify(
+            {
+                "ok": True,
+                "sample_count": len(grasp6d.list_handeye_samples()),
+                "calibration": cal,
+            }
+        )
+
     @app.route("/api/pick/snapshot", methods=["POST"])
     def pick_snapshot() -> Response:
         out = pick_vision.capture_and_detect()
@@ -1646,8 +1837,206 @@ def create_d1_jog_app() -> Flask:
     def pick_detect_jpeg() -> Response:
         return _pick_scene_jpeg()
 
+    def _execute_grasp6d_attempt(*, dry_run: bool = False, pregrasp_only: bool = False) -> dict[str, Any]:
+        import numpy as np
+
+        run: dict[str, Any] = {
+            "ok": False,
+            "mode": "dry_run" if dry_run else ("pregrasp_only" if pregrasp_only else "grasp6d"),
+            "started_at": time.time(),
+            "steps": [],
+            "daemon_invariant": "external_hold_only",
+        }
+
+        def step(name: str, payload: dict[str, Any]) -> None:
+            run["steps"].append({"name": name, **payload})
+
+        initial = _capture_grasp6d_plan()
+        step("plan", initial)
+        if not initial.get("ok"):
+            run["reason"] = initial.get("reason", "plan_failed")
+            run["finished_at"] = time.time()
+            _save_grasp6d_run(run)
+            return run
+        run["plan"] = initial
+        if dry_run:
+            run.update({"ok": True, "finished_at": time.time()})
+            _save_grasp6d_run(run)
+            return run
+
+        couple = service.ensure_coupled_for_motion()
+        step("couple", couple)
+        if not (couple.get("ok") or couple.get("skipped")):
+            run["reason"] = couple.get("reason", "couple_failed")
+            run["finished_at"] = time.time()
+            _save_grasp6d_run(run)
+            return run
+
+        open_deg = pick_preset.gripper_open_j6_deg()
+        close_deg = pick_preset.gripper_close_j6_deg()
+        latest = initial
+        for attempt_index in range(2):
+            run["attempt"] = attempt_index + 1
+            selected = (latest.get("plan") or {}).get("selected") or {}
+            pre = ((selected.get("pregrasp") or {}).get("servo_deg"))
+            if not isinstance(pre, list):
+                run["reason"] = "pregrasp_target_missing"
+                break
+            pre = service.clamp_servo_deg([float(x) for x in pre[:7]])
+            pre[6] = open_deg
+            moved = program_runner.move_to_servo_deg_smooth(pre, pin_joints={6: open_deg})
+            step("pregrasp", {"attempt": attempt_index + 1, **moved})
+            if not moved.get("ok"):
+                run["reason"] = moved.get("reason", "pregrasp_failed")
+                break
+
+            # Tre osservazioni consecutive: nessun movimento finale se la posa oscilla.
+            observations: list[dict[str, Any]] = []
+            for _ in range(3):
+                obs = _capture_grasp6d_plan()
+                step("realign_observation", {"attempt": attempt_index + 1, "ok": obs.get("ok"), "reason": obs.get("reason")})
+                if not obs.get("ok"):
+                    observations = []
+                    break
+                observations.append(obs)
+            if len(observations) != 3:
+                run["reason"] = "realign_not_stable"
+                latest = _capture_grasp6d_plan()
+                continue
+            target_ts = [
+                np.asarray((((o.get("plan") or {}).get("selected") or {}).get("T_base_grasp")), dtype=float)
+                for o in observations
+            ]
+            centers = np.stack([T[:3, 3] for T in target_ts])
+            spread_m = float(np.max(np.linalg.norm(centers - np.mean(centers, axis=0), axis=1)))
+            rotations = [T[:3, :3] for T in target_ts]
+            rot_spread_deg = 0.0
+            for R in rotations[1:]:
+                c = float(np.clip((np.trace(R @ rotations[0].T) - 1.0) * 0.5, -1.0, 1.0))
+                rot_spread_deg = max(rot_spread_deg, math.degrees(math.acos(c)))
+            stable = spread_m <= 0.008 and rot_spread_deg <= 5.0
+            step(
+                "realign_gate",
+                {"attempt": attempt_index + 1, "ok": stable, "spread_m": spread_m, "rotation_spread_deg": rot_spread_deg},
+            )
+            if not stable:
+                run["reason"] = "realign_not_stable"
+                latest = observations[-1]
+                continue
+            latest = observations[-1]
+            if pregrasp_only:
+                run.update({"ok": True, "reason": None, "finished_at": time.time()})
+                _save_grasp6d_run(run)
+                return run
+            selected = (latest.get("plan") or {}).get("selected") or {}
+            grasp_target = ((selected.get("grasp") or {}).get("servo_deg"))
+            if not isinstance(grasp_target, list):
+                run["reason"] = "grasp_target_missing"
+                break
+            grasp_target = service.clamp_servo_deg([float(x) for x in grasp_target[:7]])
+            grasp_target[6] = open_deg
+            approached = program_runner.move_to_servo_deg_smooth(grasp_target, pin_joints={6: open_deg})
+            step("approach", {"attempt": attempt_index + 1, **approached})
+            if not approached.get("ok"):
+                run["reason"] = approached.get("reason", "approach_failed")
+                break
+
+            closed_target = list(grasp_target)
+            closed_target[6] = close_deg
+            closed = program_runner.move_to_servo_deg_smooth(closed_target)
+            step("close", {"attempt": attempt_index + 1, **closed})
+            if not closed.get("ok"):
+                run["reason"] = closed.get("reason", "close_failed")
+                break
+
+            grasp_T = np.asarray(selected["T_base_grasp"], dtype=float)
+            lift_T = grasp_T.copy()
+            lift_T[2, 3] += float(os.environ.get("D1_GRASP6D_LIFT_M", "0.09"))
+            lift_ik = grasp6d.ik_pose(lift_T, primary_seed=np.radians(np.asarray(closed_target[:6], dtype=float)))
+            if not lift_ik.get("ok"):
+                step("lift", lift_ik)
+                run["reason"] = lift_ik.get("reason", "lift_ik_failed")
+                break
+            lift_target = service.clamp_servo_deg(list(lift_ik["servo_deg"]))
+            lift_target[6] = close_deg
+            lifted = program_runner.move_to_servo_deg_smooth(lift_target, pin_joints={6: close_deg})
+            step("lift", {"attempt": attempt_index + 1, **lifted})
+            if not lifted.get("ok"):
+                run["reason"] = lifted.get("reason", "lift_failed")
+                break
+
+            fb = service.read_servo_deg(fast=True)
+            actual_j6 = float(fb["servo_deg"][6]) if fb.get("ok") and isinstance(fb.get("servo_deg"), list) else None
+            gripper_blocked = actual_j6 is not None and actual_j6 > close_deg + float(
+                os.environ.get("D1_GRASP6D_GRIPPER_BLOCK_DELTA_DEG", "2.5")
+            )
+            post = _capture_grasp6d_plan()
+            floor_absent = not post.get("ok") and post.get("reason") in {
+                "no_cluster_above_floor",
+                "object_component_not_found",
+                "object_cluster_too_small",
+                "no_safe_6d_grasp_candidate",
+            }
+            moved_with_lift = False
+            if post.get("ok"):
+                before_box = np.asarray((latest.get("plan") or {}).get("T_base_box"), dtype=float)
+                after_box = np.asarray((post.get("plan") or {}).get("T_base_box"), dtype=float)
+                if before_box.shape == (4, 4) and after_box.shape == (4, 4):
+                    moved_with_lift = float(after_box[2, 3] - before_box[2, 3]) >= 0.04
+            verified = bool(gripper_blocked and (floor_absent or moved_with_lift))
+            verify = {
+                "ok": verified,
+                "actual_gripper_deg": actual_j6,
+                "closed_empty_deg": close_deg,
+                "gripper_blocked": gripper_blocked,
+                "floor_position_absent": floor_absent,
+                "box_moved_with_lift": moved_with_lift,
+            }
+            step("verify", verify)
+            if verified:
+                run.update({"ok": True, "reason": None, "verification": verify, "finished_at": time.time()})
+                _save_grasp6d_run(run)
+                return run
+
+            run["reason"] = "grasp_not_verified"
+            # Recovery controllato: torna al pregrasp e riapre, senza mai fare release.
+            recovered = program_runner.move_to_servo_deg_smooth(pre, pin_joints={6: close_deg})
+            step("retract", {"attempt": attempt_index + 1, **recovered})
+            if not recovered.get("ok"):
+                break
+            opened = list(pre)
+            opened[6] = open_deg
+            opened_out = program_runner.move_to_servo_deg_smooth(opened)
+            step("reopen", {"attempt": attempt_index + 1, **opened_out})
+            latest = _capture_grasp6d_plan()
+            if not latest.get("ok"):
+                break
+
+        # Qualunque uscita fallita mantiene l'ultima posa comandata in HOLD.
+        hold = service.hold_pose_stream(servo_deg=service.get_servo_cache())
+        step("safe_hold", hold)
+        run["finished_at"] = time.time()
+        _save_grasp6d_run(run)
+        return run
+
     @app.route("/api/pick/grasp/goto", methods=["POST"])
     def pick_grasp_goto() -> Response:
+        body = request.get_json(silent=True) or {}
+        if os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            if not body.get("dry_run") and not body.get("pregrasp_only") and body.get("confirm") != "EXECUTE_GRASP6D":
+                return jsonify(
+                    {
+                        "ok": False,
+                        "reason": "explicit_grasp6d_confirmation_required",
+                        "required_confirm": "EXECUTE_GRASP6D",
+                    }
+                ), 409
+            out = _execute_grasp6d_attempt(
+                dry_run=bool(body.get("dry_run")),
+                pregrasp_only=bool(body.get("pregrasp_only")),
+            )
+            code = 200 if out.get("ok") else 422
+            return jsonify(out), code
         found = program_store.find_scan_waypoint()
         if found is None:
             return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404

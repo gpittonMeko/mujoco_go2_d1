@@ -43,6 +43,8 @@ PUSH_FILES = [
     "go2_dashboard/d1_jog/tcp_motion.py",
     "go2_dashboard/d1_jog/jog_stream.py",
     "go2_dashboard/d1_jog/cartesian.py",
+    "go2_dashboard/d1_jog/grasp6d.py",
+    "go2_dashboard/d1_jog/wrist_rgbd.py",
     "go2_dashboard/d1_jog/orbbec_capture.py",
     "go2_dashboard/d1_jog/pick_preset.py",
     "go2_dashboard/d1_jog/pick_teach_model.py",
@@ -79,6 +81,7 @@ PUSH_FILES = [
     "scripts/nx_start_d1_jog.sh",
     "scripts/nx_stop_operator_dashboard.sh",
     "scripts/orbbec_reset_camera.sh",
+    "scripts/udev/99-go2-realsense-dashboard.rules",
     "templates/d1_jog_dashboard.html",
     "templates/hermes.html",
     "templates/d1_joint_jog_modal.html",
@@ -332,6 +335,23 @@ fi
         print("systemd user stderr:", err)
 
 
+def _remote_install_realsense_udev(ssh: paramiko.SSHClient) -> None:
+    src = f"{REMOTE_BASE}/scripts/udev/99-go2-realsense-dashboard.rules"
+    dst = "/etc/udev/rules.d/99-go2-realsense-dashboard.rules"
+    password = nx_password().replace("'", "'\\''")
+    command = (
+        f"printf '%s\\n' '{password}' | sudo -S cp -f '{src}' '{dst}' && "
+        "printf '%s\\n' '" + password + "' | sudo -S udevadm control --reload-rules && "
+        "printf '%s\\n' '" + password + "' | sudo -S udevadm trigger --subsystem-match=video4linux"
+    )
+    _, stdout, stderr = ssh.exec_command(command, timeout=30)
+    code = stdout.channel.recv_exit_status()
+    if code != 0:
+        print("[d1-jog deploy] WARN udev RealSense non installata:", stderr.read().decode(errors="replace")[-500:])
+    else:
+        print("[d1-jog deploy] udev RealSense D435i/D456 installata")
+
+
 def main() -> None:
     import subprocess
     import sys
@@ -416,6 +436,7 @@ def main() -> None:
     _remote_install_d1_crontab(ssh)
     print("[d1-jog deploy] Optional systemd --user unit per 5056 â€¦")
     _remote_install_d1_systemd_user_optional(ssh)
+    _remote_install_realsense_udev(ssh)
     _remote_start_jog(ssh, host)
     ssh.close()
     print("[d1-jog deploy] Verifica stabilità daemon/feedback/hold …")

@@ -43,3 +43,7 @@ bin/
 data/start_alignment.json
 # Calibrated folded "true zero" pose on NX (operator-specific)
 data/true_zero_pose.json
+# D1 grasp 6D: calibrazione e telemetria specifiche del singolo robot/NX
+data/d1_grasp6d_calibration.json
+data/d1_grasp6d_handeye_samples.json
+data/d1_grasp6d_last.json
