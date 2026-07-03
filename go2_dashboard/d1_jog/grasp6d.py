@@ -236,14 +236,24 @@ def estimate_box_pose(depth_m: np.ndarray, intrinsics: dict[str, Any]) -> dict[s
     stride = 3
     mask = np.zeros((depth_m.shape[0] // stride + 1, depth_m.shape[1] // stride + 1), dtype=np.uint8)
     mask[(obj_pixels[:, 0] // stride).astype(int), (obj_pixels[:, 1] // stride).astype(int)] = 255
-    nlabels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    # La D456 restituisce spesso buchi sui cartoni stampati/lucidi. Colleghiamo
+    # solo vicini locali nella maschera sottocampionata, senza inventare depth.
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    connected_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    connected_mask = cv2.dilate(connected_mask, kernel, iterations=1)
+    nlabels, labels, stats, _ = cv2.connectedComponentsWithStats(connected_mask, 8)
     if nlabels <= 1:
         return {"ok": False, "reason": "object_component_not_found", "plane": plane}
     label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     keep = labels[(obj_pixels[:, 0] // stride).astype(int), (obj_pixels[:, 1] // stride).astype(int)] == label
     cluster = obj[keep]
     if len(cluster) < 60:
-        return {"ok": False, "reason": "object_cluster_too_small", "point_count": int(len(cluster))}
+        return {
+            "ok": False,
+            "reason": "object_cluster_too_small",
+            "point_count": int(len(cluster)),
+            "points_above_floor": int(len(obj)),
+        }
 
     center_observed = np.median(cluster, axis=0)
     cov = np.cov((cluster - center_observed).T)
