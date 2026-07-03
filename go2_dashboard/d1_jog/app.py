@@ -1837,6 +1837,127 @@ def create_d1_jog_app() -> Flask:
     def pick_detect_jpeg() -> Response:
         return _pick_scene_jpeg()
 
+    def _execute_legacy_grasp_approach() -> tuple[dict[str, Any], int]:
+        found = program_store.find_scan_waypoint()
+        if found is None:
+            return {"ok": False, "reason": "scan_waypoint_not_found"}, 404
+        _program_id, wp = found
+        raw = wp.get("servo_deg")
+        if not isinstance(raw, list):
+            return {"ok": False, "reason": "invalid_scan_waypoint"}, 400
+        scan_sd = service.clamp_servo_deg([float(x) for x in raw[:7]])
+        preset = pick_preset.load_preset()
+        off = pick_preset.effective_joint_offsets(
+            last_detection=preset.get("last_detection"),
+        )
+        if off is None:
+            return (
+                {
+                    "ok": False,
+                    "reason": "grasp_preset_missing",
+                    "hint": "Calibrazione zero, offset programma o foto normale prima di Presa oggetto",
+                },
+                404,
+            )
+        target = pick_preset.grasp_servo_approach_from_scan(
+            scan_sd,
+            offsets=off,
+            last_detection=preset.get("last_detection"),
+        )
+        if target is None:
+            return {"ok": False, "reason": "grasp_target_invalid"}, 400
+        transit = _safe_transit_target()
+        service._halt_cartesian_stream(wait_idle=True)
+        program_runner.clear_stop_request()
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return couple, 502
+        transit_move = None
+        if transit is not None:
+            transit_move = program_runner.move_to_servo_deg_smooth(transit)
+            if not (transit_move.get("ok") or transit_move.get("skipped")):
+                transit_move["phase"] = "transit_zero"
+                transit_move["target_servo_deg"] = transit
+                transit_move["coupling"] = couple
+                return (
+                    {
+                        "ok": False,
+                        "reason": transit_move.get("reason", "transit_failed"),
+                        "preset": "grasp_approach",
+                        "coupling": couple,
+                        "transit_zero": transit,
+                        "transit_move": transit_move,
+                        "scan_servo_deg": scan_sd,
+                    },
+                    502,
+                )
+        open_j6 = pick_preset.gripper_open_j6_deg(scan_sd)
+        out = program_runner.move_to_servo_deg_smooth(target, pin_joints={6: open_j6})
+        out["preset"] = "grasp_approach"
+        out["gripper_open_deg"] = open_j6
+        out["gripper_closed_deg"] = pick_preset.gripper_close_j6_deg(scan_sd)
+        out["coupling"] = couple
+        out["transit_zero"] = transit
+        out["transit_move"] = transit_move
+        out["scan_servo_deg"] = scan_sd
+        out["joint_offset_deg"] = off
+        out["has_zero_calibration"] = bool(preset.get("zero_calibration"))
+        zc = preset.get("zero_calibration") or {}
+        ref_vis = zc.get("vision_at_scan") if isinstance(zc, dict) else None
+        ld = preset.get("last_detection")
+        dpx = pick_preset._vision_pixel_delta(
+            ref_vis if isinstance(ref_vis, dict) else None,
+            ld if isinstance(ld, dict) else None,
+        )
+        if dpx is not None:
+            out["vision_pixel_delta"] = [round(dpx[0], 1), round(dpx[1], 1)]
+        d_orient = pick_preset._vision_orientation_delta_deg(
+            ref_vis if isinstance(ref_vis, dict) else None,
+            ld if isinstance(ld, dict) else None,
+        )
+        if d_orient is not None:
+            out["vision_orientation_delta_deg"] = d_orient
+            out["orient_joint_index"] = pick_preset._orient_joint_index()
+        zc_dict = zc if isinstance(zc, dict) else None
+        if zc_dict and isinstance(ld, dict):
+            scan_sd = zc_dict.get("scan_servo_deg")
+            base_off = preset.get("joint_offset_deg")
+            j5i = pick_preset._orient_joint_index()
+            if (
+                isinstance(scan_sd, list)
+                and len(scan_sd) > j5i
+                and isinstance(base_off, list)
+                and len(base_off) > j5i
+            ):
+                out["j5_breakdown"] = pick_preset._j5_target_breakdown(
+                    scan_j5=float(scan_sd[j5i]),
+                    base_off_j5=float(base_off[j5i]),
+                    zc=zc_dict,
+                    data=preset,
+                    cur_dict=ld,
+                )
+        manual_orient = preset.get("manual_orient_offset_deg")
+        if manual_orient is not None:
+            out["manual_orient_offset_deg"] = float(manual_orient)
+        out["joint_offset_deg_effective"] = off
+        out["target_servo_deg"] = target
+        try:
+            from go2_dashboard.d1_jog import pick_teach_model
+
+            if pick_teach_model.model_is_active(preset):
+                _moff, blend = pick_teach_model.effective_offsets_from_model(
+                    preset.get("last_detection"),
+                    data=preset,
+                )
+                out["has_teach_model"] = True
+                out["teach_model_blend"] = blend
+                if isinstance(blend, dict):
+                    out["teach_interp_method"] = blend.get("method")
+                    out["teach_nearest_id"] = blend.get("nearest_id")
+        except Exception:
+            pass
+        return out, (200 if out.get("ok") else 502)
+
     def _execute_grasp6d_attempt(*, dry_run: bool = False, pregrasp_only: bool = False) -> dict[str, Any]:
         import numpy as np
 
@@ -2037,124 +2158,58 @@ def create_d1_jog_app() -> Flask:
             )
             code = 200 if out.get("ok") else 422
             return jsonify(out), code
-        found = program_store.find_scan_waypoint()
-        if found is None:
-            return jsonify({"ok": False, "reason": "scan_waypoint_not_found"}), 404
-        _program_id, wp = found
-        raw = wp.get("servo_deg")
-        if not isinstance(raw, list):
-            return jsonify({"ok": False, "reason": "invalid_scan_waypoint"}), 400
-        scan_sd = service.clamp_servo_deg([float(x) for x in raw[:7]])
-        preset = pick_preset.load_preset()
-        off = pick_preset.effective_joint_offsets(
-            last_detection=preset.get("last_detection"),
-        )
-        if off is None:
-            return jsonify(
-                {
-                    "ok": False,
-                    "reason": "grasp_preset_missing",
-                    "hint": "Calibrazione zero, offset programma o foto normale prima di Presa oggetto",
-                }
-            ), 404
-        target = pick_preset.grasp_servo_approach_from_scan(
-            scan_sd,
-            offsets=off,
-            last_detection=preset.get("last_detection"),
-        )
-        if target is None:
-            return jsonify({"ok": False, "reason": "grasp_target_invalid"}), 400
-        transit = _safe_transit_target()
-        service._halt_cartesian_stream(wait_idle=True)
-        program_runner.clear_stop_request()
-        couple = service.ensure_coupled_for_motion()
-        if not couple.get("ok"):
-            return jsonify(couple), 502
-        transit_move = None
-        if transit is not None:
-            transit_move = program_runner.move_to_servo_deg_smooth(transit)
-            if not (transit_move.get("ok") or transit_move.get("skipped")):
-                transit_move["phase"] = "transit_zero"
-                transit_move["target_servo_deg"] = transit
-                transit_move["coupling"] = couple
-                return jsonify(
-                    {
-                        "ok": False,
-                        "reason": transit_move.get("reason", "transit_failed"),
-                        "preset": "grasp_approach",
-                        "coupling": couple,
-                        "transit_zero": transit,
-                        "transit_move": transit_move,
-                        "scan_servo_deg": scan_sd,
-                    }
-                ), 502
-        open_j6 = pick_preset.gripper_open_j6_deg(scan_sd)
-        out = program_runner.move_to_servo_deg_smooth(target, pin_joints={6: open_j6})
-        out["preset"] = "grasp_approach"
-        out["gripper_open_deg"] = open_j6
-        out["gripper_closed_deg"] = pick_preset.gripper_close_j6_deg(scan_sd)
-        out["coupling"] = couple
-        out["transit_zero"] = transit
-        out["transit_move"] = transit_move
-        out["scan_servo_deg"] = scan_sd
-        out["joint_offset_deg"] = off
-        out["has_zero_calibration"] = bool(preset.get("zero_calibration"))
-        zc = preset.get("zero_calibration") or {}
-        ref_vis = zc.get("vision_at_scan") if isinstance(zc, dict) else None
-        ld = preset.get("last_detection")
-        dpx = pick_preset._vision_pixel_delta(
-            ref_vis if isinstance(ref_vis, dict) else None,
-            ld if isinstance(ld, dict) else None,
-        )
-        if dpx is not None:
-            out["vision_pixel_delta"] = [round(dpx[0], 1), round(dpx[1], 1)]
-        d_orient = pick_preset._vision_orientation_delta_deg(
-            ref_vis if isinstance(ref_vis, dict) else None,
-            ld if isinstance(ld, dict) else None,
-        )
-        if d_orient is not None:
-            out["vision_orientation_delta_deg"] = d_orient
-            out["orient_joint_index"] = pick_preset._orient_joint_index()
-        zc_dict = zc if isinstance(zc, dict) else None
-        if zc_dict and isinstance(ld, dict):
-            scan_sd = zc_dict.get("scan_servo_deg")
-            base_off = preset.get("joint_offset_deg")
-            j5i = pick_preset._orient_joint_index()
-            if (
-                isinstance(scan_sd, list)
-                and len(scan_sd) > j5i
-                and isinstance(base_off, list)
-                and len(base_off) > j5i
-            ):
-                out["j5_breakdown"] = pick_preset._j5_target_breakdown(
-                    scan_j5=float(scan_sd[j5i]),
-                    base_off_j5=float(base_off[j5i]),
-                    zc=zc_dict,
-                    data=preset,
-                    cur_dict=ld,
-                )
-        manual_orient = preset.get("manual_orient_offset_deg")
-        if manual_orient is not None:
-            out["manual_orient_offset_deg"] = float(manual_orient)
-        out["joint_offset_deg_effective"] = off
-        out["target_servo_deg"] = target
-        try:
-            from go2_dashboard.d1_jog import pick_teach_model
-
-            if pick_teach_model.model_is_active(preset):
-                _moff, blend = pick_teach_model.effective_offsets_from_model(
-                    preset.get("last_detection"),
-                    data=preset,
-                )
-                out["has_teach_model"] = True
-                out["teach_model_blend"] = blend
-                if isinstance(blend, dict):
-                    out["teach_interp_method"] = blend.get("method")
-                    out["teach_nearest_id"] = blend.get("nearest_id")
-        except Exception:
-            pass
-        code = 200 if out.get("ok") else 502
+        out, code = _execute_legacy_grasp_approach()
         return jsonify(out), code
+
+    @app.route("/api/pick/grasp_legacy/preview", methods=["POST"])
+    def pick_grasp_legacy_preview() -> Response:
+        out = pick_vision.capture_and_detect()
+        _apply_pick_detection_to_preset(out)
+        feedback = service.read_servo_deg(fast=True)
+        if feedback.get("ok") and feedback.get("servo_deg"):
+            out["grasp_estimate"] = _scan_grasp_estimate(feedback["servo_deg"], out)
+            out["scan_feedback"] = feedback
+        out["mode"] = "legacy"
+        return jsonify(out), (200 if out.get("ok") else 502)
+
+    @app.route("/api/pick/grasp_legacy/execute", methods=["POST"])
+    def pick_grasp_legacy_execute() -> Response:
+        out, code = _execute_legacy_grasp_approach()
+        out["mode"] = "legacy"
+        return jsonify(out), code
+
+    @app.route("/api/pick/grasp6d/status", methods=["GET"])
+    def pick_grasp6d_status() -> Response:
+        enabled = os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+        cal = grasp6d.load_calibration()
+        cal.pop("T_tool_camera_np", None)
+        out = {
+            "ok": True,
+            "enabled": enabled,
+            "rgbd": wrist_rgbd.health(capture=False),
+            "sample_count": len(grasp6d.list_handeye_samples()),
+            "calibration": cal,
+        }
+        return jsonify(out)
+
+    @app.route("/api/pick/grasp6d/preview", methods=["POST"])
+    def pick_grasp6d_preview() -> Response:
+        out = _capture_grasp6d_plan()
+        _save_grasp6d_run({"mode": "preview_api", "at": time.time(), **out})
+        return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/pregrasp", methods=["POST"])
+    def pick_grasp6d_pregrasp() -> Response:
+        out = _execute_grasp6d_attempt(pregrasp_only=True)
+        return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/execute", methods=["POST"])
+    def pick_grasp6d_execute() -> Response:
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "EXECUTE_GRASP6D":
+            return jsonify({"ok": False, "reason": "explicit_grasp6d_confirmation_required", "required_confirm": "EXECUTE_GRASP6D"}), 409
+        out = _execute_grasp6d_attempt(pregrasp_only=False)
+        return jsonify(out), (200 if out.get("ok") else 422)
 
     def _pick_gripper_move(j6_target: float, *, action: str) -> tuple[Response, int]:
         fb = service.read_servo_deg(fast=True)

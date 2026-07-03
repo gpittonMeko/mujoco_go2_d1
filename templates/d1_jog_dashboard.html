@@ -97,6 +97,10 @@
     .scan-metric small { display:block; color:#598095; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
     .scan-metric strong { display:block; margin-top:4px; color:#0a527b; font-size:14px; overflow-wrap:anywhere; }
     .scan-log { grid-column:1/-1; max-height:190px; overflow:auto; margin:0; padding:11px; border-radius:12px; background:#0b374f; color:#dff8ff; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; }
+    .mode-grid { display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:8px; margin-top:10px; }
+    .mode-kpi { padding:10px 12px; border-radius:12px; background:rgba(220,247,255,.66); border:1px solid rgba(25,130,175,.16); }
+    .mode-kpi small { display:block; color:#598095; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .mode-kpi strong { display:block; margin-top:4px; color:#0a527b; font-size:14px; overflow-wrap:anywhere; }
     .hide { display: none; }
     @keyframes orbFloat {
       0%, 100% { transform:translateY(0) scale(1); opacity:.42; }
@@ -218,7 +222,40 @@
           <button id="btnRightScan">Vai a destra 90 e scannerizza</button>
           <button id="btnLeftScan">Vai a sinistra 90 e scannerizza</button>
           <button id="btnDetectNow" class="neutral">Solo detection</button>
-          <button id="btnTestGrasp" class="warn">Prova presa</button>
+          <button id="btnTestGrasp" class="warn">Prova presa 6D rapida</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Presa legacy (2D scan)</h3>
+        <div class="row">
+          <button id="btnLegacyPreview" class="neutral">Preview legacy</button>
+          <button id="btnLegacyExecute" class="warn">Esegui presa legacy</button>
+        </div>
+        <div class="mode-grid">
+          <div class="mode-kpi"><small>Offset efficaci</small><strong id="legacyOffsets">—</strong></div>
+          <div class="mode-kpi"><small>Target giunti</small><strong id="legacyTarget">—</strong></div>
+          <div class="mode-kpi"><small>Teach model</small><strong id="legacyModel">—</strong></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Presa 6D RGB-D + calibrazione</h3>
+        <div class="row">
+          <button id="btn6dStatus" class="neutral">Stato 6D</button>
+          <button id="btn6dPreview" class="neutral">Preview 6D</button>
+          <button id="btn6dPregrasp" class="warn">Solo pregrasp 6D</button>
+          <button id="btn6dExecute" class="danger">Esegui presa 6D</button>
+        </div>
+        <div class="row">
+          <button id="btn6dSample" class="neutral">Sample calibrazione</button>
+          <button id="btn6dBuild" class="neutral">Build calibrazione</button>
+          <button id="btn6dReset" class="danger">Reset samples</button>
+        </div>
+        <div class="mode-grid">
+          <div class="mode-kpi"><small>RGB-D wrist</small><strong id="grasp6dRgbd">—</strong></div>
+          <div class="mode-kpi"><small>Calibrazione hand-eye</small><strong id="grasp6dCalib">—</strong></div>
+          <div class="mode-kpi"><small>Samples</small><strong id="grasp6dSamples">—</strong></div>
         </div>
       </div>
 
@@ -657,6 +694,35 @@
       return '[' + values.map(v => Number(v).toFixed(digits == null ? 1 : digits)).join(', ') + ']';
     }
 
+    function setKpi(id, value) {
+      const el = q(id);
+      if (el) el.textContent = value;
+    }
+
+    async function refreshGrasp6dStatus(capture) {
+      try {
+        if (capture) {
+          await api('/api/pick/rgbd/health', 'POST', {}, 120000);
+        }
+        const st = await api('/api/pick/grasp6d/status', 'GET');
+        const cal = st.calibration || {};
+        const rgbd = st.rgbd || {};
+        setKpi('grasp6dRgbd', rgbd.ok ? ('OK · valid ' + Number(rgbd.depth_valid_fraction || 0).toFixed(2)) : (rgbd.reason || 'non pronto'));
+        setKpi('grasp6dCalib', cal.ok ? 'OK' : (cal.reason || 'mancante'));
+        setKpi('grasp6dSamples', String(st.sample_count == null ? '—' : st.sample_count));
+        setDiag('Stato 6D', st);
+        setStatus('Stato 6D aggiornato', true);
+      } catch (e) {
+        setStatus(String(e), false);
+      }
+    }
+
+    function applyLegacySummary(d) {
+      setKpi('legacyOffsets', compactNumbers(d && d.joint_offset_deg_effective, 1));
+      setKpi('legacyTarget', compactNumbers(d && d.target_servo_deg, 1));
+      setKpi('legacyModel', d && d.has_teach_model ? 'attivo' : 'non attivo');
+    }
+
     function renderScanResult(payload) {
       const nestedScan = payload && payload.detection && payload.detection.detection;
       const vision = nestedScan ? payload.detection : (payload || {});
@@ -774,6 +840,49 @@
         { confirm: 'EXECUTE_GRASP6D' }, 300000
       );
     };
+    q('btnLegacyPreview').onclick = async () => {
+      const d = await callAndShow('Preview presa legacy', '/api/pick/grasp_legacy/preview', 'POST', {}, 120000);
+      if (d) {
+        renderScanResult(d);
+        applyLegacySummary(d);
+      }
+    };
+    q('btnLegacyExecute').onclick = async () => {
+      const accepted = window.confirm('Eseguire la presa legacy (scan 2D + offset)?');
+      if (!accepted) return;
+      const d = await callAndShow('Esegui presa legacy', '/api/pick/grasp_legacy/execute', 'POST', {}, 120000);
+      if (d) applyLegacySummary(d);
+    };
+    q('btn6dStatus').onclick = () => refreshGrasp6dStatus(true);
+    q('btn6dPreview').onclick = async () => {
+      const d = await callAndShow('Preview 6D', '/api/pick/grasp6d/preview', 'POST', {}, 120000);
+      if (d) {
+        renderScanResult(d);
+        refreshGrasp6dStatus(false);
+      }
+    };
+    q('btn6dPregrasp').onclick = async () => {
+      await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', {}, 300000);
+    };
+    q('btn6dExecute').onclick = async () => {
+      const accepted = window.confirm('Confermi presa 6D completa? Usa solo se preview e pregrasp sono OK.');
+      if (!accepted) return;
+      await callAndShow('Presa 6D completa', '/api/pick/grasp6d/execute', 'POST', { confirm: 'EXECUTE_GRASP6D' }, 300000);
+    };
+    q('btn6dSample').onclick = async () => {
+      await callAndShow('Sample calibrazione 6D', '/api/pick/metric/calibration/sample', 'POST', {}, 120000);
+      await refreshGrasp6dStatus(false);
+    };
+    q('btn6dBuild').onclick = async () => {
+      await callAndShow('Build calibrazione 6D', '/api/pick/metric/calibration/build', 'POST', {}, 120000);
+      await refreshGrasp6dStatus(false);
+    };
+    q('btn6dReset').onclick = async () => {
+      const accepted = window.confirm('Eliminare tutti i sample hand-eye 6D?');
+      if (!accepted) return;
+      await callAndShow('Reset sample 6D', '/api/pick/metric/calibration', 'DELETE', {}, 120000);
+      await refreshGrasp6dStatus(false);
+    };
     q('btnReadPose').onclick = readPoseToSliders;
     q('btnApplyPose').onclick = () => callAndShow('Applica posa', '/api/joints/jog', 'POST', { servo_deg: sliderPose() }, 70000);
     q('btnHoldPose').onclick = () => callAndShow('Hold posa', '/api/joints/hold', 'POST', { servo_deg: sliderPose() }, 70000);
@@ -823,6 +932,7 @@
       });
       await refreshThermal();
     };
+    refreshGrasp6dStatus(false);
     if (typeof loadPickTuning === 'function') {
       loadPickTuning();
     }
