@@ -100,12 +100,33 @@ def _orient_enabled() -> bool:
     )
 
 
+def _preset_tuning() -> dict[str, Any]:
+    data = load_preset().get("tuning")
+    return data if isinstance(data, dict) else {}
+
+
+def _preset_tuning_float(key: str, env_key: str, default: float) -> float:
+    tuning = _preset_tuning()
+    if key in tuning:
+        try:
+            return float(tuning[key])
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get(env_key) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _orient_joint_index() -> int:
     return int(os.environ.get("D1_PICK_ORIENT_JOINT_INDEX", "5"))
 
 
 def _orient_gain() -> float:
-    return float(os.environ.get("D1_PICK_ORIENT_GAIN", "1.0"))
+    return _preset_tuning_float("orient_gain", "D1_PICK_ORIENT_GAIN", 1.0)
 
 
 def _orient_sign() -> float:
@@ -119,27 +140,15 @@ def _orient_sign() -> float:
 
 def _orient_perp_offset_deg() -> float:
     """Pinza ⊥ freccia lungo asse scatola: J5 segue asse corto (= lungo + 90°)."""
-    raw = (os.environ.get("D1_PICK_ORIENT_PERP_OFFSET_DEG") or "90").strip()
-    try:
-        return float(raw)
-    except ValueError:
-        return 90.0
+    return _preset_tuning_float("orient_perp_offset_deg", "D1_PICK_ORIENT_PERP_OFFSET_DEG", 90.0)
 
 
 def _orient_max_delta_deg() -> float:
-    raw = (os.environ.get("D1_PICK_ORIENT_MAX_DELTA_DEG") or "12").strip()
-    try:
-        return max(1.0, float(raw))
-    except ValueError:
-        return 12.0
+    return max(1.0, _preset_tuning_float("orient_max_delta_deg", "D1_PICK_ORIENT_MAX_DELTA_DEG", 12.0))
 
 
 def _orient_smooth_alpha() -> float:
-    raw = (os.environ.get("D1_PICK_ORIENT_SMOOTH_ALPHA") or "0.4").strip()
-    try:
-        return min(1.0, max(0.05, float(raw)))
-    except ValueError:
-        return 0.4
+    return min(1.0, max(0.05, _preset_tuning_float("orient_smooth_alpha", "D1_PICK_ORIENT_SMOOTH_ALPHA", 0.4)))
 
 
 def _circular_mean_deg(a: float, b: float, *, wa: float = 0.6, wb: float = 0.4) -> float:
@@ -498,9 +507,9 @@ def effective_joint_offsets(*, last_detection: dict[str, Any] | None = None) -> 
         cur_dict = None
     dpx = _vision_pixel_delta(ref_dict, cur_dict)
     if dpx is not None:
-        k0 = float(os.environ.get("D1_PICK_PX_TO_J0_DEG", "0.04"))
-        k1 = float(os.environ.get("D1_PICK_PX_TO_J1_DEG", "0.035"))
-        k2 = float(os.environ.get("D1_PICK_PX_TO_J2_DEG", "0.015"))
+        k0 = _preset_tuning_float("px_to_j0_deg", "D1_PICK_PX_TO_J0_DEG", 0.04)
+        k1 = _preset_tuning_float("px_to_j1_deg", "D1_PICK_PX_TO_J1_DEG", 0.035)
+        k2 = _preset_tuning_float("px_to_j2_deg", "D1_PICK_PX_TO_J2_DEG", 0.015)
         out[0] = round(out[0] + dpx[0] * k0, 3)
         out[1] = round(out[1] + dpx[1] * k1, 3)
         out[2] = round(out[2] + dpx[1] * k2, 3)
@@ -671,6 +680,7 @@ def preset_info() -> dict[str, Any]:
         "teach_samples_count": teach_info.get("count", 0),
         "has_teach_model": bool(teach_info.get("has_active_model")),
         "teach_model": teach_info.get("teach_model"),
+        "tuning": tuning_info(),
     }
     if teach_info.get("has_active_model") and isinstance(data.get("last_detection"), dict):
         model_off, blend = pick_teach_model.effective_offsets_from_model(data["last_detection"], data=data)
@@ -746,6 +756,27 @@ def preset_info() -> dict[str, Any]:
             out["scan_servo_deg"] = sd
             out["joint_offset_deg_effective"] = eff
             out["grasp_servo_deg_computed"] = grasp
+    return out
+
+
+def tuning_info() -> dict[str, Any]:
+    data = load_preset()
+    tuning = data.get("tuning") if isinstance(data.get("tuning"), dict) else {}
+    out = {
+        "ok": True,
+        "preset_path": str(_PRESET_PATH),
+        "orient_gain": _orient_gain(),
+        "orient_max_delta_deg": _orient_max_delta_deg(),
+        "orient_smooth_alpha": _orient_smooth_alpha(),
+        "orient_perp_offset_deg": _orient_perp_offset_deg(),
+        "px_to_j0_deg": _preset_tuning_float("px_to_j0_deg", "D1_PICK_PX_TO_J0_DEG", 0.04),
+        "px_to_j1_deg": _preset_tuning_float("px_to_j1_deg", "D1_PICK_PX_TO_J1_DEG", 0.035),
+        "px_to_j2_deg": _preset_tuning_float("px_to_j2_deg", "D1_PICK_PX_TO_J2_DEG", 0.015),
+        "orient_joint_index": _orient_joint_index(),
+        "orient_enabled": _orient_enabled(),
+        "orient_sign": _orient_sign(),
+        "saved": tuning,
+    }
     return out
 
 
@@ -956,6 +987,43 @@ def set_manual_orient_offset_deg(delta_deg: float) -> dict[str, Any]:
     info = preset_info()
     info["ok"] = True
     return info
+
+
+def set_tuning(updates: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "orient_gain": float,
+        "orient_max_delta_deg": float,
+        "orient_smooth_alpha": float,
+        "orient_perp_offset_deg": float,
+        "px_to_j0_deg": float,
+        "px_to_j1_deg": float,
+        "px_to_j2_deg": float,
+    }
+    data = load_preset()
+    tuning = data.get("tuning") if isinstance(data.get("tuning"), dict) else {}
+    tuning = dict(tuning)
+    changed: dict[str, Any] = {}
+    for key, caster in keys.items():
+        if key not in updates:
+            continue
+        try:
+            val = caster(updates[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"{key}_invalid")
+        if key == "orient_smooth_alpha":
+            val = min(1.0, max(0.05, float(val)))
+        elif key == "orient_max_delta_deg":
+            val = max(1.0, float(val))
+        tuning[key] = round(float(val), 4)
+        changed[key] = tuning[key]
+    if not changed:
+        return tuning_info()
+    data["tuning"] = tuning
+    save_preset(data)
+    out = tuning_info()
+    out["ok"] = True
+    out["updated"] = changed
+    return out
 
 
 def set_offsets(

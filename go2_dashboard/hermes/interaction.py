@@ -292,7 +292,7 @@ def handle_vision(q: str) -> dict[str, Any]:
         return {
             "reply": (
                 f"Non riesco a leggere la camera {label}. "
-                "Controlla che la D1 jog (:5053) sia attiva per il polso Orbbec."
+                "Controlla che la dashboard 5056 sia attiva per la camera RGB del polso."
             ),
             "action": "vision",
             "camera": cam_meta,

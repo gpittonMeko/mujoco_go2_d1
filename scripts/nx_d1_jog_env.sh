@@ -19,19 +19,20 @@ export D1_JOG_FEEDBACK_TIMEOUT_S=14
 export D1_DDS_DOMAIN="${D1_DDS_DOMAIN:-${GO2_DDS_DOMAIN:-0}}"
 export GO2_DDS_INTERFACE="${GO2_DDS_INTERFACE:-eth0}"
 export D1_DDS_INTERFACE="${D1_DDS_INTERFACE:-$GO2_DDS_INTERFACE}"
-# Cyclone + iceoryx: i binari d1_sdk_command / d1_sdk_feedback richiedono le
-# librerie di sistema in testa al path, altrimenti compare undefined symbol
-# free_iox_chunk quando il daemon prova a partire.
-export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-_UT="${UNITREE_SDK2:-/usr/local}"
-if [ -d "$_UT/lib" ]; then
-  export LD_LIBRARY_PATH="$_UT/lib:${LD_LIBRARY_PATH}"
-elif [ -d "$_UT/lib64" ]; then
-  export LD_LIBRARY_PATH="$_UT/lib64:${LD_LIBRARY_PATH}"
+# Runtime DDS del controller D1. Le lib standard /usr/local (Cyclone 0.10.5)
+# non riconoscono il nodo Unitree <SharedMemory> e fanno abortire il publisher.
+# Questo runtime è stato verificato live con lo stesso d1_sdk_command.
+_D1_DDS_RUNTIME="${D1_DDS_LIB_DIR:-/home/unitree/sdk_reinstall_backup_19700225_160102}"
+if [ -f "$_D1_DDS_RUNTIME/libddsc.so.0" ] && [ -f "$_D1_DDS_RUNTIME/libddscxx.so.0" ]; then
+  export LD_LIBRARY_PATH="$_D1_DDS_RUNTIME:/usr/local/lib:/usr/local/lib/aarch64-linux-gnu"
+  export D1_DDS_RUNTIME_OK=1
+else
+  export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib/aarch64-linux-gnu"
+  export D1_DDS_RUNTIME_OK=0
 fi
-if [ -f "$PWD/bin/libd1_iox_shim.so" ]; then
-  export LD_PRELOAD="$PWD/bin/libd1_iox_shim.so${LD_PRELOAD:+:$LD_PRELOAD}"
-fi
+# Lo shim introdotto successivamente mascherava l'ABI errata ma non rendeva
+# Cyclone compatibile. Il runtime Unitree corretto esporta già i simboli richiesti.
+unset LD_PRELOAD
 # CycloneDDS: forza multicast sulla NIC verso subnet Unitree (192.168.123.x)
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0" multicast="default" priority="default"/></Interfaces></General></Domain></CycloneDDS>'
 export D1_ARM_HOST="${D1_ARM_HOST:-192.168.123.100}"
@@ -56,10 +57,10 @@ export D1_JOG_DECEL_MM_S2="${D1_JOG_DECEL_MM_S2:-150}"
 export D1_JOG_MIN_MOVE_SPEED_MM_S="${D1_JOG_MIN_MOVE_SPEED_MM_S:-0}"
 export D1_JOG_KICK_START_RATIO="${D1_JOG_KICK_START_RATIO:-0}"
 export D1_JOG_FB_RESYNC_EVERY="${D1_JOG_FB_RESYNC_EVERY:-0}"
-export D1_JOG_ENABLE_EVERY_TICKS="${D1_JOG_ENABLE_EVERY_TICKS:-4}"
+export D1_JOG_ENABLE_EVERY_TICKS=0
 export D1_JOG_COUPLE_ON_STREAM_START="${D1_JOG_COUPLE_ON_STREAM_START:-0}"
-export D1_JOG_ENABLE_EVERY_TICKS="${D1_JOG_ENABLE_EVERY_TICKS:-0}"
 export D1_JOG_HOLD_AFTER_MOTION="${D1_JOG_HOLD_AFTER_MOTION:-0}"
+export D1_INFER_COUPLED_ON_FEEDBACK="${D1_INFER_COUPLED_ON_FEEDBACK:-0}"
 export D1_ZERO_SETTLE_S="${D1_ZERO_SETTLE_S:-4}"
 export D1_ZERO_HOLD_REPEATS="${D1_ZERO_HOLD_REPEATS:-8}"
 export D1_ZERO_HOLD_DELAY_MS="${D1_ZERO_HOLD_DELAY_MS:-55}"
@@ -76,13 +77,29 @@ export D1_PROG_MOVE_DEG_PER_S="${D1_PROG_MOVE_DEG_PER_S:-12}"
 export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
-# Orbbec polso — pin RGB (video12 mjpeg dopo reload UVC); no reset a ogni foto (live+foto più veloci)
-export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-2}"
-export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-2}"
+# Unico owner DDS del braccio: daemon esterno con heartbeat funcode 2.
+# Flask è solo client e può riavviarsi senza interrompere l'hold.
+export D1_HOLD_DAEMON_EXTERNAL=1
+export D1_HOLD_SOCKET="${D1_HOLD_SOCKET:-/tmp/go2_d1_hold.sock}"
+export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-100}"
+export D1_ZERO_TRANSIT_J1_DEG="${D1_ZERO_TRANSIT_J1_DEG:--90}"
+export D1_ZERO_TRANSIT_J2_DEG="${D1_ZERO_TRANSIT_J2_DEG:-90}"
+export GO2_THERMAL_PROTECT="${GO2_THERMAL_PROTECT:-1}"
+export GO2_THERMAL_POLL_S="${GO2_THERMAL_POLL_S:-1.0}"
+export GO2_THERMAL_COOLDOWN_S="${GO2_THERMAL_COOLDOWN_S:-30}"
+# Due RealSense, solo interfacce COLOR (UVC :1.3, stream index 0).
+# D456 polso: /dev/video4. D435i frontale: /dev/video10.
+# app.py verifica anche VID:PID + interfaccia, quindi regge la rinumerazione USB.
+export D1_WRIST_V4L_INDEX="${D1_WRIST_V4L_INDEX:-4}"
+export D1_FRONT_V4L_INDEX="${D1_FRONT_V4L_INDEX:-10}"
+export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-4}"
+export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-4}"
+export D1_PICK_ALLOW_GENERIC_RGB_FALLBACK=1
+export D1_ORBBEC_RGB_ONLY=1
 export D1_ORBBEC_AUTO_DISCOVERY="${D1_ORBBEC_AUTO_DISCOVERY:-0}"
 export D1_ORBBEC_PREFERRED_UVC_INDEX="${D1_ORBBEC_PREFERRED_UVC_INDEX:-2}"
 export D1_ORBBEC_REPROBE_EACH_CAPTURE="${D1_ORBBEC_REPROBE_EACH_CAPTURE:-0}"
-export D1_ORBBEC_RELOAD_UVC="${D1_ORBBEC_RELOAD_UVC:-1}"
+export D1_ORBBEC_RELOAD_UVC="${D1_ORBBEC_RELOAD_UVC:-0}"
 export D1_ORBBEC_RESET_BEFORE_CAPTURE="${D1_ORBBEC_RESET_BEFORE_CAPTURE:-0}"
 export D1_ORBBEC_RESET_RELOAD_UVC="${D1_ORBBEC_RESET_RELOAD_UVC:-1}"
 export D1_ORBBEC_RESET_SETTLE_S="${D1_ORBBEC_RESET_SETTLE_S:-2.5}"
@@ -103,7 +120,6 @@ export D1_ORBBEC_MIN_CHANNEL_SPREAD="${D1_ORBBEC_MIN_CHANNEL_SPREAD:-8}"
 export D1_ORBBEC_AUTO_MIN_CHANNEL_SPREAD="${D1_ORBBEC_AUTO_MIN_CHANNEL_SPREAD:-0.05}"
 export D1_ORBBEC_PINNED_MIN_CHANNEL_SPREAD="${D1_ORBBEC_PINNED_MIN_CHANNEL_SPREAD:-0.05}"
 export D1_ORBBEC_MIN_SPREAD_FLOOR="${D1_ORBBEC_MIN_SPREAD_FLOOR:-0.04}"
-export D1_ORBBEC_RGB_ONLY="${D1_ORBBEC_RGB_ONLY:-0}"
 export D1_PICK_ALLOW_GENERIC_RGB_FALLBACK="${D1_PICK_ALLOW_GENERIC_RGB_FALLBACK:-1}"
 export D1_ORBBEC_V4L_DIRECT="${D1_ORBBEC_V4L_DIRECT:-1}"
 export D1_ORBBEC_PREFER_V4L_DIRECT="${D1_ORBBEC_PREFER_V4L_DIRECT:-1}"

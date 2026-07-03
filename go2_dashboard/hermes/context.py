@@ -1,4 +1,4 @@
-"""Lettura contesto robot — operator :5052 opzionale (Hermes standalone su :5054)."""
+"""Contesto live della dashboard integrata 5056; la vecchia 5052 è opzionale."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def operator_base() -> str:
 
 
 def d1_jog_base() -> str:
-    return (os.environ.get("HERMES_D1_JOG_URL") or "http://127.0.0.1:5053").strip().rstrip("/")
+    return (os.environ.get("HERMES_D1_JOG_URL") or "http://127.0.0.1:5056").strip().rstrip("/")
 
 
 def operator_required() -> bool:
@@ -33,6 +33,9 @@ def operator_reachable_quick(*, timeout_s: float = 2.5) -> bool:
 
 
 def hermes_capabilities() -> dict[str, Any]:
+    integrated = os.environ.get("GO2_HERMES_INTEGRATED", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     return {
         "operator_required": operator_required(),
         "operator_url": operator_base(),
@@ -40,12 +43,13 @@ def hermes_capabilities() -> dict[str, Any]:
         "d1_jog_url": d1_jog_base(),
         "sport_direct": os.environ.get("HERMES_SPORT_DIRECT", "1").strip().lower()
         not in {"0", "false", "no", "off"},
-        "standalone": not operator_required(),
+        "integrated": integrated,
+        "standalone": not integrated,
     }
 
 
-def _fetch_json(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
-    url = operator_base() + path
+def _fetch_from(base: str, path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
+    url = base + path
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -55,26 +59,39 @@ def _fetch_json(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
         return {"ok": False, "path": path, "error": repr(exc)}
 
 
+def _fetch_json(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
+    """Compatibilità per le sole funzioni legacy che interrogano la 5052."""
+    return _fetch_from(operator_base(), path, timeout_s=timeout_s)
+
+
+def _fetch_jog(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
+    return _fetch_from(d1_jog_base(), path, timeout_s=timeout_s)
+
+
 def build_robot_context() -> dict[str, Any]:
-    cameras = _fetch_json("/api/cameras/status")
-    grasp = _fetch_json("/api/arm/grasp_pipeline")
-    scene = _fetch_json("/api/arm/scene_3d?fast=1", timeout_s=12.0)
+    health = _fetch_jog("/api/health")
+    cameras = _fetch_jog("/api/cameras/rgb_status")
+    grasp = _fetch_jog("/api/pick/preset")
+    feedback = _fetch_jog("/api/joints/feedback", timeout_s=12.0)
 
     scene_summary: dict[str, Any] = {}
-    if isinstance(scene, dict):
+    if isinstance(feedback, dict):
         scene_summary = {
-            "ok": scene.get("ok"),
-            "servo_deg": scene.get("servo_deg"),
-            "grasp_display_base_link_m": scene.get("grasp_display_base_link_m"),
+            "ok": feedback.get("ok"),
+            "servo_deg": feedback.get("servo_deg"),
         }
 
     return {
-        "operator_reachable": bool((cameras or {}).get("ok") or (grasp or {}).get("ok")),
+        "integrated": True,
+        "dashboard_port": 5056,
+        "dashboard_reachable": bool(health.get("ok")),
+        "operator_reachable": bool(health.get("ok")),
         "operator_required": operator_required(),
         "standalone_ok": not operator_required(),
         "cameras": cameras,
         "grasp_pipeline": grasp,
         "scene_3d": scene_summary,
+        "health": health,
     }
 
 

@@ -3,24 +3,33 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hermes</title>
-  <link rel="stylesheet" href="/static/hermes.css" />
+  <title>Hermes Messenger</title>
+  <link rel="stylesheet" href="/static/hermes/hermes.css" />
 </head>
 <body>
-  <div class="hermes-app">
-    <header class="hermes-top">
-      <h1>Hermes</h1>
-      <span class="hermes-port">:{{ port }}</span>
-      <span id="hermesStatus" class="hermes-status">…</span>
+  <main class="msn-window">
+    <header class="msn-titlebar">
+      <div class="msn-mark" aria-hidden="true"><span></span><i></i></div>
+      <div><strong>Hermes Messenger</strong><small>Unitree Go2 · :{{ port }}</small></div>
+      <div class="window-buttons" aria-hidden="true"><b>_</b><b>□</b><b>×</b></div>
     </header>
-    <div id="chatLog" class="hermes-log">
-      <p class="hermes-msg hermes-msg-bot">Ciao, sono Hermes. Chiedi camere, braccio o presa — rispondo dai dati live e parlo dalle casse del Go2.</p>
-    </div>
+    <nav class="msn-menu" aria-label="Menu Messenger"><span>File</span><span>Azioni</span><span>Strumenti</span><span>Aiuto</span></nav>
+    <section class="contact-card">
+      <div class="contact-avatar"><div class="avatar-face">H</div><span class="online-dot"></span></div>
+      <div class="contact-copy"><strong>Hermes</strong><span>Assistente del Go2</span><small id="hermesStatus">Connessione…</small></div>
+      <div class="contact-state">● Online</div>
+    </section>
+    <section id="chatLog" class="hermes-log" aria-live="polite">
+      <div class="chat-day">Conversazione con Hermes</div>
+      <p class="hermes-msg hermes-msg-bot"><b>Hermes scrive:</b>Ciao! Chiedimi delle camere, del braccio o della presa. Userò i dati live del Go2.</p>
+    </section>
+    <div class="typing-label">Scrivi un messaggio a Hermes:</div>
     <form id="chatForm" class="hermes-form">
       <input id="chatInput" type="text" placeholder="Messaggio…" autocomplete="off" />
       <button type="submit">Invia</button>
     </form>
-  </div>
-  <script src="/static/hermes.js" defer></script>
+    <footer class="msn-footer"><span>● Connesso a Hermes su 5056</span><span>Voce Go2 attiva</span></footer>
+  </main>
+  <script src="/static/hermes/hermes.js" defer></script>
 </body>
 </html>

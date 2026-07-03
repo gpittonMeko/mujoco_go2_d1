@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from go2_dashboard.d1_jog import cartesian, motion_profile, service
+from go2_dashboard.d1_jog.motion_guard import safety_preempt_active
 
 
 def _segment_mm() -> float:
@@ -59,6 +60,8 @@ def execute_waypoints_local(waypoints: list[list[float]]) -> dict[str, Any]:
     """Invia waypoints sul daemon DDS locale — un messaggio per ciclo, senza HTTP."""
     if not waypoints:
         return {"ok": True, "count": 0}
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety", "sent": 0}
     delay_ms = motion_profile.stream_delay_ms()
     hz = motion_profile.stream_hz()
     dt_s = 1.0 / hz
@@ -68,6 +71,8 @@ def execute_waypoints_local(waypoints: list[list[float]]) -> dict[str, Any]:
     sent = 0
     t0 = time.perf_counter()
     for i, sd in enumerate(waypoints):
+        if safety_preempt_active():
+            return {"ok": False, "reason": "motion_preempted:safety", "sent": sent}
         seq = (int(time.time()) % 100000) + i
         pub = service.publish_messages_stream(
             [service._pose_message(sd, seq=seq)],
@@ -91,6 +96,8 @@ def move_tcp_axis_local(
     servo_deg: list[float] | None = None,
 ) -> dict[str, Any]:
     """Movimento lineare TCP locale (es. +100 mm su X) — tutto sulla NX."""
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     if servo_deg is None:
         fb = service.read_servo_deg(fast=True)
         if not fb.get("ok") or not fb.get("servo_deg"):

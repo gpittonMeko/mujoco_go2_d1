@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from go2_dashboard.d1_jog import cartesian, motion_profile, service
+from go2_dashboard.d1_jog.motion_guard import safety_preempt_active
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
@@ -88,6 +89,8 @@ def _msgs_for_servo(servo_deg: list[float], seq: int) -> dict[str, Any]:
 
 def _send_servo_target(servo_deg: list[float]) -> dict[str, Any]:
     """Solo funcode 2 — coppia già data da cartesian_begin / Coppia ON."""
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     with _lock:
         if not bool(_state["armed"]):
             return {"ok": True, "skipped": True, "reason": "stream_disarmed"}
@@ -100,7 +103,13 @@ def _send_servo_target(servo_deg: list[float]) -> dict[str, Any]:
         return out
     if not service.ensure_command_daemon(_stream_delay_ms()):
         return {"ok": False, "reason": "daemon_restart_failed"}
-    return service.publish_messages_stream(msgs, delay_ms=_stream_delay_ms())
+    # Il daemon può essere ripartito, ma il target resta un singolo messaggio
+    # funcode 2. ``msgs`` non esisteva: il ramo di recovery falliva proprio
+    # quando serviva, lasciando il movimento senza un errore utile.
+    return service.publish_messages_stream(
+        [_msgs_for_servo(servo_deg, seq)],
+        delay_ms=_stream_delay_ms(),
+    )
 
 
 def _axis_delta_m(axis: str, sign: float, dist_m: float) -> tuple[float, float, float]:
@@ -130,6 +139,10 @@ def halt_completely() -> None:
 def _stream_loop() -> None:
     while True:
         t0 = time.perf_counter()
+        if safety_preempt_active():
+            halt_completely()
+            time.sleep(0.01)
+            continue
         with _lock:
             armed = bool(_state["armed"])
             running = bool(_state["running"])
@@ -220,6 +233,8 @@ def jog_start(
     decel_mm_s2: float | None = None,
     servo_deg: list[float] | None = None,
 ) -> dict[str, Any]:
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     if servo_deg is None:
         cached = service.get_servo_cache()
         if cached is not None:

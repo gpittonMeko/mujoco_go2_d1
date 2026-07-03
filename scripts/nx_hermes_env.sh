@@ -1,13 +1,13 @@
 #!/bin/bash
-# Env Hermes (5054) — chat/voce standalone; operator :5052 opzionale
+# Compatibilità Hermes: in produzione è integrato nella dashboard 5056.
 # shellcheck disable=SC1091
 if [ -f "$(dirname "$0")/nx_dashboard_env.sh" ]; then
   . "$(dirname "$0")/nx_dashboard_env.sh"
 fi
-export HERMES_PORT=5054
+export HERMES_PORT=5056
 export HERMES_BIND=0.0.0.0
 export HERMES_OPERATOR_URL=http://127.0.0.1:5052
-export HERMES_D1_JOG_URL=http://127.0.0.1:5053
+export HERMES_D1_JOG_URL=http://127.0.0.1:5056
 export HERMES_REQUIRE_OPERATOR=0
 export GO2_HOST="${GO2_HOST:-192.168.123.18}"
 # IP signaling WebRTC del Go2 (bordo cane = 192.168.123.161 sulla LAN Unitree)

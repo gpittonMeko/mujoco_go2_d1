@@ -11,14 +11,14 @@ def _cam_summary(cameras: dict[str, Any]) -> str:
     if not isinstance(cams, dict):
         return "Stato camere non disponibile."
     parts: list[str] = []
-    for key in ("0", "6"):
-        st = cams.get(key) or cams.get(int(key)) if isinstance(cams, dict) else None
+    for key in ("wrist", "front"):
+        st = cams.get(key) if isinstance(cams, dict) else None
         if not isinstance(st, dict):
             continue
-        label = "polso Orbbec" if key == "0" else "RealSense frontale"
+        label = "camera RGB del polso" if key == "wrist" else "camera RGB frontale"
         if st.get("error"):
             parts.append(f"{label}: errore {st.get('error')}")
-        elif st.get("available") or st.get("jpg"):
+        elif st.get("rgb_like") is not False:
             parts.append(f"{label}: attiva")
         else:
             parts.append(f"{label}: non disponibile")
@@ -50,21 +50,23 @@ def local_reply(user_message: str, ctx: dict[str, Any]) -> str:
     scene = ctx.get("scene_3d") or {}
     op_ok = bool(ctx.get("operator_reachable"))
 
+    if re.search(r"\b(come stai|come va|tutto bene)\b", q):
+        return "Sto bene e sono operativo sulla dashboard 5056. Posso controllare lo stato live di camere, braccio e presa."
+
     if re.search(r"\b(camer|video|orbbec|realsense|rgb)\b", q):
         if op_ok:
             return _cam_summary(cameras)
         return (
-            "Hermes usa la camera Orbbec del polso (dashboard D1 :5053) e la frontale RealSense "
-            "senza la operator :5052. Chiedimi «cosa vedi» o «guarda davanti»."
+            "Hermes usa la camera RGB del polso e quella frontale, entrambe integrate nella dashboard 5056."
         )
     if re.search(r"\b(braccio|giunt|servo|joint|tcp)\b", q):
         if op_ok:
             return _arm_summary(scene)
-        return "Per lo stato giunti usa la dashboard jog D1 sulla porta 5053."
+        return "Il feedback del braccio non è disponibile sulla dashboard 5056."
     if re.search(r"\b(presa|grasp|afferra|box|oggetto)\b", q):
         if op_ok:
             return _grasp_summary(grasp)
-        return "La pipeline presa è sulla dashboard D1 jog (:5053), non serve la operator :5052."
+        return "La pipeline di presa è integrata nella dashboard 5056, ma al momento non restituisce dati."
     if re.search(r"\b(crouch|accucci|stand|rialz|alzat)\b", q):
         return (
             "Chiedimi «alzati» o «accucciati» e comando il Go2 via Sport SDK (senza :5052). "
@@ -89,7 +91,4 @@ def local_reply(user_message: str, ctx: dict[str, Any]) -> str:
             f"{_grasp_summary(grasp)}"
         )[:500]
 
-    return (
-        "Hermes attivo sulla 5054 — indipendente dalla operator 5052. "
-        "Prova: «cosa vedi», «alzati», «accucciati», «due passi avanti», «fermati»."
-    )
+    return "Sono operativo sulla dashboard 5056. Dimmi cosa vuoi controllare o fare con il Go2."

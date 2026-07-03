@@ -37,6 +37,11 @@ _resolved_rgb_idx: int | None = None
 _live_cap: Any | None = None
 _live_cap_idx: int | None = None
 _live_ffmpeg_proc: subprocess.Popen[bytes] | None = None
+_live_rgb_diag: dict[str, Any] = {"index": None, "chroma": None, "rgb_like": False}
+
+
+def live_rgb_status() -> dict[str, Any]:
+    return dict(_live_rgb_diag)
 
 
 def _orbbec_frame_diagnostics(frame: Any, *, v4l_index: int | None = None) -> dict[str, Any]:
@@ -884,6 +889,12 @@ def _candidate_http_urls() -> list[str]:
 
 
 def _capture_rgb_v4l_index() -> int | None:
+    pinned = _pinned_rgb_v4l_index()
+    if pinned is not None and _allow_generic_rgb_fallback() and _v4l_device_exists(pinned):
+        # Current wrist camera is an Intel RealSense D456. A pinned generic RGB
+        # node is still validated by chroma/spread after capture; do not reject
+        # it merely because this legacy module is named ``orbbec_capture``.
+        return int(pinned)
     return _pick_strict_orbbec_rgb_index(force_probe=False)
 
 
@@ -1067,8 +1078,8 @@ def latest_snapshot_path() -> Path | None:
 
 
 def _live_stream_v4l_index() -> int | None:
-    """Solo nodo RGB verificato — mai fallback su video0/IR."""
-    return _pick_strict_orbbec_rgb_index(force_probe=True)
+    """Indice live polso: usa lo stesso resolver della capture (supporta RealSense polso)."""
+    return _capture_rgb_v4l_index()
 
 
 def _open_live_cap(cv2: Any, idx: int) -> Any | None:
@@ -1077,7 +1088,7 @@ def _open_live_cap(cv2: Any, idx: int) -> Any | None:
     if _live_cap is not None and _live_cap_idx == idx:
         return _live_cap
     _release_live_cap()
-    if not _verify_v4l_index_is_orbbec_rgb(idx):
+    if (not _allow_generic_rgb_fallback()) and (not _verify_v4l_index_is_orbbec_rgb(idx)):
         return None
     cap = _open_v4l_cap(cv2, idx)
     if cap is None:
@@ -1101,7 +1112,7 @@ def _open_live_cap(cv2: Any, idx: int) -> Any | None:
 
 def _generate_ffmpeg_mjpeg_stream(rgb_idx: int) -> Generator[bytes, None, None]:
     """Live MJPEG passthrough ffmpeg — niente decode/encode OpenCV (evita falsi IR)."""
-    global _live_ffmpeg_proc, _resolved_rgb_idx
+    global _live_ffmpeg_proc, _resolved_rgb_idx, _live_rgb_diag
     fmt = _ffmpeg_input_format()
     size = (os.environ.get("D1_ORBBEC_FFMPEG_SIZE") or "640x480").strip()
     fps = max(2.0, min(15.0, float(os.environ.get("D1_ORBBEC_LIVE_FPS", "8"))))
@@ -1162,6 +1173,12 @@ def _generate_ffmpeg_mjpeg_stream(rgb_idx: int) -> Generator[bytes, None, None]:
                 buf = buf[end + 2 :]
                 if _rgb_only() and not _jpeg_passes_rgb_gate(jpeg, v4l_index=rgb_idx):
                     continue
+                metrics = _jpeg_decode_metrics(jpeg)
+                _live_rgb_diag = {
+                    "index": rgb_idx,
+                    "chroma": round(float(metrics[0]), 3) if metrics else None,
+                    "rgb_like": bool(metrics and _index_passes_rgb_gate(rgb_idx, metrics[1], metrics[0])),
+                }
                 yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
     finally:
         with _cap_lock:
@@ -1190,7 +1207,7 @@ def generate_rgb_mjpeg_stream() -> Generator[bytes, None, None]:
     period = 1.0 / fps
     boundary = b"--frame\r\n"
     bad_frames = 0
-    global _resolved_rgb_idx
+    global _resolved_rgb_idx, _live_rgb_diag
     _resolved_rgb_idx = rgb_idx
     spread_min = _min_channel_spread_for_index(rgb_idx)
     try:
@@ -1217,6 +1234,12 @@ def generate_rgb_mjpeg_stream() -> Generator[bytes, None, None]:
                     bad_frames = 0
                     break
                 if best_frame is not None:
+                    diag = _orbbec_frame_diagnostics(best_frame, v4l_index=rgb_idx)
+                    _live_rgb_diag = {
+                        "index": rgb_idx,
+                        "chroma": diag.get("color_chroma"),
+                        "rgb_like": bool(diag.get("rgb_like")),
+                    }
                     jpeg = _encode_jpeg(best_frame, v4l_index=rgb_idx)
                 else:
                     bad_frames += 1

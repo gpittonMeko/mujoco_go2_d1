@@ -9,24 +9,34 @@ import shlex
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
+from go2_dashboard import d1_hold_client
 from go2_dashboard.d1_jog.motion_guard import (
+    begin_safety_preempt,
     claim_plane as motion_claim_plane,
+    end_safety_preempt,
     force_idle as motion_force_idle,
     release as motion_release,
     release_plane as motion_release_plane,
+    safety_preempt_active,
     status as motion_guard_status,
     try_acquire as motion_try_acquire,
 )
 from go2_dashboard.paths import D1_ARM_SERVO_READ_PY, D1_SDK_COMMAND_BIN, D1_SDK_FEEDBACK_BIN, PROJECT_ROOT
 
+TRUE_ZERO_POSE_PATH = PROJECT_ROOT / "data" / "true_zero_pose.json"
+
 JOINT_LIMITS: list[tuple[float, float]] = [
     (-135.0, 135.0),
-    (-90.0, 90.0),
-    (-90.0, 90.0),
+    # Il riferimento servo reale include l'offset di calibrazione: sulla posa
+    # ripiegata verificata live J1=-93.2 e J2=90.2. Un clamp a +/-90 altera
+    # perfino l'hold della posa corrente. Margine limitato a 5 gradi.
+    (-95.0, 95.0),
+    (-95.0, 95.0),
     (-135.0, 135.0),
-    (-90.0, 90.0),
+    (-95.0, 95.0),
     (-135.0, 135.0),
     (0.0, 90.0),
 ]
@@ -118,6 +128,8 @@ def binaries_status() -> dict[str, Any]:
         "real_arm": _real_arm_enabled(),
         "dds_domain": _dds_domain(),
         "build_hint": "bash scripts/build_d1_sdk.sh",
+        "command_daemon": command_daemon_status(),
+        "funcode_runtime": dict(_last_publish),
     }
 
 
@@ -222,6 +234,16 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
 _cmd_daemon_lock = threading.RLock()
 _cmd_daemon_proc: subprocess.Popen[str] | None = None
 _cmd_daemon_delay_ms: int | None = None
+_cmd_daemon_started_at: float | None = None
+_cmd_daemon_log = PROJECT_ROOT / "logs" / "d1_command_daemon.log"
+_last_publish: dict[str, Any] = {
+    "ok": None,
+    "reason": None,
+    "at": None,
+    "count": 0,
+    "funcodes": [],
+    "path": None,
+}
 
 
 def _spawn_cmd_daemon(delay_ms: int) -> subprocess.Popen[str]:
@@ -229,38 +251,99 @@ def _spawn_cmd_daemon(delay_ms: int) -> subprocess.Popen[str]:
     cmd_bin = str(D1_SDK_COMMAND_BIN)
     args = [cmd_bin, str(_dds_domain()), str(delay_ms)]
     cwd = str(PROJECT_ROOT)
-    prefix = _env_shell_prefix(cwd)
-    if prefix:
-        script = prefix + "exec " + " ".join(shlex.quote(x) for x in args)
+    # Mantieni il modello Luca: un unico processo C++ avviato direttamente.
+    # Il passaggio aggiunto attraverso ``bash -lc`` risorgentava l'env e
+    # nascondeva l'uscita del publisher dietro un falso avvio riuscito.
+    _cmd_daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    log_fp = _cmd_daemon_log.open("a", encoding="utf-8")
+    try:
         return subprocess.Popen(
-            ["bash", "-lc", script],
+            args,
             cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=log_fp,
             text=True,
             bufsize=1,
             env=_subprocess_env(),
         )
-    return subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=_subprocess_env(),
+    finally:
+        log_fp.close()
+
+
+def command_daemon_status() -> dict[str, Any]:
+    """Stato reale del publisher, non la sola presenza del binario."""
+    if d1_hold_client.external_hold_enabled():
+        status = d1_hold_client.status()
+        return {
+            **status,
+            "external": True,
+            "alive": bool(status.get("publisher_alive")),
+            "pid": status.get("publisher_pid"),
+            "delay_ms": None,
+            "started_at_monotonic": None,
+            "log": None,
+            "log_tail": status.get("detail", "") if not status.get("ok") else "",
+        }
+    with _cmd_daemon_lock:
+        proc = _cmd_daemon_proc
+        returncode = proc.poll() if proc is not None else None
+        alive = bool(proc is not None and returncode is None)
+        tail = ""
+        if not alive and _cmd_daemon_log.is_file():
+            try:
+                tail = _cmd_daemon_log.read_text(encoding="utf-8", errors="replace")[-1200:]
+            except OSError:
+                pass
+        return {
+            "alive": alive,
+            "pid": proc.pid if proc is not None else None,
+            "returncode": returncode,
+            "delay_ms": _cmd_daemon_delay_ms,
+            "started_at_monotonic": _cmd_daemon_started_at,
+            "log": str(_cmd_daemon_log),
+            "log_tail": tail,
+        }
+
+
+def _record_publish(messages: list[dict[str, Any]], *, ok: bool, reason: str | None, path: str) -> None:
+    global _last_publish
+    funcodes = sorted(
+        {
+            int(m.get("funcode"))
+            for m in messages
+            if isinstance(m, dict) and m.get("funcode") is not None
+        }
     )
+    _last_publish = {
+        "ok": bool(ok),
+        "reason": reason,
+        "at": time.time(),
+        "count": len(messages),
+        "funcodes": funcodes,
+        "path": path,
+    }
+
+
+def runtime_safety_status() -> dict[str, Any]:
+    return {
+        "command_daemon": command_daemon_status(),
+        "arm_coupled": arm_coupled(),
+        "motion": motion_guard_status(),
+        "safety_preempt_active": bool(safety_preempt_active()),
+        "last_publish": dict(_last_publish),
+    }
 
 
 def ensure_command_daemon(delay_ms: int | None = None) -> bool:
     """Processo ``d1_sdk_command`` persistente (evita 150 ms di init per ogni tick)."""
     from go2_dashboard.d1_jog import motion_profile
 
-    global _cmd_daemon_proc, _cmd_daemon_delay_ms
+    global _cmd_daemon_proc, _cmd_daemon_delay_ms, _cmd_daemon_started_at
     if not _real_arm_enabled():
         return True
+    if d1_hold_client.external_hold_enabled():
+        return bool(d1_hold_client.status().get("ok"))
     # Ignora delay_ms per-call: un solo daemon evita cedimento motori tra jog giunti/TCP.
     dm = motion_profile.daemon_delay_ms()
     _ = delay_ms
@@ -273,18 +356,24 @@ def ensure_command_daemon(delay_ms: int | None = None) -> bool:
         try:
             _cmd_daemon_proc = _spawn_cmd_daemon(dm)
             _cmd_daemon_delay_ms = dm
+            _cmd_daemon_started_at = time.monotonic()
         except OSError:
             return False
-        time.sleep(0.05)
+        # ChannelFactory + publisher impiegano almeno 150 ms prima del loop.
+        # A 50 ms un processo destinato a morire sembrava ancora sano.
+        time.sleep(0.30)
         return _cmd_daemon_proc.poll() is None
 
 
 def stop_command_daemon() -> None:
-    global _cmd_daemon_proc, _cmd_daemon_delay_ms
+    if d1_hold_client.external_hold_enabled():
+        return
+    global _cmd_daemon_proc, _cmd_daemon_delay_ms, _cmd_daemon_started_at
     with _cmd_daemon_lock:
         proc = _cmd_daemon_proc
         _cmd_daemon_proc = None
         _cmd_daemon_delay_ms = None
+        _cmd_daemon_started_at = None
     if proc is None:
         return
     if proc.poll() is None:
@@ -306,12 +395,26 @@ def publish_messages_stream(
     if not messages:
         return {"ok": True, "count": 0}
     if not _real_arm_enabled():
+        _record_publish(messages, ok=True, reason="dry_run", path="daemon_stream")
         return {"ok": True, "skipped": True, "reason": "dry_run", "count": len(messages)}
+    if d1_hold_client.external_hold_enabled():
+        out = d1_hold_client.publish(messages, delay_ms=int(delay_ms or 0))
+        out.setdefault("count", len(messages) if out.get("ok") else 0)
+        out["external_hold_daemon"] = True
+        _record_publish(
+            messages,
+            ok=bool(out.get("ok")),
+            reason=None if out.get("ok") else str(out.get("reason") or "hold_daemon_publish_failed"),
+            path="external_hold_daemon",
+        )
+        return out
     if not ensure_command_daemon(delay_ms):
+        _record_publish(messages, ok=False, reason="daemon_start_failed", path="daemon_stream")
         return {"ok": False, "reason": "daemon_start_failed"}
     with _cmd_daemon_lock:
         proc = _cmd_daemon_proc
         if proc is None or proc.poll() is not None:
+            _record_publish(messages, ok=False, reason="daemon_dead", path="daemon_stream")
             return {"ok": False, "reason": "daemon_dead"}
         try:
             assert proc.stdin is not None
@@ -320,8 +423,22 @@ def publish_messages_stream(
             proc.stdin.flush()
         except (BrokenPipeError, OSError):
             stop_command_daemon()
+            _record_publish(messages, ok=False, reason="daemon_broken_pipe", path="daemon_stream")
             return {"ok": False, "reason": "daemon_broken_pipe"}
-    return {"ok": True, "count": len(messages), "stream": True}
+        # Il vecchio codice rispondeva OK prima che il C++ eseguisse Write().
+        time.sleep(max(0.06, min(0.25, ((_cmd_daemon_delay_ms or 0) / 1000.0) + 0.06)))
+        returncode = proc.poll()
+        if returncode is not None:
+            status = command_daemon_status()
+            _record_publish(messages, ok=False, reason="daemon_died_after_publish", path="daemon_stream")
+            return {
+                "ok": False,
+                "reason": "daemon_died_after_publish",
+                "returncode": returncode,
+                "daemon": status,
+            }
+    _record_publish(messages, ok=True, reason=None, path="daemon_stream")
+    return {"ok": True, "count": len(messages), "stream": True, "daemon": command_daemon_status()}
 
 
 def wait_cartesian_idle(*, timeout_s: float = 4.0) -> bool:
@@ -399,9 +516,13 @@ def _publish_messages(messages: list[dict[str, Any]], *, delay_ms: int) -> dict[
     """Comandi one-shot (zero) — processo separato; non chiude il daemon persistente."""
     _halt_cartesian_stream(wait_idle=True)
     if not _real_arm_enabled():
+        _record_publish(messages, ok=True, reason="dry_run", path="oneshot_bin")
         return {"ok": True, "skipped": True, "reason": "dry_run", "messages": messages}
+    if d1_hold_client.external_hold_enabled():
+        return publish_messages_stream(messages, delay_ms=delay_ms)
     cmd_bin = D1_SDK_COMMAND_BIN
     if not cmd_bin.is_file():
+        _record_publish(messages, ok=False, reason="missing_command_bin", path="oneshot_bin")
         return {"ok": False, "reason": "missing_command_bin", "hint": binaries_status()["build_hint"]}
     stdin = "\n".join(json.dumps(m, separators=(",", ":")) for m in messages) + "\n"
     timeout_s = max(8.0, (delay_ms / 1000.0 + 0.25) * len(messages))
@@ -413,13 +534,16 @@ def _publish_messages(messages: list[dict[str, Any]], *, delay_ms: int) -> dict[
             timeout_s=timeout_s,
         )
     except subprocess.TimeoutExpired:
+        _record_publish(messages, ok=False, reason="command_timeout", path="oneshot_bin")
         return {"ok": False, "reason": "command_timeout"}
-    return {
+    out = {
         "ok": result.returncode == 0,
         "returncode": result.returncode,
         "stdout_tail": (result.stdout or "")[-800:],
         "stderr_tail": (result.stderr or "")[-400:],
     }
+    _record_publish(messages, ok=bool(out["ok"]), reason=(None if out["ok"] else "oneshot_failed"), path="oneshot_bin")
+    return out
 
 
 _couple_last_ts: float = 0.0
@@ -428,11 +552,15 @@ _arm_coupled: bool = False
 
 
 def arm_coupled() -> bool:
+    global _arm_coupled
+    if d1_hold_client.external_hold_enabled() and _real_arm_enabled():
+        _arm_coupled = bool(d1_hold_client.status().get("hold_active"))
     return bool(_arm_coupled)
 
 
 def _infer_coupled_on_feedback_enabled() -> bool:
-    return os.environ.get("D1_INFER_COUPLED_ON_FEEDBACK", "1").strip().lower() not in (
+    # Ricevere angoli prova la connettività DDS, non che la coppia sia inserita.
+    return os.environ.get("D1_INFER_COUPLED_ON_FEEDBACK", "0").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -462,6 +590,144 @@ def set_servo_cache(servo_deg: list[float] | None) -> None:
 
 def get_servo_cache() -> list[float] | None:
     return list(_servo_cache) if _servo_cache is not None else None
+
+
+def _current_servo_deg_for_save(*, fast: bool = True) -> list[float] | None:
+    fb = read_servo_deg(fast=fast)
+    if fb.get("ok") and isinstance(fb.get("servo_deg"), list) and len(fb["servo_deg"]) >= 7:
+        return clamp_servo_deg([float(x) for x in fb["servo_deg"][:7]])
+    cached = get_servo_cache()
+    if cached is not None:
+        return cached
+    return None
+
+
+def safe_zero_pose_from_servo(servo_deg: list[float] | None) -> list[float] | None:
+    """Posa di transito sicura: J0 preservato, braccio ripiegato in alto, gripper preservato."""
+    if servo_deg is None:
+        return None
+    cur = clamp_servo_deg(servo_deg)
+    transit = cur[:]
+    # Posa rannicchiata verificata live: J1 negativo, J2 positivo.
+    transit[1] = float(os.environ.get("D1_ZERO_TRANSIT_J1_DEG", "-90"))
+    transit[2] = float(os.environ.get("D1_ZERO_TRANSIT_J2_DEG", "90"))
+    transit[3] = float(os.environ.get("D1_ZERO_TRANSIT_J3_DEG", "0"))
+    transit[4] = float(os.environ.get("D1_ZERO_TRANSIT_J4_DEG", "0"))
+    transit[5] = float(os.environ.get("D1_ZERO_TRANSIT_J5_DEG", "0"))
+    transit[6] = float(os.environ.get("D1_ZERO_TRANSIT_J6_DEG", str(cur[6] if len(cur) > 6 else 5.0)))
+    return clamp_servo_deg(transit)
+
+
+def safe_zero_pose() -> list[float] | None:
+    """Legge la posa corrente e la converte nel transito ZERO sicuro."""
+    return safe_zero_pose_from_servo(_current_servo_deg_for_save())
+
+
+def true_zero_pose_info() -> dict[str, Any]:
+    exists = TRUE_ZERO_POSE_PATH.is_file()
+    out: dict[str, Any] = {"ok": True, "exists": exists, "path": str(TRUE_ZERO_POSE_PATH)}
+    if exists:
+        try:
+            raw = json.loads(TRUE_ZERO_POSE_PATH.read_text(encoding="utf-8"))
+            out["pose"] = raw
+            arm = raw.get("arm") if isinstance(raw, dict) else None
+            out["safe_transit"] = bool(isinstance(arm, dict) and arm.get("safe_transit"))
+        except Exception as exc:
+            out["ok"] = False
+            out["reason"] = repr(exc)
+    return out
+
+
+def load_true_zero_pose() -> list[float] | None:
+    if not TRUE_ZERO_POSE_PATH.is_file():
+        return None
+    try:
+        raw = json.loads(TRUE_ZERO_POSE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    arm = raw.get("arm") if isinstance(raw.get("arm"), dict) else raw
+    if not isinstance(arm, dict):
+        return None
+    if not bool(arm.get("safe_transit")):
+        return None
+    pose = arm.get("servo_deg")
+    if not isinstance(pose, list) or len(pose) < 6:
+        return None
+    try:
+        return clamp_servo_deg([float(x) for x in pose[:7]])
+    except (TypeError, ValueError):
+        return None
+
+
+def save_true_zero_pose(*, servo_deg: list[float] | None = None) -> dict[str, Any]:
+    cur = clamp_servo_deg(servo_deg) if servo_deg is not None else _current_servo_deg_for_save()
+    if cur is None:
+        return {"ok": False, "reason": "no_servo_feedback_for_true_zero"}
+    transit = safe_zero_pose_from_servo(cur) or cur
+    payload = {
+        "label": "true_zero",
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+        "note": "SAFE ZERO POSE: transito alto con J0 preservato, per scan/presa/programmi.",
+        "arm": {
+            "feedback_ok": True,
+            "servo_deg": transit,
+            "joints_rad": [round(float(x) * 0.017453292519943295, 6) for x in transit[:6]],
+            "gripper_deg": transit[6] if len(transit) > 6 else None,
+            "safe_transit": True,
+            "source": "go2_dashboard.d1_jog.service.save_true_zero_pose",
+        },
+    }
+    TRUE_ZERO_POSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRUE_ZERO_POSE_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    set_servo_cache(transit)
+    return {"ok": True, "saved_to": str(TRUE_ZERO_POSE_PATH), "pose": payload}
+
+
+def goto_true_zero_pose() -> dict[str, Any]:
+    z = load_true_zero_pose() or safe_zero_pose()
+    if z is None:
+        return {"ok": False, "reason": "no_servo_feedback_for_true_zero"}
+    try:
+        from go2_dashboard.d1_jog import program_runner
+
+        return program_runner.move_to_servo_deg_smooth(z)
+    except Exception as exc:
+        return {"ok": False, "reason": repr(exc)}
+
+
+def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
+    """Stop immediato: ferma i flussi e mantiene la posa corrente."""
+    begin_safety_preempt(f"hold:{reason}")
+    try:
+        from go2_dashboard.d1_jog import program_runner
+
+        stop = program_runner.request_stop()
+    except Exception as exc:
+        stop = {"ok": False, "reason": repr(exc)}
+    try:
+        _halt_cartesian_stream(wait_idle=True)
+        motion_force_idle()
+        pose = _current_servo_deg_for_save(fast=True)
+        if pose is None:
+            hold = {"ok": False, "reason": "no_feedback_for_hold"}
+        elif _arm_coupled:
+            hold = hold_pose_stream(servo_deg=pose)
+        else:
+            hold = couple_and_hold_pose(pose, with_power=True, force=True, acquire_lock=False)
+            hold["forced_couple_before_hold"] = True
+        return {
+            "ok": bool(hold.get("ok") or hold.get("skipped")),
+            "action": "hold_now",
+            "reason": reason,
+            "stop": stop,
+            "feedback": {"ok": pose is not None, "servo_deg": pose},
+            "hold": hold,
+            "safety_preempt": True,
+        }
+    finally:
+        end_safety_preempt(source=f"hold:{reason}")
 
 
 def merge_single_joint_jog(servo_deg: list[float], joint_index: int) -> list[float]:
@@ -505,6 +771,36 @@ def _couple_messages(*, with_power: bool, seq: int) -> list[dict[str, Any]]:
     return msgs
 
 
+def couple_and_hold_pose(
+    servo_deg: list[float], *, with_power: bool = False, force: bool = True, acquire_lock: bool = True
+) -> dict[str, Any]:
+    """Funcode 5 e funcode 2 nello stesso batch: nessuna finestra di cedimento."""
+    global _arm_coupled, _couple_last_ts
+    if _arm_coupled and not force:
+        return {"ok": True, "skipped": True, "reason": "already_coupled"}
+    if acquire_lock:
+        ok, busy = motion_try_acquire("admin")
+        if not ok:
+            return {"ok": False, "reason": busy, "action": "couple_and_hold_pose"}
+    try:
+        sd = clamp_servo_deg(servo_deg)
+        seq = int(time.time()) % 100000
+        messages = _couple_messages(with_power=with_power, seq=seq)
+        messages.append(_pose_message(sd, seq=seq + len(messages)))
+        out = publish_messages_stream(messages)
+        if out.get("ok") or out.get("skipped"):
+            _arm_coupled = True
+            _couple_last_ts = time.time()
+            set_servo_cache(sd)
+        out["action"] = "couple_and_hold_pose"
+        out["target_servo_deg"] = sd
+        out["atomic_batch"] = True
+        return out
+    finally:
+        if acquire_lock:
+            motion_release("admin")
+
+
 def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str, Any]:
     """Coppia ON esplicita — funcode 5 mode 1 solo se serve; mai release automatico."""
     global _arm_coupled, _couple_last_ts
@@ -520,14 +816,12 @@ def ensure_coupled(*, with_power: bool = False, force: bool = False) -> dict[str
     if not ok:
         return {"ok": False, "reason": busy, "action": "ensure_coupled"}
     try:
-        if with_power and not _arm_coupled:
-            seq = int(time.time()) % 100000
-            out = _publish_messages(_couple_messages(with_power=True, seq=seq), delay_ms=100)
-            if out.get("ok") or out.get("skipped"):
-                _arm_coupled = True
-                _couple_last_ts = time.time()
-        else:
-            out = arm_couple_once(force=force)
+        seq = int(time.time()) % 100000
+        messages = _couple_messages(with_power=with_power, seq=seq)
+        out = publish_messages_stream(messages)
+        if out.get("ok") or out.get("skipped"):
+            _arm_coupled = True
+            _couple_last_ts = time.time()
         out["action"] = "ensure_coupled"
         out["arm_coupled"] = bool(_arm_coupled)
         return out
@@ -539,29 +833,32 @@ def ensure_coupled_for_motion() -> dict[str, Any]:
     """
     Prima di movimenti programmati (scan, waypoint): non chiedere Coppia ON se il
     feedback giunti è già valido; non reinviare funcode 5 se già in coppia.
-    """
-    global _arm_coupled
-    if _arm_coupled:
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "already_coupled",
-            "action": "ensure_coupled_for_motion",
-        }
-    fb = read_servo_deg(fast=True)
-    if fb.get("ok") and fb.get("servo_deg"):
-        mark_coupled_from_feedback()
-        from go2_dashboard.d1_jog import motion_profile
 
-        ensure_command_daemon(motion_profile.daemon_delay_ms())
+    Nota compatibilità test legacy: in passato si usava
+    ensure_coupled(with_power=False, force=False), ora forziamo enable+power.
+    """
+    if arm_coupled():
         return {
             "ok": True,
             "skipped": True,
-            "reason": "inferred_from_feedback",
+            "reason": "continuous_hold_active",
             "action": "ensure_coupled_for_motion",
-            "arm_coupled": True,
+            "hold_daemon": command_daemon_status(),
         }
-    return ensure_coupled(with_power=False, force=False)
+    feedback = read_servo_deg(fast=True)
+    pose = feedback.get("servo_deg") if feedback.get("ok") else None
+    if not isinstance(pose, list) or len(pose) < 7:
+        return {
+            "ok": False,
+            "reason": "no_fresh_pose_for_atomic_couple",
+            "action": "ensure_coupled_for_motion",
+            "feedback": feedback,
+        }
+    out = couple_and_hold_pose(pose, with_power=True, force=True)
+    if out.get("ok"):
+        out["reason"] = "atomic_power_couple_hold_for_motion"
+    out["action"] = "ensure_coupled_for_motion"
+    return out
 
 
 def arm_power_on() -> dict[str, Any]:
@@ -573,6 +870,10 @@ def arm_power_on() -> dict[str, Any]:
 
 def enable_all(*, mode: int = 1, with_power: bool = False) -> dict[str, Any]:
     """funcode 5 — abilita coppia motori (mode 1). Opzionale funcode 6 prima."""
+    if int(mode) == 1:
+        return ensure_coupled(with_power=with_power, force=True)
+    if int(mode) == 0:
+        return motor_release()
     seq = int(time.time()) % 100000
     msgs: list[dict[str, Any]] = []
     if with_power:
@@ -583,12 +884,15 @@ def enable_all(*, mode: int = 1, with_power: bool = False) -> dict[str, Any]:
 
 def motor_release() -> dict[str, Any]:
     """funcode 5 mode 0 — SOLO su richiesta esplicita utente (mai automatico)."""
-    ok, busy = motion_try_acquire("admin")
-    if not ok:
-        return {"ok": False, "reason": busy, "action": "motor_release"}
+    begin_safety_preempt("release")
     try:
+        try:
+            from go2_dashboard.d1_jog import program_runner
+
+            stop = program_runner.request_stop()
+        except Exception as exc:
+            stop = {"ok": False, "reason": repr(exc)}
         _halt_cartesian_stream(wait_idle=True)
-        stop_command_daemon()
         motion_force_idle()
         global _couple_last_ts, _arm_coupled
         _couple_last_ts = 0.0
@@ -596,12 +900,15 @@ def motor_release() -> dict[str, Any]:
         seq = int(time.time()) % 100000
         msg = {"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 0}}
         out = _publish_messages([msg], delay_ms=80)
+        stop_command_daemon()
         out["action"] = "motor_release"
         out["stream_halted"] = True
         out["explicit_only"] = True
+        out["preempted"] = True
+        out["stop"] = stop
         return out
     finally:
-        motion_release("admin")
+        end_safety_preempt(source="release")
 
 
 def hold_current_pose(
@@ -736,6 +1043,8 @@ def jog_pose_deg(
     keep_lock: bool = False,
 ) -> dict[str, Any]:
     """Solo funcode 2 sul daemon DDS — niente nuovo processo per tick."""
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety", "action": "jog_pose"}
     if not keep_lock:
         ok, busy = motion_try_acquire("joint")
         if not ok:
@@ -751,7 +1060,8 @@ def jog_pose_deg(
             return {"ok": False, "reason": "not_coupled", "hint": "Premi Coppia ON", "action": "jog_pose"}
         msgs = [_pose_message(sd)]
         delay_ms = motion_profile.joint_cmd_delay_ms()
-        ensure_command_daemon(delay_ms)
+        if not ensure_command_daemon(delay_ms):
+            return {"ok": False, "reason": "daemon_start_failed", "action": "jog_pose"}
         out = publish_messages_stream(msgs, delay_ms=delay_ms)
         set_servo_cache(sd)
         out["target_servo_deg"] = sd

@@ -20,9 +20,10 @@ _MAX_HISTORY = int(os.environ.get("HERMES_CHAT_HISTORY_MAX", "40"))
 
 @bp.route("/")
 def index() -> str:
+    integrated = os.environ.get("GO2_HERMES_INTEGRATED", "0").lower() in {"1", "true", "yes", "on"}
     return render_template(
         "hermes.html",
-        port=int(os.environ.get("HERMES_PORT", os.environ.get("GO2_HERMES_PORT", "5054"))),
+        port=int(os.environ.get("D1_JOG_PORT", "5056")) if integrated else int(os.environ.get("HERMES_PORT", "5056")),
     )
 
 
@@ -37,11 +38,12 @@ def health() -> Response:
         {
             "ok": True,
             "service": "hermes",
-            "dashboard_url": f"http://{os.environ.get('GO2_HOST', '127.0.0.1')}:5054/",
+            "dashboard_url": f"http://{os.environ.get('GO2_HOST', '127.0.0.1')}:{os.environ.get('D1_JOG_PORT', '5056')}/",
             "operator_url": operator_base(),
             "operator_reachable": ctx.get("operator_reachable"),
             "operator_required": caps.get("operator_required"),
             "standalone": caps.get("standalone"),
+            "integrated": caps.get("integrated"),
             "capabilities": caps,
             "tts": tts_status(),
             "interaction_voice": os.environ.get("HERMES_INTERACTION_VOICE", "1"),

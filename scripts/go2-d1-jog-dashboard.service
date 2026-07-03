@@ -1,0 +1,19 @@
+[Unit]
+Description=Go2 D1 jog dashboard (Flask 5056)
+Documentation=file:/home/unitree/go2_visual_dashboard/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unitree/go2_visual_dashboard
+ExecStart=/home/unitree/go2_visual_dashboard/scripts/nx_serve_foreground_d1_jog.sh
+Restart=on-failure
+RestartSec=20
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Nice=5
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target

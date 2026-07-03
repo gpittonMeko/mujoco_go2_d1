@@ -10,7 +10,12 @@ from collections.abc import Callable
 from typing import Any
 
 from go2_dashboard.d1_jog import cartesian, motion_profile, program_store, service
-from go2_dashboard.d1_jog.motion_guard import release as motion_release, try_acquire as motion_try_acquire
+from go2_dashboard.d1_jog.motion_guard import (
+    release as motion_release,
+    safety_preempt_active,
+    status as motion_guard_status,
+    try_acquire as motion_try_acquire,
+)
 
 _lock = threading.Lock()
 _running = False
@@ -20,7 +25,10 @@ _status: dict[str, Any] = {"running": False, "index": -1, "total": 0, "waypoint_
 
 def execution_status() -> dict[str, Any]:
     with _lock:
-        return dict(_status)
+        out = dict(_status)
+    out["safety_preempt_active"] = bool(safety_preempt_active())
+    out["motion"] = motion_guard_status()
+    return out
 
 
 def request_stop() -> dict[str, Any]:
@@ -28,6 +36,15 @@ def request_stop() -> dict[str, Any]:
     _stop_requested = True
     service._halt_cartesian_stream(wait_idle=True)
     return {"ok": True, "action": "program_stop_requested"}
+
+
+def stop_requested() -> bool:
+    return bool(_stop_requested)
+
+
+def clear_stop_request() -> None:
+    global _stop_requested
+    _stop_requested = False
 
 
 def _max_joint_step_deg() -> float:
@@ -125,6 +142,15 @@ def wait_until_at_target(
     max_polls = max(3, int(os.environ.get("D1_PROG_MAX_POLLS", "12")))
 
     while time.monotonic() < deadline and polls < max_polls:
+        if safety_preempt_active():
+            return {
+                "ok": False,
+                "reason": "motion_preempted:safety",
+                "action": "wait_at_target",
+                "target_servo_deg": target,
+                "last_servo_deg": last_cur,
+                "max_error_deg": last_max_err,
+            }
         if stop_check and stop_check():
             return {
                 "ok": False,
@@ -226,11 +252,31 @@ def move_to_servo_deg_smooth(
     pin_joints: dict[int, float] | None = None,
 ) -> dict[str, Any]:
     """Interpola in spazio giunti con funcode 2 mode 1."""
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety", "action": "move_to_point"}
+    if not service.arm_coupled():
+        if keep_lock:
+            return {
+                "ok": False,
+                "reason": "not_coupled",
+                "hint": "Leggi da robot o premi Coppia ON",
+                "action": "move_to_point",
+            }
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return {
+                "ok": False,
+                "reason": couple.get("reason", "not_coupled"),
+                "hint": couple.get("hint") or "Leggi da robot o premi Coppia ON",
+                "action": "move_to_point",
+            }
     if not keep_lock:
         ok, busy = motion_try_acquire("program")
         if not ok:
             return {"ok": False, "reason": busy, "action": "move_to_point"}
     try:
+        if _stop_requested:
+            return {"ok": False, "reason": "stopped", "action": "move_to_point"}
         service._halt_cartesian_stream(wait_idle=True)
         fb = service.read_servo_deg(fast=True)
         if not fb.get("ok") or not fb.get("servo_deg"):
@@ -241,17 +287,29 @@ def move_to_servo_deg_smooth(
         delay_ms = motion_profile.stream_delay_ms()
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}
-        couple = service.ensure_coupled_for_motion()
-        if not couple.get("ok"):
-            return {
-                "ok": False,
-                "reason": couple.get("reason", "not_coupled"),
-                "hint": couple.get("hint") or "Leggi da robot o premi Coppia ON",
-                "action": "move_to_point",
-            }
         service.set_servo_cache(cur)
         sent = 0
         for i, sd in enumerate(waypoints):
+            if safety_preempt_active():
+                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+                return {
+                    "ok": False,
+                    "reason": "motion_preempted:safety",
+                    "action": "move_to_point",
+                    "waypoints": sent,
+                    "target_servo_deg": target,
+                    "preempted_before_waypoint": i,
+                }
+            if _stop_requested:
+                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+                return {
+                    "ok": False,
+                    "reason": "stopped",
+                    "action": "move_to_point",
+                    "waypoints": sent,
+                    "target_servo_deg": target,
+                    "stopped_before_waypoint": i,
+                }
             msg = service._pose_message(sd, seq=int(time.time()) % 100000 + i)
             pub = service.publish_messages_stream([msg], delay_ms=delay_ms)
             if not (pub.get("ok") or pub.get("skipped")):
@@ -260,7 +318,39 @@ def move_to_servo_deg_smooth(
             service.set_servo_cache(sd)
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
+            if _stop_requested:
+                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+                return {
+                    "ok": False,
+                    "reason": "stopped",
+                    "action": "move_to_point",
+                    "waypoints": sent,
+                    "target_servo_deg": target,
+                    "stopped_after_waypoint": i,
+                }
+            if safety_preempt_active():
+                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+                return {
+                    "ok": False,
+                    "reason": "motion_preempted:safety",
+                    "action": "move_to_point",
+                    "waypoints": sent,
+                    "target_servo_deg": target,
+                    "preempted_after_waypoint": i,
+                }
         time.sleep(_estimate_move_duration_s(cur, target))
+        if safety_preempt_active():
+            service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+            return {
+                "ok": False,
+                "reason": "motion_preempted:safety",
+                "action": "move_to_point",
+                "waypoints": sent,
+                "target_servo_deg": target,
+            }
+        if _stop_requested:
+            service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
+            return {"ok": False, "reason": "stopped", "action": "move_to_point", "waypoints": sent, "target_servo_deg": target}
         service.hold_pose_stream(servo_deg=target)
         wait = wait_until_at_target(target, stop_check=stop_check)
         if not wait.get("ok"):
@@ -336,10 +426,20 @@ def run_program(program_id: str) -> dict[str, Any]:
 
     if _running:
         return {"ok": False, "reason": "program_already_running"}
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
+    if not service.arm_coupled():
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return {
+                "ok": False,
+                "reason": couple.get("reason", "not_coupled"),
+                "hint": couple.get("hint") or "Leggi da robot o premi Coppia ON",
+            }
     ok, busy = motion_try_acquire("program")
     if not ok:
         return {"ok": False, "reason": busy}
-    _stop_requested = False
+    clear_stop_request()
     _running = True
 
     def _wrapper() -> None:

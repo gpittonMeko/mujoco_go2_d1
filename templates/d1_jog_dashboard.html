@@ -6,67 +6,155 @@
   <title>D1 Focus 5056</title>
   <style>
     :root {
-      --bg: #0b1220;
-      --panel: #111a2d;
-      --panel2: #1a2740;
-      --line: #2d3b5a;
-      --text: #e7eefb;
-      --muted: #9bb0d4;
-      --ok: #40d289;
-      --bad: #ff7f7f;
-      --accent: #4ea6ff;
+      --sky: #83d7ff;
+      --sky-deep: #228bd4;
+      --aqua: #1ec8c8;
+      --leaf: #4ecb71;
+      --leaf-deep: #14834a;
+      --panel: rgba(255,255,255,.76);
+      --panel2: rgba(236,250,255,.72);
+      --line: rgba(21,106,151,.24);
+      --text: #10334a;
+      --muted: #52788e;
+      --ok: #138c55;
+      --bad: #c83f4d;
+      --accent: #087fd0;
+      --shadow: 0 18px 50px rgba(13,88,132,.18), inset 0 1px 0 rgba(255,255,255,.9);
+      --cursor-x: 50%;
+      --cursor-y: 20%;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Tahoma, sans-serif; }
-    .top { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; justify-content: space-between; align-items: center; }
-    .top h1 { margin: 0; font-size: 18px; }
-    .sub { color: var(--muted); font-size: 12px; }
-    .tabs { display: flex; gap: 8px; }
-    .tabbtn { border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
-    .tabbtn.active { border-color: var(--accent); }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-    .card h3 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
-    .stream { width: 100%; height: 280px; object-fit: contain; background: #000; border-radius: 8px; border: 1px solid var(--line); }
+    html { min-height: 100%; background: #51b7ea; }
+    body { margin: 0; min-height: 100vh; color: var(--text); font-family: "Trebuchet MS", "Segoe UI", Verdana, sans-serif; background: radial-gradient(circle at var(--cursor-x) var(--cursor-y), rgba(255,255,255,.33), transparent 34%), radial-gradient(circle at 18% 2%, rgba(255,255,255,.95) 0 5%, transparent 23%), radial-gradient(circle at 88% 18%, rgba(255,255,255,.72) 0 4%, transparent 20%), linear-gradient(180deg, #67c8fb 0%, #c8f3ff 48%, #eafff3 72%, #a9e37f 100%); background-attachment: fixed; }
+    body::before, body::after { content:""; position:fixed; z-index:0; pointer-events:none; left:-8vw; right:-8vw; border-radius:50% 50% 0 0; }
+    body::before { height:26vh; bottom:-12vh; background:linear-gradient(180deg,#8be269,#36b965); transform:rotate(-2deg); box-shadow:0 -10px 45px rgba(41,154,91,.22); }
+    body::after { width:190px; height:190px; left:auto; right:7vw; top:78px; background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.92),rgba(109,219,255,.38) 38%,rgba(33,139,214,.12) 69%,transparent 72%); border-radius:50%; filter:blur(.2px); }
+    .top { position:sticky; top:0; z-index:20; padding:14px clamp(16px,4vw,48px); border-bottom:1px solid rgba(255,255,255,.75); background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(222,248,255,.63)); backdrop-filter:blur(18px) saturate(145%); display:flex; justify-content:space-between; align-items:center; gap:18px; box-shadow:0 8px 30px rgba(17,98,143,.12); }
+    .brand { display:flex; align-items:center; gap:13px; min-width:260px; }
+    .brand-logo { width:66px; height:50px; object-fit:contain; mix-blend-mode:multiply; filter:drop-shadow(0 5px 8px rgba(6,83,127,.16)); }
+    .top h1 { margin:0; font-size:clamp(19px,2.2vw,28px); letter-spacing:-.04em; color:#0a4f79; }
+    .brand-kicker { color:#138c55; font-size:10px; font-weight:800; letter-spacing:.18em; text-transform:uppercase; }
+    .sub { color:var(--muted); font-size:12px; margin-top:2px; }
+    .tabs { display:flex; gap:7px; padding:5px; border:1px solid rgba(255,255,255,.82); border-radius:18px; background:rgba(255,255,255,.48); box-shadow:inset 0 1px 4px rgba(17,95,137,.08); }
+    .tabbtn { border:1px solid transparent; background:transparent; color:#376a83; padding:9px 15px; border-radius:13px; cursor:pointer; transition:.2s ease; }
+    .tabbtn:hover { background:rgba(255,255,255,.72); transform:translateY(-1px); }
+    .tabbtn.active { color:white; border-color:rgba(255,255,255,.55); background:linear-gradient(180deg,#3aaaf2,#087fd0); box-shadow:0 6px 16px rgba(8,127,208,.26),inset 0 1px 0 rgba(255,255,255,.65); }
+    .wrap { position:relative; z-index:2; max-width:1240px; margin:0 auto; padding:22px 16px 90px; }
+    .robot-watermark { position:fixed; z-index:1; right:2vw; bottom:5vh; width:min(45vw,620px); opacity:.09; color:#096da7; pointer-events:none; }
+    .aero-orbs { position:fixed; inset:0; z-index:1; pointer-events:none; overflow:hidden; }
+    .orb { position:absolute; border-radius:50%; background:radial-gradient(circle at 28% 24%, rgba(255,255,255,.95), rgba(140,224,255,.34) 46%, rgba(20,126,201,.08) 72%, transparent 78%); box-shadow:inset 0 1px 0 rgba(255,255,255,.8), 0 14px 24px rgba(4,108,164,.12); animation:orbFloat 18s ease-in-out infinite; }
+    .orb:nth-child(1) { width:120px; height:120px; left:8vw; bottom:16vh; animation-delay:0s; }
+    .orb:nth-child(2) { width:88px; height:88px; left:24vw; bottom:8vh; animation-delay:-7s; }
+    .orb:nth-child(3) { width:145px; height:145px; right:11vw; bottom:14vh; animation-delay:-11s; }
+    .page-loading { overflow:hidden; }
+    .page-loading .wrap, .page-loading .top { opacity:.01; transform:translateY(10px); }
+    .page-shell { transition:opacity .45s ease, transform .45s ease; }
+    .loading-screen { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, rgba(103,200,251,.88), rgba(234,255,243,.92)); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
+    .loading-screen.hide { opacity:0; visibility:hidden; }
+    .loading-box { min-width:min(92vw,420px); padding:24px 26px; border-radius:24px; border:1px solid rgba(255,255,255,.85); background:rgba(255,255,255,.62); box-shadow:var(--shadow); }
+    .loading-title { margin:0 0 8px; font-size:22px; color:#0a4f79; }
+    .loading-copy { margin:0; color:var(--muted); }
+    .progress { margin-top:16px; height:10px; border-radius:999px; overflow:hidden; background:rgba(8,127,208,.12); }
+    .progress > span { display:block; height:100%; width:38%; border-radius:inherit; background:linear-gradient(90deg,#34b8ff,#21d4a5,#34b8ff); background-size:200% 100%; animation:progressFlow 1.4s linear infinite; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .card { position:relative; background:linear-gradient(145deg,rgba(255,255,255,.82),rgba(235,251,255,.68)); border:1px solid rgba(255,255,255,.88); border-radius:22px; padding:16px; box-shadow:var(--shadow); backdrop-filter:blur(16px) saturate(135%); overflow:hidden; }
+    .card::before { content:""; position:absolute; inset:-40% -60% auto auto; width:200px; height:220px; background:linear-gradient(125deg, rgba(255,255,255,.62), rgba(255,255,255,0)); transform:rotate(12deg); pointer-events:none; animation:cardShimmer 8.5s ease-in-out infinite; }
+    .card h3 { margin:0 0 11px; font-size:12px; color:#2d728e; text-transform:uppercase; letter-spacing:.11em; }
+    .camera-card { position:relative; overflow:hidden; }
+    .camera-card::after { content:""; position:absolute; inset:auto -30% -45% auto; width:200px; height:200px; border-radius:50%; background:radial-gradient(circle, rgba(85,207,255,.18), transparent 70%); pointer-events:none; }
+    .camera-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .rgb-badge { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:999px; font-size:10px; font-weight:800; color:#08724a; background:rgba(96,226,154,.22); border:1px solid rgba(24,158,92,.28); }
+    .rgb-badge::before { content:""; width:7px; height:7px; border-radius:50%; background:#20c871; box-shadow:0 0 0 4px rgba(32,200,113,.13); }
+    .rgb-badge.bad { color:#a52d3c; background:rgba(239,107,113,.18); border-color:rgba(201,60,75,.28); }
+    .rgb-badge.bad::before { background:#d84655; box-shadow:0 0 0 4px rgba(216,70,85,.13); }
+    .stream { width:100%; height:310px; object-fit:contain; background:linear-gradient(135deg,#071c2b,#0c3751); border-radius:16px; border:1px solid rgba(19,91,127,.3); box-shadow:inset 0 0 35px rgba(0,0,0,.24); }
     .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    button { border: 1px solid var(--line); background: #23416d; color: #fff; padding: 10px 12px; border-radius: 8px; font-weight: 600; cursor: pointer; }
-    button.warn { background: #8a4a12; }
-    button.danger { background: #8a1f1f; }
-    button.neutral { background: #2f3f5d; }
-    .status { margin-top: 10px; min-height: 20px; color: var(--muted); font-size: 13px; }
+    button { border:1px solid rgba(255,255,255,.58); background:linear-gradient(180deg,#279ee7,#0879c5); color:#fff; padding:10px 13px; border-radius:12px; font-weight:700; cursor:pointer; box-shadow:0 6px 14px rgba(8,102,166,.18),inset 0 1px 0 rgba(255,255,255,.42); }
+    button:hover { filter:brightness(1.05); transform:translateY(-1px); }
+    button.press-pop { animation:buttonPop .34s ease; }
+    button.warn { background:linear-gradient(180deg,#ffb94d,#e98b16); }
+    button.danger { background:linear-gradient(180deg,#ef6b71,#c93c4b); }
+    button.neutral { background:linear-gradient(180deg,#6595aa,#416f85); }
+    .status { margin-top:12px; min-height:20px; color:var(--muted); font-size:13px; padding:10px 14px; border-radius:12px; background:rgba(255,255,255,.52); border:1px solid rgba(255,255,255,.72); }
+    .status.busy { color:#0a5c84; background:rgba(213,244,255,.82); }
     .ok { color: var(--ok); }
     .bad { color: var(--bad); }
-    .sl { margin-top: 8px; padding: 8px; background: var(--panel2); border-radius: 8px; }
+    .diag-panel { margin-top:12px; padding:14px; border-radius:16px; background:rgba(11,55,81,.86); color:#dff8ff; border:1px solid rgba(10,98,139,.26); box-shadow:inset 0 1px 0 rgba(255,255,255,.08); }
+    .diag-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+    .diag-head h3 { margin:0; color:#dff8ff; font-size:12px; letter-spacing:.11em; text-transform:uppercase; }
+    .diag-note { font-size:11px; color:rgba(223,248,255,.74); }
+    .diag-json { margin:0; max-height:240px; overflow:auto; font:12px/1.45 "Consolas", "SFMono-Regular", monospace; white-space:pre-wrap; }
+    .sl { margin-top:8px; padding:11px; background:rgba(214,244,255,.52); border:1px solid rgba(30,133,180,.12); border-radius:15px; }
     .sl label { display: grid; grid-template-columns: 140px 1fr 56px; gap: 8px; align-items: center; font-size: 13px; margin: 6px 0; }
-    .sl input[type=range] { width: 100%; }
+    .sl input[type=range] { width:100%; accent-color:#168fd7; }
+    .motor-frame { width:100%; min-height:760px; border:0; border-radius:18px; background:rgba(255,255,255,.7); }
+    .motor-intro { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:14px; }
+    .motor-intro strong { color:#0879c5; }
+    .scan-result { display:grid; grid-template-columns:minmax(260px,42%) 1fr; gap:14px; margin-top:14px; }
+    .scan-preview { width:100%; min-height:240px; max-height:360px; object-fit:contain; border-radius:14px; background:#09283b; border:1px solid rgba(19,91,127,.3); }
+    .scan-metrics { display:grid; grid-template-columns:repeat(2,minmax(150px,1fr)); gap:8px; align-content:start; }
+    .scan-metric { padding:10px 12px; border-radius:12px; background:rgba(220,247,255,.66); border:1px solid rgba(25,130,175,.16); }
+    .scan-metric small { display:block; color:#598095; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .scan-metric strong { display:block; margin-top:4px; color:#0a527b; font-size:14px; overflow-wrap:anywhere; }
+    .scan-log { grid-column:1/-1; max-height:190px; overflow:auto; margin:0; padding:11px; border-radius:12px; background:#0b374f; color:#dff8ff; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; }
     .hide { display: none; }
-    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+    @keyframes orbFloat {
+      0%, 100% { transform:translateY(0) scale(1); opacity:.42; }
+      50% { transform:translateY(-18px) scale(1.03); opacity:.64; }
+    }
+    @keyframes cardShimmer {
+      0%, 100% { transform:translateX(0) rotate(12deg); opacity:.14; }
+      50% { transform:translateX(-18px) rotate(16deg); opacity:.42; }
+    }
+    @keyframes buttonPop {
+      0% { transform:scale(1); }
+      45% { transform:scale(1.03); }
+      100% { transform:scale(1); }
+    }
+    @keyframes progressFlow { from { background-position:0 0; } to { background-position:200% 0; } }
+    @media (max-width:900px) { .top{align-items:flex-start;flex-direction:column}.tabs{width:100%;overflow:auto}.hero{grid-template-columns:1fr}.grid2,.scan-result{grid-template-columns:1fr}.stream{height:260px}.robot-watermark{width:80vw}.motor-intro{align-items:flex-start;flex-direction:column} }
   </style>
 </head>
-<body>
+<body class="page-loading">
+  <div class="aero-orbs" aria-hidden="true"><span class="orb"></span><span class="orb"></span><span class="orb"></span></div>
+  <div class="loading-screen" id="loadingScreen">
+    <div class="loading-box">
+      <p class="brand-kicker">Unitree Go2 · Control Surface</p>
+      <h2 class="loading-title">Caricamento dashboard</h2>
+      <p class="loading-copy">Inizializzo stream RGB, stato motion e pannello operativo.</p>
+      <div class="progress"><span></span></div>
+    </div>
+  </div>
+  <img class="robot-watermark" src="/assets/unitree_go2_hero.png?t=0" alt="" aria-hidden="true" />
   <div class="top">
-    <div>
-      <h1>D1 Focus Control</h1>
-      <div class="sub">{{ d1_arm_host }} :{{ dashboard_port }} - Polso IntelSense + Front Camera</div>
+    <div class="brand">
+      <img class="brand-logo" src="/assets/unitree_go2_hero.png" alt="Go2 con braccio D1" />
+      <div>
+        <div class="brand-kicker">Unitree · Go2 Lab</div>
+        <h1>D1 Vision Control</h1>
+        <div class="sub">{{ d1_arm_host }} · porta {{ dashboard_port }} · doppio stream RGB</div>
+      </div>
     </div>
     <div class="tabs">
       <button class="tabbtn active" id="tabTeachBtn">Teach</button>
       <button class="tabbtn" id="tabMoveBtn">Movimento</button>
       <button class="tabbtn" id="tabMotorBtn">Motori</button>
+      <button class="tabbtn" id="tabHermesBtn">Hermes</button>
     </div>
   </div>
 
   <div class="wrap">
     <section id="tabTeach">
       <div class="grid2">
-        <div class="card">
-          <h3>Camera Polso (IntelSense)</h3>
-          <img id="wristStream" class="stream" src="/api/orbbec/live.mjpg" alt="Wrist stream" />
+        <div class="card camera-card">
+          <div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div>
+          <img id="wristStream" class="stream" src="/api/orbbec/live.mjpg?t=0" alt="Wrist stream" />
+          <div class="sub" id="wristCameraMeta">Detection presa attiva esclusivamente su questa camera.</div>
         </div>
-        <div class="card">
-          <h3>Camera Frontale</h3>
-          <img id="frontStream" class="stream" src="/api/front/live.mjpg" alt="Front stream" />
+        <div class="card camera-card">
+          <div class="camera-head"><h3>Camera frontale · D435i</h3><span class="rgb-badge" id="frontRgbBadge">RGB ONLY</span></div>
+          <img id="frontStream" class="stream" src="/api/front/live.mjpg?t=0" alt="Front stream" />
+          <div class="sub" id="frontCameraMeta">Vista ambiente RGB · non usata dalla detection presa.</div>
         </div>
       </div>
 
@@ -79,6 +167,48 @@
           <button id="btnHold" class="neutral">Hold posa</button>
           <button id="btnRelease" class="danger">Release</button>
           <button id="btnZero" class="warn">Zero</button>
+        </div>
+        <div id="scanResult" class="scan-result">
+          <img id="scanPreview" class="scan-preview hide" alt="Overlay detection scansione" />
+          <div class="scan-metrics">
+            <div class="scan-metric"><small>Oggetto</small><strong id="scanObject">—</strong></div>
+            <div class="scan-metric"><small>Confidenza</small><strong id="scanConfidence">—</strong></div>
+            <div class="scan-metric"><small>Centro immagine</small><strong id="scanCenter">—</strong></div>
+            <div class="scan-metric"><small>Orientamento</small><strong id="scanOrientation">—</strong></div>
+            <div class="scan-metric"><small>Distanza stimata</small><strong id="scanDistance">—</strong></div>
+            <div class="scan-metric"><small>Errore posa scan</small><strong id="scanMoveError">—</strong></div>
+            <div class="scan-metric"><small>Target presa giunti</small><strong id="scanGraspJoints">—</strong></div>
+            <div class="scan-metric"><small>TCP presa stimato</small><strong id="scanTcp">—</strong></div>
+            <pre id="scanLog" class="scan-log">Nessuna scansione.</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>Pose rapide e programmi</h3>
+        <div class="row">
+          <button id="btnHoldNow" class="danger">HOLD ORA</button>
+          <button id="btnSaveZeroPose" class="warn">Memorizza ZERO POSE</button>
+          <button id="btnGotoZeroPose" class="neutral">Vai a ZERO POSE</button>
+          <button id="btnSavePose" class="neutral">Salva posa</button>
+        </div>
+        <div class="sub" id="teachZeroStatus">ZERO POSE: —</div>
+        <div class="sl">
+          <label>Programma
+            <select id="teachProgramSelect" style="padding:9px 12px;border-radius:12px;border:1px solid rgba(20,95,136,.18);background:#fff;color:#10334a;">
+              <option value="">Caricamento…</option>
+            </select>
+            <span id="teachProgramCount">—</span>
+          </label>
+          <label>Nome punto
+            <input id="teachPointName" type="text" value="Punto 1" style="padding:9px 12px;border-radius:12px;border:1px solid rgba(20,95,136,.18);background:#fff;color:#10334a;" />
+            <span id="teachPointHint">usa la posa attuale</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnRefreshPrograms" class="neutral">Aggiorna programmi</button>
+          <button id="btnCreateProgram" class="neutral">Nuovo programma</button>
+          <button id="btnAddWaypoint" class="neutral">Aggiungi punto</button>
         </div>
       </div>
 
@@ -119,15 +249,53 @@
       </div>
 
       <div class="card" style="margin-top:12px;">
+        <h3>Tuning avanzato presa</h3>
+        <div class="sl">
+          <label>PX -> J0
+            <input id="tunePxJ0" type="range" min="0" max="0.12" step="0.001" value="0.04" />
+            <span id="tunePxJ0Val">0.040</span>
+          </label>
+          <label>PX -> J1
+            <input id="tunePxJ1" type="range" min="0" max="0.12" step="0.001" value="0.035" />
+            <span id="tunePxJ1Val">0.035</span>
+          </label>
+          <label>PX -> J2
+            <input id="tunePxJ2" type="range" min="0" max="0.08" step="0.001" value="0.015" />
+            <span id="tunePxJ2Val">0.015</span>
+          </label>
+          <label>Gain orient
+            <input id="tuneOrientGain" type="range" min="0.2" max="2.0" step="0.05" value="1.0" />
+            <span id="tuneOrientGainVal">1.00</span>
+          </label>
+          <label>Cap orient
+            <input id="tuneOrientCap" type="range" min="2" max="30" step="1" value="12" />
+            <span id="tuneOrientCapVal">12</span>
+          </label>
+          <label>Smooth alpha
+            <input id="tuneOrientSmooth" type="range" min="0.05" max="1" step="0.05" value="0.4" />
+            <span id="tuneOrientSmoothVal">0.40</span>
+          </label>
+          <label>Offset orient
+            <input id="tuneOrientOffset" type="range" min="45" max="135" step="1" value="90" />
+            <span id="tuneOrientOffsetVal">90</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="btnSavePickTuning" class="neutral">Salva tuning</button>
+          <button id="btnLoadPickTuning" class="neutral">Ricarica tuning</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
         <h3>Taratura posizione robot con Slider (solo posa)</h3>
         <div class="sl">
           <label>Yaw scan DX (J0)
-            <input id="scanRight" type="range" min="-120" max="120" step="1" value="-87" />
-            <span id="scanRightVal">-87</span>
+            <input id="scanRight" type="range" min="-120" max="120" step="1" value="90" />
+            <span id="scanRightVal">90</span>
           </label>
           <label>Yaw scan SX (J0)
-            <input id="scanLeft" type="range" min="-120" max="120" step="1" value="87" />
-            <span id="scanLeftVal">87</span>
+            <input id="scanLeft" type="range" min="-120" max="120" step="1" value="-90" />
+            <span id="scanLeftVal">-90</span>
           </label>
           <label>J0
             <input id="poseJ0" type="range" min="-135" max="135" step="0.5" value="0" />
@@ -195,7 +363,10 @@
 
     <section id="tabMotor" class="hide">
       <div class="card">
-        <h3>Controllo temperatura motori</h3>
+        <div class="motor-intro">
+          <div><h3>Gestione completa motori Go2</h3><div class="sub">Telemetria dei 12 giunti del cane, temperature, soglie, protezione termica, eventi e comandi Sport recuperati dai commit precedenti.</div></div>
+          <button id="btnMotorReload" class="neutral" type="button">Ricarica pannello</button>
+        </div>
         <div class="sl">
           <label>Soglia warning C
             <input id="tempWarn" type="range" min="40" max="85" step="1" value="62" />
@@ -211,14 +382,33 @@
           <button id="btnThermalSave" class="warn">Salva soglie</button>
         </div>
         <div class="status" id="thermalStatus">Nessun dato temperatura.</div>
+        <iframe id="motorFrame" class="motor-frame" src="/motors" title="Gestione completa motori Go2"></iframe>
+      </div>
+    </section>
+
+    <section id="tabHermes" class="hide">
+      <div class="card">
+        <div class="motor-intro">
+          <div><h3>Hermes</h3><div class="sub">Assistente del Go2 integrato nello stesso processo e sulla stessa porta 5056.</div></div>
+          <button id="btnHermesReload" class="neutral" type="button">Ricarica Hermes</button>
+        </div>
+        <iframe id="hermesFrame" class="motor-frame" data-src="/focus/hermes" title="Hermes integrato"></iframe>
       </div>
     </section>
 
     <div class="status" id="status">Pronto.</div>
+    <div class="diag-panel">
+      <div class="diag-head">
+        <h3>Dettagli ultimo comando</h3>
+        <div class="diag-note" id="diagSummary">Nessun dettaglio ancora.</div>
+      </div>
+      <pre class="diag-json" id="diagJson">Attendo input UI…</pre>
+    </div>
   </div>
 
   <script>
     function q(id) { return document.getElementById(id); }
+    let activeOps = 0;
     async function api(path, method, body, timeoutMs) {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), timeoutMs || 90000);
@@ -236,10 +426,42 @@
         return data;
       } finally { clearTimeout(tid); }
     }
+    function setBusy(isBusy, label) {
+      activeOps = Math.max(0, activeOps + (isBusy ? 1 : -1));
+      q('status').classList.toggle('busy', activeOps > 0);
+      if (isBusy && label) q('diagSummary').textContent = label + ' in corso...';
+    }
     function setStatus(msg, ok) {
       const el = q('status');
       el.textContent = msg;
-      el.className = 'status ' + (ok === true ? 'ok' : (ok === false ? 'bad' : ''));
+      el.className = 'status ' + (ok === true ? 'ok' : (ok === false ? 'bad' : (activeOps > 0 ? 'busy' : '')));
+    }
+    function setDiag(label, payload) {
+      q('diagSummary').textContent = label || 'Ultimo comando';
+      q('diagJson').textContent = (typeof payload === 'string') ? payload : JSON.stringify(payload, null, 2);
+    }
+    function summarizeResult(label, d) {
+      if (!d || typeof d !== 'object') return label + ': nessun payload';
+      if (d.ok) {
+        if (d.move && d.move.wait_at_target && d.move.wait_at_target.ok) return label + ': OK, posa raggiunta';
+        if (d.mode === 'move' && d.steps) return label + ': OK';
+        return label + ': OK';
+      }
+      if (d.reason) return label + ': ' + d.reason;
+      if (d.move && d.move.reason) return label + ': move ' + d.move.reason;
+      if (d.move && d.move.wait_at_target && d.move.wait_at_target.reason) return label + ': wait ' + d.move.wait_at_target.reason;
+      if (d.sport_probe && d.sport_probe.hint_it) return label + ': ' + d.sport_probe.hint_it;
+      return label + ': KO';
+    }
+    async function enrichFailure(label, d) {
+      if (d && d.sport_probe) return d;
+      if (!label.toLowerCase().includes('move')) return d;
+      try {
+        const probe = await api('/api/motor/sport/dds_ping', 'POST', {}, 70000);
+        return { ...d, sport_probe: probe };
+      } catch (e) {
+        return { ...d, sport_probe: { ok: false, reason: String(e) } };
+      }
     }
 
     function bindSlider(id, out, digits) {
@@ -251,11 +473,57 @@
 
     async function callAndShow(label, path, method, body, timeoutMs) {
       setStatus(label + '...', null);
+      setBusy(true, label);
       try {
-        const d = await api(path, method, body, timeoutMs);
-        setStatus(label + ': ' + (d.ok ? 'OK' : (d.reason || 'KO')), !!d.ok);
+        let d = await api(path, method, body, timeoutMs);
+        if (!d.ok) d = await enrichFailure(label, d);
+        setStatus(summarizeResult(label, d), !!d.ok);
+        setDiag(label, d);
+        return d;
       } catch (e) {
         setStatus(label + ': ' + String(e), false);
+        setDiag(label, { ok: false, reason: String(e) });
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function bindMjpeg(imgId, baseUrl, label) {
+      const el = q(imgId);
+      let seq = 0;
+      let retryTimer = null;
+      function loadNow() {
+        seq += 1;
+        el.src = baseUrl + '?t=' + Date.now() + '_' + seq;
+      }
+      function scheduleRetry(delayMs) {
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(loadNow, delayMs || 900);
+      }
+      el.onerror = function () {
+        setStatus(label + ' offline, retry...', false);
+        scheduleRetry(1200);
+      };
+      loadNow();
+    }
+
+    async function refreshRgbStatus() {
+      try {
+        const d = await api('/api/cameras/rgb_status', 'GET');
+        ['wrist', 'front'].forEach(function (role) {
+          const info = d[role] || {};
+          const badge = q(role + 'RgbBadge');
+          const meta = q(role + 'CameraMeta');
+          const pending = info.chroma == null;
+          const rgb = pending || info.rgb_like !== false;
+          badge.textContent = pending ? ('RGB IN ATTESA · video' + info.index) : (rgb ? ('RGB · video' + info.index) : ('NON RGB · video' + info.index));
+          badge.classList.toggle('bad', !pending && !rgb);
+          const purpose = role === 'wrist' ? 'Detection presa: SOLO POLSO' : 'Vista ambiente: nessuna detection presa';
+          meta.textContent = purpose + ' · chroma ' + (info.chroma == null ? 'in attesa' : Number(info.chroma).toFixed(1));
+        });
+      } catch (e) {
+        q('wristRgbBadge').textContent = 'CHECK RGB';
+        q('frontRgbBadge').textContent = 'CHECK RGB';
       }
     }
 
@@ -289,6 +557,128 @@
       } catch (e) { setStatus(String(e), false); }
     }
 
+    async function currentPoseFromFeedback() {
+      const d = await api('/api/joints/feedback', 'GET');
+      if (!d.ok || !Array.isArray(d.servo_deg) || d.servo_deg.length < 7) {
+        throw new Error(d.reason || 'feedback_non_disponibile');
+      }
+      return d.servo_deg.slice(0, 7);
+    }
+
+    function selectedTeachProgramId() {
+      const el = q('teachProgramSelect');
+      return el && el.value ? el.value : '';
+    }
+
+    async function refreshTeachPrograms(selectId) {
+      try {
+        const d = await api('/api/programs', 'GET');
+        const opts = Array.isArray(d.programs) ? d.programs : [];
+        const sel = q('teachProgramSelect');
+        const prev = selectId || sel.value || '';
+        sel.innerHTML = '';
+        if (!opts.length) {
+          const o = document.createElement('option');
+          o.value = '';
+          o.textContent = 'Nessun programma';
+          sel.appendChild(o);
+        } else {
+          opts.forEach(function (p) {
+            const o = document.createElement('option');
+            o.value = p.id;
+            o.textContent = p.name + ' (' + p.waypoint_count + ')';
+            sel.appendChild(o);
+          });
+        }
+        if (prev) sel.value = prev;
+        q('teachProgramCount').textContent = opts.length + ' programmi';
+      } catch (e) {
+        q('teachProgramSelect').innerHTML = '<option value="">Errore caricamento</option>';
+        q('teachProgramCount').textContent = '—';
+        setStatus(String(e), false);
+      }
+    }
+
+    async function refreshZeroPoseStatus() {
+      try {
+        const d = await api('/api/arm/true_zero', 'GET');
+        const el = q('teachZeroStatus');
+        if (!d.ok) {
+          el.textContent = 'ZERO POSE: errore lettura';
+          return;
+        }
+        el.textContent = d.safe_transit
+          ? 'ZERO POSE: salvata e sicura'
+          : 'ZERO POSE: presente ma da risalvare come transito sicuro';
+      } catch (e) {
+        q('teachZeroStatus').textContent = 'ZERO POSE: ' + String(e);
+      }
+    }
+
+    async function createTeachProgram() {
+      const name = window.prompt('Nome programma', 'Teach');
+      if (name == null) return;
+      const d = await api('/api/programs', 'POST', { name: name });
+      if (d.ok && d.program && d.program.id) {
+        await refreshTeachPrograms(d.program.id);
+        setStatus('Programma creato', true);
+      } else {
+        setStatus('Creazione programma fallita', false);
+      }
+    }
+
+    async function addTeachWaypoint() {
+      try {
+        const pid = selectedTeachProgramId();
+        if (!pid) {
+          setStatus('Seleziona o crea un programma prima di salvare il punto', false);
+          return;
+        }
+        const name = (q('teachPointName').value || '').trim() || 'Punto';
+        const pose = await currentPoseFromFeedback();
+        const d = await api('/api/programs/' + encodeURIComponent(pid) + '/waypoints', 'POST', {
+          name: name,
+          servo_deg: pose,
+        });
+        if (d.ok) {
+          q('teachPointName').value = 'Punto ' + ((d.program && d.program.waypoints && d.program.waypoints.length) || '');
+          await refreshTeachPrograms(pid);
+          setStatus('Punto memorizzato nel programma', true);
+        } else {
+          setStatus(d.reason || 'Salvataggio punto fallito', false);
+        }
+      } catch (e) {
+        setStatus(String(e), false);
+      }
+    }
+
+    async function saveZeroPose() {
+      try {
+        const pose = await currentPoseFromFeedback();
+        const d = await api('/api/arm/true_zero', 'POST', {
+          op: 'save',
+          servo_deg: pose,
+        });
+        setStatus(d.ok ? 'ZERO POSE memorizzata' : (d.reason || 'salvataggio ZERO fallito'), !!d.ok);
+        setDiag('ZERO POSE', d);
+        await refreshZeroPoseStatus();
+      } catch (e) {
+        setStatus(String(e), false);
+      }
+    }
+
+    async function gotoZeroPose() {
+      const d = await api('/api/arm/true_zero', 'POST', { op: 'goto_zero' });
+      setStatus(d.ok ? 'ZERO POSE raggiunta' : (d.reason || 'goto ZERO fallito'), !!d.ok);
+      setDiag('ZERO POSE', d);
+    }
+
+    async function holdNow() {
+      const d = await api('/api/joints/hold_now', 'POST', { reason: 'teach_ui' }, 70000);
+      setStatus(d.ok ? 'HOLD immediato attivo' : (d.reason || 'hold_now fallito'), !!d.ok);
+      setDiag('HOLD ORA', d);
+    }
+
     async function sideScanDetect(side) {
       const left = Number(q('scanLeft').value);
       const right = Number(q('scanRight').value);
@@ -298,10 +688,83 @@
       };
       const body = { side: side, override_servo_deg: vals[side] };
       setStatus('Scan ' + side + ' + detection...', null);
+      setBusy(true, 'Scan ' + side);
       try {
         const d = await api('/api/scan/side_detect', 'POST', body, 120000);
-        setStatus('Scan ' + side + ': ' + (d.ok ? 'OK detection' : 'KO ' + (d.reason || '')), !!d.ok);
-      } catch (e) { setStatus(String(e), false); }
+        setStatus(summarizeResult('Scan ' + side, d), !!d.ok);
+        setDiag('Scan ' + side, d);
+        renderScanResult(d);
+      } catch (e) {
+        setStatus(String(e), false);
+        setDiag('Scan ' + side, { ok: false, reason: String(e) });
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function releaseArm() {
+      const accepted = window.confirm(
+        'SEI SICURO? Release toglie la coppia ai giunti e il braccio può cadere.\n\nPremi OK solo se il braccio è sostenuto fisicamente.'
+      );
+      if (!accepted) {
+        setStatus('Release annullato: coppia mantenuta.', true);
+        return;
+      }
+      await callAndShow(
+        'Release',
+        '/api/joints/release',
+        'POST',
+        { confirm: 'RELEASE_ARM_TORQUE' }
+      );
+    }
+
+    function compactNumbers(values, digits) {
+      if (!Array.isArray(values)) return '—';
+      return '[' + values.map(v => Number(v).toFixed(digits == null ? 1 : digits)).join(', ') + ']';
+    }
+
+    function renderScanResult(payload) {
+      const nestedScan = payload && payload.detection && payload.detection.detection;
+      const vision = nestedScan ? payload.detection : (payload || {});
+      const det = (vision.detection && typeof vision.detection === 'object') ? vision.detection : {};
+      const estimate = (payload && payload.grasp_estimate) || vision.grasp_estimate || {};
+      const panel = q('scanResult');
+      panel.classList.remove('hide');
+      const preview = vision.preview_url || vision.image_url || (vision.capture && vision.capture.image_url);
+      if (preview) {
+        q('scanPreview').src = preview + (preview.includes('?') ? '&' : '?') + 'ui=' + Date.now();
+        q('scanPreview').classList.remove('hide');
+      }
+      q('scanObject').textContent = estimate.label || det.label || (vision.detection_ok ? 'oggetto rilevato' : 'nessun oggetto');
+      const conf = estimate.confidence != null ? estimate.confidence : det.confidence;
+      q('scanConfidence').textContent = conf == null ? '—' : (Number(conf) * 100).toFixed(1) + '%';
+      const center = estimate.center_px || det.grip_center_px || det.bbox_center_px;
+      q('scanCenter').textContent = Array.isArray(center) ? Number(center[0]).toFixed(1) + ', ' + Number(center[1]).toFixed(1) + ' px' : '—';
+      const orient = estimate.orientation_deg != null ? estimate.orientation_deg : det.orientation_deg;
+      q('scanOrientation').textContent = orient == null ? '—' : Number(orient).toFixed(1) + '°';
+      q('scanDistance').textContent = estimate.metric_distance_available
+        ? (Number(estimate.metric_distance_m) * 100).toFixed(1) + ' cm'
+        : 'non calibrata · RGB';
+      const moveErr = payload && payload.move && payload.move.max_error_deg;
+      q('scanMoveError').textContent = moveErr == null ? '—' : Number(moveErr).toFixed(2) + '°';
+      q('scanGraspJoints').textContent = compactNumbers(estimate.grasp_servo_deg, 1);
+      const xyz = estimate.grasp_tcp_estimate && estimate.grasp_tcp_estimate.xyz_m;
+      q('scanTcp').textContent = Array.isArray(xyz) ? compactNumbers(xyz.map(v => Number(v) * 100), 1) + ' cm' : '—';
+      q('scanLog').textContent = JSON.stringify({
+        detection_ok: !!vision.detection_ok,
+        label: estimate.label || det.label || null,
+        center_px: center || null,
+        normalized_xy: estimate.normalized_xy || det.norm || null,
+        bbox_xyxy: estimate.bbox_xyxy || det.bbox_xyxy || null,
+        orientation_deg: orient == null ? null : orient,
+        confidence: conf == null ? null : conf,
+        distance_m: estimate.metric_distance_m || null,
+        distance_note: estimate.distance_note_it || 'Distanza non disponibile',
+        effective_joint_offsets_deg: estimate.effective_joint_offsets_deg || null,
+        grasp_servo_deg: estimate.grasp_servo_deg || null,
+        grasp_tcp_estimate: estimate.grasp_tcp_estimate || null,
+        scan_feedback_deg: payload && payload.feedback_after && payload.feedback_after.servo_deg,
+      }, null, 2);
     }
 
     async function baseMode(mode, enable) {
@@ -312,30 +775,20 @@
       }, 70000);
     }
 
-    q('tabTeachBtn').onclick = function () {
-      q('tabTeach').classList.remove('hide');
-      q('tabMove').classList.add('hide');
-      q('tabMotor').classList.add('hide');
-      q('tabTeachBtn').classList.add('active');
-      q('tabMoveBtn').classList.remove('active');
-      q('tabMotorBtn').classList.remove('active');
-    };
-    q('tabMoveBtn').onclick = function () {
-      q('tabMove').classList.remove('hide');
-      q('tabTeach').classList.add('hide');
-      q('tabMotor').classList.add('hide');
-      q('tabMoveBtn').classList.add('active');
-      q('tabTeachBtn').classList.remove('active');
-      q('tabMotorBtn').classList.remove('active');
-    };
-    q('tabMotorBtn').onclick = function () {
-      q('tabMotor').classList.remove('hide');
-      q('tabMove').classList.add('hide');
-      q('tabTeach').classList.add('hide');
-      q('tabMotorBtn').classList.add('active');
-      q('tabMoveBtn').classList.remove('active');
-      q('tabTeachBtn').classList.remove('active');
-    };
+    function selectTab(name) {
+      ['Teach', 'Move', 'Motor', 'Hermes'].forEach(function (tab) {
+        q('tab' + tab).classList.toggle('hide', tab !== name);
+        q('tab' + tab + 'Btn').classList.toggle('active', tab === name);
+      });
+      if (name === 'Hermes') {
+        const frame = q('hermesFrame');
+        if (!frame.src) frame.src = frame.dataset.src;
+      }
+    }
+    q('tabTeachBtn').onclick = () => selectTab('Teach');
+    q('tabMoveBtn').onclick = () => selectTab('Move');
+    q('tabMotorBtn').onclick = () => selectTab('Motor');
+    q('tabHermesBtn').onclick = () => selectTab('Hermes');
 
     bindSlider('scanRight', 'scanRightVal', 0);
     bindSlider('scanLeft', 'scanLeftVal', 0);
@@ -350,19 +803,42 @@
     bindSlider('graspJ1', 'graspJ1Val', 1);
     bindSlider('graspJ2', 'graspJ2Val', 1);
     bindSlider('graspJ5', 'graspJ5Val', 0);
+    bindSlider('tunePxJ0', 'tunePxJ0Val', 3);
+    bindSlider('tunePxJ1', 'tunePxJ1Val', 3);
+    bindSlider('tunePxJ2', 'tunePxJ2Val', 3);
+    bindSlider('tuneOrientGain', 'tuneOrientGainVal', 2);
+    bindSlider('tuneOrientCap', 'tuneOrientCapVal', 0);
+    bindSlider('tuneOrientSmooth', 'tuneOrientSmoothVal', 2);
+    bindSlider('tuneOrientOffset', 'tuneOrientOffsetVal', 0);
     bindSlider('tempWarn', 'tempWarnVal', 0);
     bindSlider('tempCrit', 'tempCritVal', 0);
+    bindMjpeg('wristStream', '/api/orbbec/live.mjpg', 'Camera polso');
+    bindMjpeg('frontStream', '/api/front/live.mjpg', 'Camera frontale');
+    refreshRgbStatus();
+    refreshTeachPrograms();
+    refreshZeroPoseStatus();
+    setInterval(refreshRgbStatus, 5000);
 
     q('btnCouple').onclick = () => callAndShow('Coppia ON', '/api/arm/couple', 'POST', {});
     q('btnEnable').onclick = () => callAndShow('Enable motori', '/api/joints/enable', 'POST', { with_power: true, mode: 1 });
     q('btnPower').onclick = () => callAndShow('Power ON', '/api/joints/power', 'POST', {});
     q('btnHold').onclick = () => callAndShow('Hold', '/api/joints/hold', 'POST', {});
-    q('btnRelease').onclick = () => callAndShow('Release', '/api/joints/release', 'POST', {});
+    q('btnRelease').onclick = releaseArm;
     q('btnZero').onclick = () => callAndShow('Zero', '/api/joints/zero', 'POST', {});
+    q('btnHoldNow').onclick = holdNow;
+    q('btnSaveZeroPose').onclick = saveZeroPose;
+    q('btnGotoZeroPose').onclick = gotoZeroPose;
+    q('btnSavePose').onclick = addTeachWaypoint;
+    q('btnRefreshPrograms').onclick = () => refreshTeachPrograms();
+    q('btnCreateProgram').onclick = createTeachProgram;
+    q('btnAddWaypoint').onclick = addTeachWaypoint;
 
     q('btnRightScan').onclick = () => sideScanDetect('right');
     q('btnLeftScan').onclick = () => sideScanDetect('left');
-    q('btnDetectNow').onclick = () => callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
+    q('btnDetectNow').onclick = async () => {
+      const d = await callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
+      if (d) renderScanResult(d);
+    };
     q('btnTestGrasp').onclick = () => callAndShow('Prova presa', '/api/pick/grasp/goto', 'POST', {}, 120000);
     q('btnReadPose').onclick = readPoseToSliders;
     q('btnApplyPose').onclick = () => callAndShow('Applica posa', '/api/joints/jog', 'POST', { servo_deg: sliderPose() }, 70000);
@@ -392,6 +868,45 @@
         q('graspJ5Val').textContent = Number(q('graspJ5').value).toFixed(0);
         setStatus('Parametri presa ricaricati', true);
       } catch (e) { setStatus(String(e), false); }
+    };
+    async function loadPickTuning() {
+      try {
+        const d = await api('/api/pick/tuning', 'GET');
+        q('tunePxJ0').value = String(Number(d.px_to_j0_deg ?? 0.04));
+        q('tunePxJ1').value = String(Number(d.px_to_j1_deg ?? 0.035));
+        q('tunePxJ2').value = String(Number(d.px_to_j2_deg ?? 0.015));
+        q('tuneOrientGain').value = String(Number(d.orient_gain ?? 1.0));
+        q('tuneOrientCap').value = String(Number(d.orient_max_delta_deg ?? 12));
+        q('tuneOrientSmooth').value = String(Number(d.orient_smooth_alpha ?? 0.4));
+        q('tuneOrientOffset').value = String(Number(d.orient_perp_offset_deg ?? 90));
+        q('tunePxJ0Val').textContent = Number(q('tunePxJ0').value).toFixed(3);
+        q('tunePxJ1Val').textContent = Number(q('tunePxJ1').value).toFixed(3);
+        q('tunePxJ2Val').textContent = Number(q('tunePxJ2').value).toFixed(3);
+        q('tuneOrientGainVal').textContent = Number(q('tuneOrientGain').value).toFixed(2);
+        q('tuneOrientCapVal').textContent = Number(q('tuneOrientCap').value).toFixed(0);
+        q('tuneOrientSmoothVal').textContent = Number(q('tuneOrientSmooth').value).toFixed(2);
+        q('tuneOrientOffsetVal').textContent = Number(q('tuneOrientOffset').value).toFixed(0);
+      } catch (e) {
+        setStatus(String(e), false);
+      }
+    }
+    q('btnLoadPickTuning').onclick = loadPickTuning;
+    q('btnSavePickTuning').onclick = async () => {
+      setStatus('Salvo tuning presa...', null);
+      try {
+        const d = await api('/api/pick/tuning', 'POST', {
+          px_to_j0_deg: Number(q('tunePxJ0').value),
+          px_to_j1_deg: Number(q('tunePxJ1').value),
+          px_to_j2_deg: Number(q('tunePxJ2').value),
+          orient_gain: Number(q('tuneOrientGain').value),
+          orient_max_delta_deg: Number(q('tuneOrientCap').value),
+          orient_smooth_alpha: Number(q('tuneOrientSmooth').value),
+          orient_perp_offset_deg: Number(q('tuneOrientOffset').value),
+        });
+        setStatus(d.ok ? 'Tuning presa salvato' : 'Errore salvataggio tuning', !!d.ok);
+      } catch (e) {
+        setStatus(String(e), false);
+      }
     };
 
     q('btnStand').onclick = () => baseMode('stand_up', true);
@@ -430,6 +945,8 @@
       }
     }
     q('btnThermalRefresh').onclick = refreshThermal;
+    q('btnMotorReload').onclick = () => { q('motorFrame').src = '/motors?t=' + Date.now(); };
+    q('btnHermesReload').onclick = () => { q('hermesFrame').src = '/focus/hermes?t=' + Date.now(); };
     q('btnThermalSave').onclick = async () => {
       await callAndShow('Salva soglie termiche', '/api/motor/thermal_settings', 'POST', {
         warn_c: Number(q('tempWarn').value),
@@ -437,6 +954,39 @@
       });
       await refreshThermal();
     };
+    loadPickTuning();
+    function initAeroFx() {
+      let raf = 0;
+      document.addEventListener('pointermove', function (ev) {
+        if (raf) return;
+        raf = window.requestAnimationFrame(function () {
+          raf = 0;
+          document.documentElement.style.setProperty('--cursor-x', ev.clientX + 'px');
+          document.documentElement.style.setProperty('--cursor-y', ev.clientY + 'px');
+        });
+      }, { passive: true });
+      document.addEventListener('click', function (ev) {
+        const btn = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+        if (!btn) return;
+        btn.classList.remove('press-pop');
+        void btn.offsetWidth;
+        btn.classList.add('press-pop');
+      });
+    }
+    initAeroFx();
+    function dismissLoadingScreen() {
+      setTimeout(function () {
+        document.body.classList.remove('page-loading');
+        q('loadingScreen').classList.add('hide');
+      }, 320);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', dismissLoadingScreen, { once: true });
+    } else {
+      dismissLoadingScreen();
+    }
+    // Gli stream MJPEG non terminano: non dipendere mai da window.load.
+    setTimeout(dismissLoadingScreen, 1400);
   </script>
 </body>
 </html>

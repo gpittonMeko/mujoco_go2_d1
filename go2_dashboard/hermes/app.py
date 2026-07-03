@@ -1,4 +1,4 @@
-"""Flask factory — solo dashboard Hermes (chat + voce), porta 5054."""
+"""Factory legacy Hermes; in produzione il blueprint gira nella dashboard 5056."""
 
 from __future__ import annotations
 

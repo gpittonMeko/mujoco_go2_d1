@@ -6,6 +6,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 from werkzeug.exceptions import HTTPException
@@ -36,6 +37,129 @@ THERMAL_SETTINGS: dict[str, Any] = {
 }
 
 _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
+_GO2_HERO_CANDIDATES = (
+    PROJECT_ROOT / "data" / "unitree_robot_main.png",
+)
+_GO2_FEATURES_CANDIDATES = (
+    PROJECT_ROOT / "data" / "unitree_robot_main.png",
+)
+
+
+def _go2_svg_fallback(*, label: str) -> bytes:
+    svg = f"""
+<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720' viewBox='0 0 1280 720'>
+  <defs>
+    <linearGradient id='bg' x1='0' y1='0' x2='0' y2='1'>
+      <stop offset='0%' stop-color='#bfefff'/>
+      <stop offset='100%' stop-color='#66c6ff'/>
+    </linearGradient>
+    <linearGradient id='ground' x1='0' y1='0' x2='0' y2='1'>
+      <stop offset='0%' stop-color='#9ae58d'/>
+      <stop offset='100%' stop-color='#49b95d'/>
+    </linearGradient>
+  </defs>
+  <rect width='1280' height='720' fill='url(#bg)'/>
+  <ellipse cx='1030' cy='118' rx='95' ry='95' fill='rgba(255,255,255,.65)'/>
+  <rect y='560' width='1280' height='160' fill='url(#ground)'/>
+  <g transform='translate(248 276)' fill='#0a5f90' stroke='#0a5f90' stroke-linecap='round'>
+    <rect x='80' y='48' width='590' height='120' rx='46' fill='#1383c2'/>
+    <rect x='622' y='58' width='110' height='72' rx='25' fill='#1383c2'/>
+    <circle cx='704' cy='95' r='14' fill='#9fe4ff'/>
+    <rect x='196' y='74' width='300' height='46' rx='20' fill='#c6f4ff' stroke='none'/>
+    <path d='M145 164 102 286' stroke-width='34'/>
+    <path d='M318 164 288 290' stroke-width='34'/>
+    <path d='M494 164 532 290' stroke-width='34'/>
+    <path d='M648 164 690 286' stroke-width='34'/>
+    <path d='M736 86 796 50' stroke-width='23'/>
+    <circle cx='811' cy='42' r='18'/>
+  </g>
+  <text x='58' y='90' fill='#0e5b86' font-size='52' font-family='Trebuchet MS, Segoe UI, sans-serif' font-weight='700'>Unitree Go2</text>
+  <text x='60' y='136' fill='#1b6e99' font-size='30' font-family='Trebuchet MS, Segoe UI, sans-serif'>{label}</text>
+</svg>
+""".strip()
+    return svg.encode("utf-8")
+
+
+def _usb_vid_pid_for_v4l(index: int) -> tuple[str, str] | None:
+    try:
+        cur = Path(f"/sys/class/video4linux/video{int(index)}/device").resolve()
+    except OSError:
+        return None
+    for _ in range(20):
+        vendor = cur / "idVendor"
+        product = cur / "idProduct"
+        if vendor.is_file() and product.is_file():
+            try:
+                return vendor.read_text().strip().lower(), product.read_text().strip().lower()
+            except OSError:
+                return None
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return None
+
+
+def _is_realsense_color_capture_node(index: int) -> bool:
+    """RealSense RGB capture is UVC interface 1.3, stream index 0."""
+    try:
+        device_path = str(Path(f"/sys/class/video4linux/video{int(index)}/device").resolve())
+        stream_index = int(Path(f"/sys/class/video4linux/video{int(index)}/index").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return ":1.3" in device_path and stream_index == 0
+
+
+def _resolve_realsense_rgb_index(*, role: str) -> int:
+    if role == "wrist":
+        env_key, pid, fallback = "D1_WRIST_V4L_INDEX", "0b5c", 4
+    else:
+        env_key, pid, fallback = "D1_FRONT_V4L_INDEX", "0b3a", 10
+    candidates: list[int] = []
+    base = Path("/sys/class/video4linux")
+    if base.is_dir():
+        for node in sorted(base.glob("video*")):
+            tail = node.name[5:]
+            if not tail.isdigit():
+                continue
+            idx = int(tail)
+            pair = _usb_vid_pid_for_v4l(idx)
+            if pair == ("8086", pid) and _is_realsense_color_capture_node(idx):
+                candidates.append(idx)
+    try:
+        configured = int(os.environ.get(env_key, str(fallback)))
+    except ValueError:
+        configured = fallback
+    if configured in candidates:
+        return configured
+    return candidates[0] if candidates else configured
+
+
+def _frame_chroma_bgr(frame: Any) -> float:
+    try:
+        import cv2
+
+        return float(
+            cv2.mean(cv2.absdiff(frame[:, :, 0], frame[:, :, 1]))[0]
+            + cv2.mean(cv2.absdiff(frame[:, :, 1], frame[:, :, 2]))[0]
+        )
+    except Exception:
+        return 0.0
+
+
+def _mount_motor_health(app: Flask) -> None:
+    """Restore the complete historical motor-management UI inside port 5056."""
+    from go2_dashboard.motor_health_app import create_motor_health_app
+
+    motor_app = create_motor_health_app()
+    for rule in motor_app.url_map.iter_rules():
+        if rule.endpoint == "static":
+            continue
+        path = "/motors" if rule.rule == "/" else rule.rule
+        if rule.rule == "/api/health":
+            path = "/api/motor/health"
+        endpoint = f"motor_health.{rule.endpoint}"
+        methods = sorted((rule.methods or set()) - {"HEAD", "OPTIONS"})
+        app.add_url_rule(path, endpoint, motor_app.view_functions[rule.endpoint], methods=methods)
 
 
 def create_d1_jog_app() -> Flask:
@@ -47,6 +171,13 @@ def create_d1_jog_app() -> Flask:
         static_folder=str(static_dir) if static_dir.is_dir() else None,
         static_url_path="/static",
     )
+    front_last_jpg: bytes | None = None
+    wrist_last_jpg: bytes | None = None
+    camera_diag: dict[str, dict[str, Any]] = {
+        "wrist": {"index": None, "chroma": None, "rgb_like": False},
+        "front": {"index": None, "chroma": None, "rgb_like": False},
+    }
+    startup_arm_stabilization: dict[str, Any] = {"ok": False, "reason": "not_run"}
 
     @app.after_request
     def _cors(resp: Response) -> Response:
@@ -70,7 +201,7 @@ def create_d1_jog_app() -> Flask:
 
     def _page_ctx(*, dash_mode: str = "arm") -> dict[str, str | int]:
         return {
-            "dashboard_port": int(os.environ.get("D1_JOG_PORT", os.environ.get("GO2_DASHBOARD_PORT", "5053"))),
+            "dashboard_port": int(os.environ.get("D1_JOG_PORT", os.environ.get("GO2_DASHBOARD_PORT", "5056"))),
             "d1_arm_host": os.environ.get("D1_ARM_HOST", os.environ.get("SERVO_ARM_HOST", "192.168.123.100")),
             "go2_local": os.environ.get("GO2_LOCAL", "0"),
             "dash_mode": dash_mode,
@@ -84,6 +215,30 @@ def create_d1_jog_app() -> Flask:
     def focus_teach_alias() -> str:
         return render_template("d1_jog_dashboard.html", **_page_ctx(dash_mode="arm"))
 
+    @app.route("/focus/hermes")
+    def focus_hermes() -> str:
+        return render_template(
+            "hermes.html",
+            port=int(os.environ.get("D1_JOG_PORT", "5056")),
+        )
+
+    @app.route("/api/assets/go2_hero.png")
+    @app.route("/assets/unitree_go2_hero.png")
+    @app.route("/assets/unitree_robot_main.png")
+    def go2_hero_asset() -> Response:
+        for path in _GO2_HERO_CANDIDATES:
+            if path.is_file():
+                return send_file(path, mimetype="image/png", max_age=0)
+        return Response(_go2_svg_fallback(label="Frutiger Aero hero card"), mimetype="image/svg+xml")
+
+    @app.route("/api/assets/go2_features.png")
+    @app.route("/assets/unitree_go2_features.png")
+    def go2_features_asset() -> Response:
+        for path in _GO2_FEATURES_CANDIDATES:
+            if path.is_file():
+                return send_file(path, mimetype="image/png", max_age=0)
+        return Response(_go2_svg_fallback(label="Live dashboard visual"), mimetype="image/svg+xml")
+
     @app.route("/program")
     def program_editor() -> str:
         return render_template("d1_program_editor.html", **_page_ctx(dash_mode="arm"))
@@ -92,6 +247,10 @@ def create_d1_jog_app() -> Flask:
     def motion_status() -> Response:
         return jsonify(service.motion_status())
 
+    @app.route("/api/daemon/status")
+    def daemon_status() -> Response:
+        return jsonify({"ok": True, **service.runtime_safety_status()})
+
     @app.route("/api/motion/reset", methods=["POST"])
     def motion_reset() -> Response:
         return jsonify(service.motion_reset())
@@ -99,15 +258,27 @@ def create_d1_jog_app() -> Flask:
     @app.route("/api/health")
     def health() -> Response:
         st = service.binaries_status()
+        daemon = st.get("command_daemon") or {}
         return jsonify(
             {
-                "ok": st["command_ok"] and st["feedback_ok"],
+                "ok": (
+                    st["command_ok"]
+                    and st["feedback_ok"]
+                    and bool(daemon.get("alive"))
+                ),
                 "service": "d1_jog_dashboard",
                 "started_at": _PROCESS_STARTED,
                 "binaries": st,
+                "command_daemon": daemon,
+                "runtime_safety": service.runtime_safety_status(),
+                "startup_arm_stabilization": startup_arm_stabilization,
                 "dds_domain": int(os.environ.get("D1_DDS_DOMAIN", os.environ.get("GO2_DDS_DOMAIN", "0"))),
                 "dds_interface": (os.environ.get("GO2_DDS_INTERFACE") or os.environ.get("D1_DDS_INTERFACE") or "eth0"),
                 "cyclonedds_uri_set": bool((os.environ.get("CYCLONEDDS_URI") or "").strip()),
+                "dds_runtime_ok": os.environ.get("D1_DDS_RUNTIME_OK") == "1",
+                "dds_runtime_dir": os.environ.get(
+                    "D1_DDS_LIB_DIR", "/home/unitree/sdk_reinstall_backup_19700225_160102"
+                ),
             }
         )
 
@@ -124,32 +295,247 @@ def create_d1_jog_app() -> Flask:
         return service.clamp_servo_deg(vals[:7])
 
     def _scan_side_target(side: str) -> list[float]:
-        left_default = [87.1, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
-        right_default = [-87.1, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
+        # Il mapping fisico va verificato sul robot: i riferimenti storici erano invertiti
+        # rispetto ai pulsanti UI, quindi li teniamo espliciti qui.
+        left_default = [-90.0, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
+        right_default = [90.0, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
         if side == "left":
             return _parse_servo_env("D1_SCAN_LEFT_DEG", left_default)
         return _parse_servo_env("D1_SCAN_RIGHT_DEG", right_default)
+
+    def _safe_transit_target() -> list[float] | None:
+        fb = service.read_servo_deg(fast=True)
+        base = fb.get("servo_deg") if fb.get("ok") else service.get_servo_cache()
+        if not isinstance(base, list) or len(base) < 7:
+            return None
+        return service.safe_zero_pose_from_servo([float(x) for x in base[:7]])
+
+    def _move_via_safe_transit(target_servo_deg: list[float]) -> dict[str, Any]:
+        program_runner.request_stop()
+        service.motion_reset()
+        program_runner.clear_stop_request()
+        transit = _safe_transit_target()
+        if transit is None:
+            return {
+                "ok": False,
+                "reason": "safe_transit_unavailable",
+                "safety_interlock": True,
+                "target_servo_deg": target_servo_deg,
+            }
+        service._halt_cartesian_stream(wait_idle=True)
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return {"ok": False, "reason": "couple_failed", "coupling": couple, "target_servo_deg": target_servo_deg}
+        transit_move = None
+        transit_move = _move_to_point_with_busy_recovery(transit)
+        if not (transit_move.get("ok") or transit_move.get("skipped")):
+            transit_move["target_servo_deg"] = transit
+            transit_move["coupling"] = couple
+            transit_move["phase"] = "fold_before_rotate"
+            return transit_move
+        side_transit = transit[:]
+        side_transit[0] = float(target_servo_deg[0])
+        side_transit_move = _move_to_point_with_busy_recovery(side_transit)
+        if not (side_transit_move.get("ok") or side_transit_move.get("skipped")):
+            side_transit_move["target_servo_deg"] = side_transit
+            side_transit_move["coupling"] = couple
+            side_transit_move["phase"] = "rotate_while_folded"
+            return side_transit_move
+        move = _move_to_point_with_busy_recovery(target_servo_deg)
+        move["coupling"] = couple
+        move["transit_zero"] = transit
+        move["transit_move"] = transit_move
+        move["side_transit"] = side_transit
+        move["side_transit_move"] = side_transit_move
+        move["target_servo_deg"] = target_servo_deg
+        return move
+
+    def _move_to_point_with_busy_recovery(target_servo_deg: list[float]) -> dict[str, Any]:
+        out = program_runner.move_to_servo_deg_smooth(target_servo_deg)
+        if out.get("reason") == "motion_busy:program":
+            program_runner.request_stop()
+            time.sleep(0.15)
+            service.motion_reset()
+            program_runner.clear_stop_request()
+            out = program_runner.move_to_servo_deg_smooth(target_servo_deg)
+            out["recovered_from_busy"] = True
+        return out
+
+    def _open_rgb_cap(cv2: Any, idx: int) -> Any:
+        cap = cv2.VideoCapture(f"/dev/video{idx}", cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        return cap
+
+    def _read_rgb_frame(cv2: Any, idx: int) -> Any | None:
+        cap = _open_rgb_cap(cv2, idx)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        best = None
+        best_score = -1.0
+        try:
+            # Let auto-exposure settle: the first valid frame is often very dark.
+            for _ in range(18):
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                chroma = _frame_chroma_bgr(frame)
+                brightness = float(frame.mean())
+                score = chroma + (0.25 * brightness)
+                if score > best_score:
+                    best, best_score = frame, score
+        finally:
+            cap.release()
+        return best
 
     def _front_camera_jpeg() -> bytes | None:
         try:
             import cv2
         except ImportError:
             return None
-        idx = int(os.environ.get("D1_FRONT_V4L_INDEX", "10"))
-        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap.release()
+        idx = _resolve_realsense_rgb_index(role="front")
+        frame = _read_rgb_frame(cv2, idx)
+        if frame is None:
             return None
-        try:
-            ok, frame = cap.read()
-        finally:
-            cap.release()
-        if not ok or frame is None:
-            return None
+        chroma = _frame_chroma_bgr(frame)
+        camera_diag["front"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
         ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         if not ok_enc or buf is None:
             return None
         return buf.tobytes()
+
+    def _wrist_camera_jpeg() -> bytes | None:
+        nonlocal wrist_last_jpg
+        try:
+            import cv2
+        except ImportError:
+            return None
+        idx = _resolve_realsense_rgb_index(role="wrist")
+        frame = _read_rgb_frame(cv2, idx)
+        if frame is None:
+            return wrist_last_jpg
+        chroma = _frame_chroma_bgr(frame)
+        camera_diag["wrist"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+        ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok_enc or buf is None:
+            return wrist_last_jpg
+        wrist_last_jpg = buf.tobytes()
+        return wrist_last_jpg
+
+    def _front_mjpeg_stream():
+        nonlocal front_last_jpg
+        try:
+            import cv2
+        except ImportError:
+            return
+        idx = _resolve_realsense_rgb_index(role="front")
+        period = max(0.05, float(os.environ.get("D1_FRONT_MJPEG_PERIOD_S", "0.10")))
+        cap = None
+        while True:
+            try:
+                if cap is None:
+                    cap = _open_rgb_cap(cv2, idx)
+                    if not cap.isOpened():
+                        cap.release()
+                        cap = None
+                        if front_last_jpg is not None:
+                            yield (
+                                b"--frame\r\n"
+                                b"Content-Type: image/jpeg\r\n"
+                                b"Cache-Control: no-store\r\n\r\n" + front_last_jpg + b"\r\n"
+                            )
+                        time.sleep(period)
+                        continue
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    if cap is not None:
+                        cap.release()
+                        cap = None
+                    time.sleep(period)
+                    continue
+                chroma = _frame_chroma_bgr(frame)
+                camera_diag["front"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+                ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if not ok_enc or buf is None:
+                    time.sleep(period)
+                    continue
+                front_last_jpg = buf.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-store\r\n\r\n" + front_last_jpg + b"\r\n"
+                )
+                time.sleep(period)
+            except GeneratorExit:
+                break
+            except Exception:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                time.sleep(period)
+        if cap is not None:
+            cap.release()
+
+    def _wrist_mjpeg_stream():
+        nonlocal wrist_last_jpg
+        try:
+            import cv2
+        except ImportError:
+            return
+        idx = _resolve_realsense_rgb_index(role="wrist")
+        period = max(0.05, float(os.environ.get("D1_ORBBEC_LIVE_HTTP_PERIOD_S", "0.10")))
+        cap = None
+        while True:
+            try:
+                if cap is None:
+                    cap = _open_rgb_cap(cv2, idx)
+                    if not cap.isOpened():
+                        cap.release()
+                        cap = None
+                        if wrist_last_jpg is not None:
+                            yield (
+                                b"--frame\r\n"
+                                b"Content-Type: image/jpeg\r\n"
+                                b"Cache-Control: no-store\r\n\r\n" + wrist_last_jpg + b"\r\n"
+                            )
+                        time.sleep(period)
+                        continue
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    if cap is not None:
+                        cap.release()
+                        cap = None
+                    time.sleep(period)
+                    continue
+                chroma = _frame_chroma_bgr(frame)
+                camera_diag["wrist"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+                ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if not ok_enc or buf is None:
+                    time.sleep(period)
+                    continue
+                wrist_last_jpg = buf.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-store\r\n\r\n" + wrist_last_jpg + b"\r\n"
+                )
+                time.sleep(period)
+            except GeneratorExit:
+                break
+            except Exception:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                time.sleep(period)
+        if cap is not None:
+            cap.release()
 
     @app.route("/api/front/last.jpg")
     def front_last_jpeg() -> Response:
@@ -160,27 +546,26 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/front/live.mjpg")
     def front_live_mjpg() -> Response:
-        period = float(os.environ.get("D1_FRONT_MJPEG_PERIOD_S", "0.10"))
-
-        def generate():
-            last: bytes | None = None
-            while True:
-                jpg = _front_camera_jpeg()
-                if jpg is None:
-                    jpg = last
-                if jpg is not None:
-                    last = jpg
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Cache-Control: no-store\r\n\r\n" + jpg + b"\r\n"
-                    )
-                time.sleep(period)
-
         return Response(
-            stream_with_context(generate()),
+            stream_with_context(_front_mjpeg_stream()),
             mimetype="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+        )
+
+    @app.route("/api/cameras/rgb_status")
+    def cameras_rgb_status() -> Response:
+        wrist_idx = _resolve_realsense_rgb_index(role="wrist")
+        front_idx = _resolve_realsense_rgb_index(role="front")
+        wrist_live = orbbec_capture.live_rgb_status()
+        wrist_status = wrist_live if wrist_live.get("chroma") is not None else camera_diag["wrist"]
+        return jsonify(
+            {
+                "ok": True,
+                "wrist": {**wrist_status, "index": wrist_idx, "expected_usb_pid": "0b5c"},
+                "front": {**camera_diag["front"], "index": front_idx, "expected_usb_pid": "0b3a"},
+                "detection_source": "wrist",
+                "depth_nodes_allowed_in_ui": False,
+            }
         )
 
     @app.route("/api/base/sport_last", methods=["GET"])
@@ -231,6 +616,13 @@ def create_d1_jog_app() -> Flask:
             stand_first=True,
         )
         out["direction"] = direction
+        if not out.get("ok"):
+            try:
+                from go2_dashboard.go2_motor_sport import invoke_dds_sport_ping
+
+                out["sport_probe"] = invoke_dds_sport_ping()
+            except Exception as exc:
+                out["sport_probe"] = {"ok": False, "reason": repr(exc)}
         return jsonify(out), (200 if out.get("ok") else 502)
 
     @app.route("/api/motor/thermal_settings", methods=["GET", "POST"])
@@ -257,7 +649,9 @@ def create_d1_jog_app() -> Flask:
         def cb(msg: Any) -> None:
             vals: list[float] = []
             try:
-                for i in range(20):
+                # Thermal protection applies only to the 12 Go2 leg joints.
+                # D1 arm joints must never be folded into the dog thermal gate.
+                for i in range(12):
                     st = msg.motor_state[i]
                     t = None
                     if hasattr(st, "temperature"):
@@ -317,30 +711,129 @@ def create_d1_jog_app() -> Flask:
             target = service.clamp_servo_deg([float(x) for x in raw_override[:7]])
         else:
             target = _scan_side_target(side)
+        program_runner.request_stop()
+        service.motion_reset()
+        transit = _safe_transit_target()
+        if transit is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "safe_transit_unavailable",
+                    "safety_interlock": True,
+                    "scan_side": side,
+                    "target_servo_deg": target,
+                }
+            ), 503
         service._halt_cartesian_stream(wait_idle=True)
+        program_runner.clear_stop_request()
+        fb_before = service.read_servo_deg(fast=True)
         couple = service.ensure_coupled_for_motion()
         if not couple.get("ok"):
-            return jsonify({"ok": False, "reason": "couple_failed", "coupling": couple}), 502
-        move = service.jog_pose_deg(target, mode=1)
-        move["action"] = move.get("action") or "scan_side_jog"
-        if not move.get("ok"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "couple_failed",
+                    "coupling": couple,
+                    "feedback_before": fb_before,
+                    "target_servo_deg": target,
+                    "scan_side": side,
+                }
+            ), 502
+        move = None
+        transit_move = None
+        transit_move = _move_to_point_with_busy_recovery(transit)
+        if not (transit_move.get("ok") or transit_move.get("skipped")):
+            transit_move["action"] = transit_move.get("action") or "scan_side_transit"
+            transit_move["target_servo_deg"] = transit
+            transit_move["scan_side"] = side
+            transit_move["coupling"] = couple
+            transit_move["phase"] = "fold_before_rotate"
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": transit_move.get("reason", "transit_failed"),
+                    "scan_side": side,
+                    "target_servo_deg": target,
+                    "coupling": couple,
+                    "feedback_before": fb_before,
+                    "transit_zero": transit,
+                    "transit_move": transit_move,
+                }
+            ), 502
+        side_transit = transit[:]
+        side_transit[0] = float(target[0])
+        side_transit_move = _move_to_point_with_busy_recovery(side_transit)
+        if not (side_transit_move.get("ok") or side_transit_move.get("skipped")):
+            side_transit_move["phase"] = "rotate_while_folded"
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": side_transit_move.get("reason", "side_transit_failed"),
+                    "scan_side": side,
+                    "target_servo_deg": target,
+                    "coupling": couple,
+                    "feedback_before": fb_before,
+                    "transit_zero": transit,
+                    "transit_move": transit_move,
+                    "side_transit": side_transit,
+                    "side_transit_move": side_transit_move,
+                }
+            ), 502
+        move = _move_to_point_with_busy_recovery(target)
+        move["action"] = move.get("action") or "scan_side_move"
+        move["target_servo_deg"] = target
+        move["scan_side"] = side
+        move["transit_zero"] = transit
+        move["transit_move"] = transit_move
+        move["side_transit"] = side_transit
+        move["side_transit_move"] = side_transit_move
+        settle_s = float(os.environ.get("D1_SCAN_SIDE_SETTLE_S", "1.1"))
+        if settle_s > 0:
+            time.sleep(settle_s)
+        fb_mid = service.read_servo_deg(fast=True)
+        max_error = None
+        if isinstance(fb_mid.get("servo_deg"), list) and len(fb_mid["servo_deg"]) >= 7:
+            errs = [abs(float(fb_mid["servo_deg"][i]) - float(target[i])) for i in range(7)]
+            max_error = max(errs) if errs else None
+        move["feedback_mid"] = fb_mid
+        move["max_error_deg"] = max_error
+        if not (move.get("ok") or move.get("skipped")):
             move["coupling"] = couple
-            move["target_servo_deg"] = target
-            move["scan_side"] = side
+            move["feedback_before"] = fb_before
             return jsonify(move), 502
         detect = pick_vision.capture_and_detect()
         _apply_pick_detection_to_preset(detect)
-        ok_all = bool(move.get("ok")) and bool(detect.get("ok"))
+        grasp_estimate = _scan_grasp_estimate(target, detect)
+        ok_move = bool(move.get("ok") or move.get("skipped"))
+        ok_all = ok_move and bool(detect.get("ok"))
+        fb_after = service.read_servo_deg(fast=True)
         return jsonify(
             {
                 "ok": ok_all,
                 "scan_side": side,
                 "target_servo_deg": target,
+                "transit_zero": transit,
                 "coupling": couple,
+                "feedback_before": fb_before,
+                "feedback_mid": fb_mid,
+                "feedback_after": fb_after,
                 "move": move,
                 "detection": detect,
+                "grasp_estimate": grasp_estimate,
             }
         ), (200 if ok_all else 502)
+
+    @app.route("/assets/<string:name>")
+    def dashboard_asset(name: str) -> Response:
+        allowed = {
+            "unitree_robot_main.png": PROJECT_ROOT / "data" / "unitree_robot_main.png",
+            "unitree_go2_hero.png": PROJECT_ROOT / "data" / "unitree_go2_hero.png",
+            "unitree_go2_features.png": PROJECT_ROOT / "data" / "unitree_go2_features.png",
+        }
+        path = allowed.get(name)
+        if path is None or not path.is_file():
+            return Response("asset not found", status=404)
+        return send_file(path, conditional=True, max_age=3600)
 
     @app.route("/api/joints/feedback")
     def joints_feedback() -> Response:
@@ -400,6 +893,14 @@ def create_d1_jog_app() -> Flask:
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
 
+    @app.route("/api/joints/hold_now", methods=["POST"])
+    def joints_hold_now() -> Response:
+        body = request.get_json(silent=True) or {}
+        reason = str(body.get("reason") or "ui").strip() or "ui"
+        out = service.request_emergency_hold(reason=reason)
+        code = 200 if out.get("ok") or out.get("skipped") else 502
+        return jsonify(out), code
+
     @app.route("/api/joints/enable", methods=["POST"])
     def joints_enable() -> Response:
         body = request.get_json(silent=True) or {}
@@ -421,6 +922,16 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/joints/release", methods=["POST"])
     def joints_release() -> Response:
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "RELEASE_ARM_TORQUE":
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "explicit_release_confirmation_required",
+                    "required_confirm": "RELEASE_ARM_TORQUE",
+                    "safety": "Release disabilitato per richieste accidentali: toglie coppia e fa cadere il braccio.",
+                }
+            ), 409
         out = service.motor_release()
         out["funcode"] = 5
         out["action"] = "motor_release"
@@ -429,9 +940,30 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/joints/zero", methods=["POST"])
     def joints_zero() -> Response:
+        program_runner.clear_stop_request()
         out = service.go_zero()
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
+
+    @app.route("/api/arm/true_zero", methods=["GET", "POST"])
+    def arm_true_zero() -> Response:
+        if request.method == "GET":
+            return jsonify(service.true_zero_pose_info())
+        body = request.get_json(silent=True) or {}
+        op = str(body.get("op") or body.get("action") or "goto").strip().lower()
+        if op in {"save", "memorize", "store"}:
+            servo, err = _servo_deg_from_body(body)
+            if servo is None:
+                return jsonify({"ok": False, "reason": err or "no_feedback"}), 503
+            out = service.save_true_zero_pose(servo_deg=servo)
+            code = 200 if out.get("ok") else 502
+            return jsonify(out), code
+        if op in {"goto", "goto_zero", "move", "transit"}:
+            program_runner.clear_stop_request()
+            out = service.goto_true_zero_pose()
+            code = 200 if out.get("ok") or out.get("skipped") else 502
+            return jsonify(out), code
+        return jsonify({"ok": False, "reason": "unsupported_true_zero_op", "op": op}), 400
 
     @app.route("/api/arm/status")
     def arm_status() -> Response:
@@ -440,10 +972,20 @@ def create_d1_jog_app() -> Flask:
     @app.route("/api/arm/couple", methods=["POST"])
     def arm_couple() -> Response:
         body = request.get_json(silent=True) or {}
-        out = service.ensure_coupled(
-            with_power=bool(body.get("with_power")),
-            force=bool(body.get("force")),
-        )
+        feedback = service.read_servo_deg(fast=True)
+        if feedback.get("ok") and feedback.get("servo_deg"):
+            out = service.couple_and_hold_pose(
+                feedback["servo_deg"],
+                with_power=bool(body.get("with_power")),
+                force=bool(body.get("force", True)),
+            )
+            out["feedback_before"] = feedback
+        else:
+            out = service.ensure_coupled(
+                with_power=bool(body.get("with_power")),
+                force=bool(body.get("force")),
+            )
+            out["feedback_before"] = feedback
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
 
@@ -686,13 +1228,48 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/orbbec/live.mjpg")
     def orbbec_live_mjpeg() -> Response:
+        period = max(0.20, float(os.environ.get("D1_ORBBEC_LIVE_HTTP_PERIOD_S", "0.35")))
+
+        def generate_fallback():
+            last: bytes | None = None
+            while True:
+                try:
+                    cap = orbbec_capture.capture_orbbec_jpeg()
+                    path = orbbec_capture.latest_snapshot_path()
+                    if cap.get("ok") and path is not None and path.is_file():
+                        jpg = path.read_bytes()
+                        if jpg:
+                            last = jpg
+                except Exception:
+                    pass
+                if last:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Cache-Control: no-store\r\n\r\n" + last + b"\r\n"
+                    )
+                time.sleep(period)
+
+        def generate_combined():
+            yielded = False
+            for chunk in orbbec_capture.generate_rgb_mjpeg_stream():
+                yielded = True
+                yield chunk
+            if yielded:
+                return
+            yield from generate_fallback()
+
         return Response(
-            stream_with_context(orbbec_capture.generate_rgb_mjpeg_stream()),
+            stream_with_context(generate_combined()),
             mimetype="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
         )
 
     @app.route("/api/orbbec/last.jpg")
     def orbbec_last_jpeg() -> Response:
+        jpg = _wrist_camera_jpeg()
+        if jpg is not None:
+            return Response(jpg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
         path = orbbec_capture.latest_snapshot_path()
         if path is None:
             return jsonify({"ok": False, "reason": "no_snapshot"}), 404
@@ -739,6 +1316,17 @@ def create_d1_jog_app() -> Flask:
     @app.route("/api/pick/preset", methods=["GET"])
     def pick_preset_get() -> Response:
         return jsonify(pick_preset.preset_info())
+
+    @app.route("/api/pick/tuning", methods=["GET", "POST"])
+    def pick_tuning() -> Response:
+        if request.method == "GET":
+            return jsonify(pick_preset.tuning_info())
+        body = request.get_json(silent=True) or {}
+        try:
+            out = pick_preset.set_tuning(body)
+        except ValueError as exc:
+            return jsonify({"ok": False, "reason": str(exc)}), 400
+        return jsonify(out)
 
     @app.route("/api/pick/preset", methods=["POST"])
     def pick_preset_set() -> Response:
@@ -891,6 +1479,59 @@ def create_d1_jog_app() -> Flask:
                     last_detection=out["last_detection"],
                 )
 
+    def _scan_grasp_estimate(scan_servo_deg: list[float], vision: dict[str, Any]) -> dict[str, Any]:
+        """Dati leggibili per UI: pixel, posa di presa e distanza solo se calibrata."""
+        detection = vision.get("detection") if isinstance(vision.get("detection"), dict) else {}
+        last_detection = vision.get("last_detection") if isinstance(vision.get("last_detection"), dict) else {}
+        preset = pick_preset.load_preset()
+        offsets = pick_preset.effective_joint_offsets(last_detection=last_detection)
+        grasp_servo = (
+            pick_preset.grasp_servo_from_scan(
+                scan_servo_deg,
+                offsets=offsets,
+                last_detection=last_detection,
+            )
+            if offsets is not None
+            else None
+        )
+        center = detection.get("grip_center_px") or detection.get("bbox_center_px")
+        bbox = detection.get("bbox_xyxy")
+        known_width_m = max(0.0, float(os.environ.get("D1_BLUE_BOX_WIDTH_M", "0")))
+        focal_px = max(1.0, float(os.environ.get("D1_WRIST_RGB_FX_PX", "615")))
+        distance_m = None
+        if known_width_m > 0 and isinstance(bbox, list) and len(bbox) >= 4:
+            width_px = abs(float(bbox[2]) - float(bbox[0]))
+            if width_px >= 2:
+                distance_m = round((focal_px * known_width_m) / width_px, 3)
+        tcp = None
+        if isinstance(grasp_servo, list):
+            try:
+                from go2_dashboard.d1_jog import cartesian
+
+                tcp = cartesian.tcp_pose_m(grasp_servo)
+            except Exception:
+                tcp = None
+        return {
+            "detected": bool(vision.get("detection_ok")),
+            "label": detection.get("label"),
+            "confidence": detection.get("confidence"),
+            "center_px": center,
+            "normalized_xy": detection.get("norm"),
+            "orientation_deg": detection.get("orientation_deg"),
+            "bbox_xyxy": bbox,
+            "metric_distance_m": distance_m,
+            "metric_distance_available": distance_m is not None,
+            "distance_note_it": (
+                "Stima pinhole da larghezza scatola calibrata."
+                if distance_m is not None
+                else "Distanza metrica non disponibile dal solo RGB: configura D1_BLUE_BOX_WIDTH_M o usa depth allineata."
+            ),
+            "known_box_width_m": known_width_m or None,
+            "effective_joint_offsets_deg": offsets,
+            "grasp_servo_deg": grasp_servo,
+            "grasp_tcp_estimate": tcp,
+        }
+
     @app.route("/api/pick/vision/crop", methods=["GET"])
     def pick_vision_crop_get() -> Response:
         from go2_dashboard.d1_jog import pick_vision_crop
@@ -959,6 +1600,10 @@ def create_d1_jog_app() -> Flask:
         else:
             out = pick_vision.detect_on_latest_snapshot(capture_if_missing=False)
         _apply_pick_detection_to_preset(out)
+        feedback = service.read_servo_deg(fast=True)
+        if feedback.get("ok") and feedback.get("servo_deg"):
+            out["grasp_estimate"] = _scan_grasp_estimate(feedback["servo_deg"], out)
+            out["scan_feedback"] = feedback
         code = 200 if out.get("ok") else 502
         return jsonify(out), code
 
@@ -1030,16 +1675,38 @@ def create_d1_jog_app() -> Flask:
         )
         if target is None:
             return jsonify({"ok": False, "reason": "grasp_target_invalid"}), 400
+        transit = _safe_transit_target()
         service._halt_cartesian_stream(wait_idle=True)
+        program_runner.clear_stop_request()
         couple = service.ensure_coupled_for_motion()
         if not couple.get("ok"):
             return jsonify(couple), 502
+        transit_move = None
+        if transit is not None:
+            transit_move = program_runner.move_to_servo_deg_smooth(transit)
+            if not (transit_move.get("ok") or transit_move.get("skipped")):
+                transit_move["phase"] = "transit_zero"
+                transit_move["target_servo_deg"] = transit
+                transit_move["coupling"] = couple
+                return jsonify(
+                    {
+                        "ok": False,
+                        "reason": transit_move.get("reason", "transit_failed"),
+                        "preset": "grasp_approach",
+                        "coupling": couple,
+                        "transit_zero": transit,
+                        "transit_move": transit_move,
+                        "scan_servo_deg": scan_sd,
+                    }
+                ), 502
         open_j6 = pick_preset.gripper_open_j6_deg(scan_sd)
         out = program_runner.move_to_servo_deg_smooth(target, pin_joints={6: open_j6})
         out["preset"] = "grasp_approach"
         out["gripper_open_deg"] = open_j6
         out["gripper_closed_deg"] = pick_preset.gripper_close_j6_deg(scan_sd)
         out["coupling"] = couple
+        out["transit_zero"] = transit
+        out["transit_move"] = transit_move
         out["scan_servo_deg"] = scan_sd
         out["joint_offset_deg"] = off
         out["has_zero_calibration"] = bool(preset.get("zero_calibration"))
@@ -1108,6 +1775,7 @@ def create_d1_jog_app() -> Flask:
         target = service.clamp_servo_deg(cur[:7])
         target[6] = round(float(j6_target), 3)
         service._halt_cartesian_stream(wait_idle=True)
+        program_runner.clear_stop_request()
         couple = service.ensure_coupled_for_motion()
         if not couple.get("ok"):
             return jsonify(couple), 502
@@ -1167,26 +1835,16 @@ def create_d1_jog_app() -> Flask:
         variant = str(body.get("variant") or "base").strip().lower()
         if variant in ("j90_left", "left", "sx"):
             side_target = _scan_side_target("left")
-            service._halt_cartesian_stream(wait_idle=True)
-            couple = service.ensure_coupled_for_motion()
-            if not couple.get("ok"):
-                return jsonify(couple), 502
-            out = service.jog_pose_deg(side_target, mode=1)
+            out = _move_via_safe_transit(side_target)
             out["preset"] = "scan"
-            out["coupling"] = couple
             out["scan_variant"] = "j90_left"
             out["waypoint_name"] = "Punto SCANSIONE 90 SX"
             out["target_servo_deg"] = side_target
             return jsonify(out), (200 if out.get("ok") else 502)
         if variant in ("j90_right", "right", "dx"):
             side_target = _scan_side_target("right")
-            service._halt_cartesian_stream(wait_idle=True)
-            couple = service.ensure_coupled_for_motion()
-            if not couple.get("ok"):
-                return jsonify(couple), 502
-            out = service.jog_pose_deg(side_target, mode=1)
+            out = _move_via_safe_transit(side_target)
             out["preset"] = "scan"
-            out["coupling"] = couple
             out["scan_variant"] = "j90_right"
             out["waypoint_name"] = "Punto SCANSIONE 90 DX"
             out["target_servo_deg"] = side_target
@@ -1203,13 +1861,8 @@ def create_d1_jog_app() -> Flask:
         if not isinstance(raw, list) or len(raw) < 6:
             return jsonify({"ok": False, "reason": "invalid_waypoint"}), 400
         servo = service.clamp_servo_deg([float(x) for x in raw[:7]])
-        service._halt_cartesian_stream(wait_idle=True)
-        couple = service.ensure_coupled_for_motion()
-        if not couple.get("ok"):
-            return jsonify(couple), 502
-        out = program_runner.move_to_servo_deg_smooth(servo)
+        out = _move_via_safe_transit(servo)
         out["preset"] = "scan"
-        out["coupling"] = couple
         out["scan_variant"] = scan_variant
         out["waypoint_name"] = wp.get("name")
         out["target_servo_deg"] = servo
@@ -1228,6 +1881,7 @@ def create_d1_jog_app() -> Flask:
         if not isinstance(sd, list):
             return jsonify({"ok": False, "reason": "invalid_waypoint"}), 400
         service._halt_cartesian_stream(wait_idle=True)
+        program_runner.clear_stop_request()
         out = program_runner.move_to_servo_deg_smooth(sd)
         code = 200 if out.get("ok") else 502
         return jsonify(out), code
@@ -1269,4 +1923,35 @@ def create_d1_jog_app() -> Flask:
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
 
+    _mount_motor_health(app)
+    # Hermes torna nel processo principale :5056, come nel focus dashboard.
+    os.environ.setdefault("GO2_HERMES_INTEGRATED", "1")
+    os.environ.setdefault("HERMES_D1_JOG_URL", "http://127.0.0.1:5056")
+    from go2_dashboard.hermes.routes import bp as hermes_bp
+
+    app.register_blueprint(hermes_bp)
+    # Il daemon deve esistere già all'avvio: health non può dichiarare sano un
+    # servizio che possiede solo il file binario.
+    daemon_started = service.ensure_command_daemon()
+    auto_enable = os.environ.get("D1_JOG_AUTO_ENABLE", "1").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if daemon_started and auto_enable and service.binaries_status().get("real_arm"):
+        feedback = service.read_servo_deg(fast=True)
+        if feedback.get("ok") and feedback.get("servo_deg"):
+            atomic_hold = service.couple_and_hold_pose(feedback["servo_deg"], force=True)
+            startup_arm_stabilization.update(
+                {
+                    "ok": bool(atomic_hold.get("ok") or atomic_hold.get("skipped")),
+                    "reason": "stabilized",
+                    "feedback": feedback,
+                    "coupling_hold": atomic_hold,
+                }
+            )
+        else:
+            startup_arm_stabilization.update({"ok": False, "reason": "no_feedback", "feedback": feedback})
+    elif not daemon_started:
+        startup_arm_stabilization.update({"ok": False, "reason": "daemon_start_failed"})
+    else:
+        startup_arm_stabilization.update({"ok": True, "skipped": True, "reason": "auto_enable_disabled"})
     return app

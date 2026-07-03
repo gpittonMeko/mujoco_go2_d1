@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import threading
+import time
 
 _lock = threading.RLock()
 _kind: str = "idle"
 _plane: str = "idle"  # idle | joint | cartesian
+_safety_preempt: bool = False
+_safety_source: str | None = None
+_safety_started_at: float | None = None
 
 
 def status() -> dict[str, str | bool]:
@@ -17,7 +21,35 @@ def status() -> dict[str, str | bool]:
             "plane": _plane,
             "joint_locked": _plane == "joint",
             "cartesian_locked": _plane == "cartesian",
+            "safety_preempt": _safety_preempt,
+            "safety_source": _safety_source,
+            "safety_started_at": _safety_started_at,
         }
+
+
+def begin_safety_preempt(source: str) -> None:
+    global _kind, _plane, _safety_preempt, _safety_source, _safety_started_at
+    with _lock:
+        _safety_preempt = True
+        _safety_source = source
+        _safety_started_at = time.time()
+        _kind = "idle"
+        _plane = "idle"
+
+
+def end_safety_preempt(*, source: str | None = None) -> None:
+    global _safety_preempt, _safety_source, _safety_started_at
+    with _lock:
+        if source is not None and _safety_source not in (None, source):
+            return
+        _safety_preempt = False
+        _safety_source = None
+        _safety_started_at = None
+
+
+def safety_preempt_active() -> bool:
+    with _lock:
+        return bool(_safety_preempt)
 
 
 def claim_plane(plane: str) -> tuple[bool, str | None]:
@@ -45,6 +77,8 @@ def try_acquire(kind: str) -> tuple[bool, str | None]:
     if kind not in allowed:
         return False, "invalid_motion_kind"
     with _lock:
+        if _safety_preempt and kind not in {"hold", "admin"}:
+            return False, f"motion_preempted:{_safety_source or 'safety'}"
         if _plane not in ("idle", kind):
             return False, f"plane_busy:{_plane}"
         if _kind not in ("idle", kind):

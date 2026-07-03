@@ -1,4 +1,4 @@
-"""Hermes — chat :5054 (Flask + agente + voce Go2)."""
+"""Hermes — chat, agente e voce integrati nella dashboard 5056."""
 
 from go2_dashboard.hermes.app import create_hermes_app
 

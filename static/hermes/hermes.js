@@ -8,7 +8,10 @@
     if (!log) return;
     var p = document.createElement("p");
     p.className = "hermes-msg " + (role === "user" ? "hermes-msg-user" : "hermes-msg-bot");
-    p.textContent = text;
+    var who = document.createElement("b");
+    who.textContent = role === "user" ? "Tu scrivi:" : "Hermes scrive:";
+    p.appendChild(who);
+    p.appendChild(document.createTextNode(text));
     log.appendChild(p);
     log.scrollTop = log.scrollHeight;
   }
@@ -73,7 +76,10 @@
         var active = tts.active_engine || tts.last_engine;
         var eng = tts.configured_engine || "?";
         var voice = "TTS " + eng + (active ? " · ultimo " + active : "");
-        var cam = j.operator_reachable ? " · operator 5052 online" : " · standalone (no 5052)";
+        var integrated = j.integrated === true || j.standalone === false;
+        var cam = integrated
+          ? " · integrato nella dashboard 5056"
+          : (j.operator_reachable ? " · servizi camera online" : " · servizi camera non raggiungibili");
         setStatus("Hermes · " + voice + cam);
       })
       .catch(function () { setStatus("offline"); });

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from go2_dashboard.d1_jog import service
+from go2_dashboard.d1_jog.motion_guard import safety_preempt_active
 from go2_dashboard.paths import ensure_d1_scripts_on_sys_path
 
 ensure_d1_scripts_on_sys_path()
@@ -160,6 +161,8 @@ def cartesian_jog_tick(
     Un tick di jog continuo (stile teach pendant UR): piccolo spostamento TCP
     proporzionale a velocità × dt, un solo comando DDS (Jacobiano).
     """
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     ax = (axis or "x").strip().lower()
     if ax not in {"x", "y", "z"}:
         return {"ok": False, "reason": "axis must be x, y, or z"}
@@ -218,6 +221,8 @@ def cartesian_nudge(
     axis: x | y | z
     sign: +1 o -1
     """
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     ax = (axis or "x").strip().lower()
     if ax not in {"x", "y", "z"}:
         return {"ok": False, "reason": "axis must be x, y, or z"}
@@ -285,6 +290,8 @@ def cartesian_move_delta(
     interpolated: bool = True,
 ) -> dict[str, Any]:
     """Spostamento TCP arbitrario (metri) nel frame base."""
+    if safety_preempt_active():
+        return {"ok": False, "reason": "motion_preempted:safety"}
     norm = math.sqrt(dx_m * dx_m + dy_m * dy_m + dz_m * dz_m)
     if norm < 1e-9:
         return {"ok": False, "reason": "zero_delta"}
