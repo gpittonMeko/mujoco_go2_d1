@@ -244,16 +244,50 @@ def estimate_box_pose(depth_m: np.ndarray, intrinsics: dict[str, Any]) -> dict[s
     nlabels, labels, stats, _ = cv2.connectedComponentsWithStats(connected_mask, 8)
     if nlabels <= 1:
         return {"ok": False, "reason": "object_component_not_found", "plane": plane}
-    label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    keep = labels[(obj_pixels[:, 0] // stride).astype(int), (obj_pixels[:, 1] // stride).astype(int)] == label
-    cluster = obj[keep]
-    if len(cluster) < 60:
+    point_labels = labels[(obj_pixels[:, 0] // stride).astype(int), (obj_pixels[:, 1] // stride).astype(int)]
+    min_cluster_points = int(os.environ.get("D1_GRASP6D_MIN_CLUSTER_POINTS", "35"))
+    components: list[dict[str, Any]] = []
+    image_center = np.array(
+        [float(intrinsics.get("ppy", depth_m.shape[0] * 0.5)), float(intrinsics.get("ppx", depth_m.shape[1] * 0.5))]
+    )
+    image_diag = math.hypot(depth_m.shape[0], depth_m.shape[1])
+    for candidate_label in range(1, nlabels):
+        candidate_keep = point_labels == candidate_label
+        count = int(np.count_nonzero(candidate_keep))
+        if count <= 0:
+            continue
+        center_px = np.mean(obj_pixels[candidate_keep], axis=0)
+        center_distance = float(np.linalg.norm(center_px - image_center) / max(image_diag, 1.0))
+        components.append(
+            {
+                "label": candidate_label,
+                "point_count": count,
+                "mask_area": int(stats[candidate_label, cv2.CC_STAT_AREA]),
+                "center_px_yx": center_px.tolist(),
+                "center_distance_norm": center_distance,
+            }
+        )
+    eligible = [c for c in components if int(c["point_count"]) >= min_cluster_points]
+    if not eligible:
+        best_count = max((int(c["point_count"]) for c in components), default=0)
         return {
             "ok": False,
             "reason": "object_cluster_too_small",
-            "point_count": int(len(cluster)),
+            "point_count": best_count,
             "points_above_floor": int(len(obj)),
+            "min_cluster_points": min_cluster_points,
+            "components": components,
         }
+    # La posa Search porta intenzionalmente l'oggetto target vicino al centro.
+    # La dimensione viene validata subito dopo, quindi una valigia laterale non
+    # prevale sulla scatola centrale solo perche' contiene più pixel depth.
+    selected_component = min(
+        eligible,
+        key=lambda c: float(c["center_distance_norm"]) - min(int(c["point_count"]), 200) * 0.00015,
+    )
+    label = int(selected_component["label"])
+    keep = point_labels == label
+    cluster = obj[keep]
 
     center_observed = np.median(cluster, axis=0)
     cov = np.cov((cluster - center_observed).T)
@@ -299,6 +333,8 @@ def estimate_box_pose(depth_m: np.ndarray, intrinsics: dict[str, Any]) -> dict[s
         "rotation_camera": R.tolist(),
         "dimensions_m": dims.tolist(),
         "point_count": int(len(cluster)),
+        "selected_component": selected_component,
+        "components": components,
         "plane": {**plane, "normal": normal.tolist()},
     }
 
