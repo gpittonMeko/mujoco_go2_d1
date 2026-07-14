@@ -1,5 +1,5 @@
 #!/bin/bash
-# Env dedicato dashboard jog D1 (porta 5053) — non modifica nx_dashboard_env.sh della dashboard operator.
+# Env dedicato dashboard jog D1 (porta 5056) — non modifica nx_dashboard_env.sh della dashboard operator.
 # shellcheck disable=SC1091
 if [ -f "$(dirname "$0")/nx_dashboard_env.sh" ]; then
   . "$(dirname "$0")/nx_dashboard_env.sh"
@@ -75,6 +75,9 @@ export D1_PROG_WAIT_TIMEOUT_S="${D1_PROG_WAIT_TIMEOUT_S:-30}"
 export D1_PROG_MAX_POLLS="${D1_PROG_MAX_POLLS:-12}"
 export D1_PROG_MOVE_DEG_PER_S="${D1_PROG_MOVE_DEG_PER_S:-12}"
 export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
+# Auto-calibrazione 6D con movimento sospesa: il canale DDS hold/trajectory
+# deve essere separato prima di riabilitarla in laboratorio.
+export D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-0}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
 # Unico owner DDS del braccio: daemon esterno con heartbeat funcode 2.
@@ -104,6 +107,8 @@ export D1_WRIST_RS_VISUAL_PRESET="${D1_WRIST_RS_VISUAL_PRESET:-1}"
 export D1_WRIST_RS_EMITTER_ENABLED="${D1_WRIST_RS_EMITTER_ENABLED:-1}"
 export D1_WRIST_RS_LASER_POWER="${D1_WRIST_RS_LASER_POWER:-360}"
 export D1_GRASP6D_MAX_DEPTH_M="${D1_GRASP6D_MAX_DEPTH_M:-1.2}"
+# Oggetti lucidi/scuri danno pochi pixel depth: usa tutti i pixel validi per il cuboide 6D.
+export D1_GRASP6D_DEPTH_STRIDE="${D1_GRASP6D_DEPTH_STRIDE:-1}"
 export D1_GRASP6D_MIN_CLUSTER_POINTS="${D1_GRASP6D_MIN_CLUSTER_POINTS:-35}"
 export D1_GRASP6D_PREGRASP_M="${D1_GRASP6D_PREGRASP_M:-0.10}"
 export D1_GRASP6D_LIFT_M="${D1_GRASP6D_LIFT_M:-0.09}"
@@ -165,7 +170,7 @@ export D1_PICK_SCAN_REFERENCE="${D1_PICK_SCAN_REFERENCE:-j90}"
 # Pinza J6 (D1: aperta ≈ 49.7°, chiusa ≈ 5° — NON usare J6 waypoint scansione come aperta)
 export D1_GRIPPER_OPEN_DEG="${D1_GRIPPER_OPEN_DEG:-49.7}"
 export D1_GRIPPER_CLOSED_DEG="${D1_GRIPPER_CLOSED_DEG:-5}"
-# Riconoscimento presa D1: SOLO scatoletta blu HSV + orientamento (mai YOLO su 5053)
+# Riconoscimento presa D1: SOLO scatoletta blu HSV + orientamento (mai YOLO su 5056)
 export D1_PICK_DETECT_BACKEND="${D1_PICK_DETECT_BACKEND:-color}"
 export D1_PICK_COLOR_ONLY="${D1_PICK_COLOR_ONLY:-1}"
 export D1_COLOR_BOX_H_MIN="${D1_COLOR_BOX_H_MIN:-95}"

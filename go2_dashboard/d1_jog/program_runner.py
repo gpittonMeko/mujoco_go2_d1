@@ -85,6 +85,22 @@ def _move_deg_per_s() -> float:
     return max(3.0, float(os.environ.get("D1_PROG_MOVE_DEG_PER_S", "12")))
 
 
+def _waypoint_delay_ms() -> int:
+    """Pace waypoint by the configured joint speed, not just socket latency."""
+    speed = _move_deg_per_s()
+    step = _max_joint_step_deg()
+    by_speed = int(round(1000.0 * step / max(0.1, speed)))
+    return max(motion_profile.stream_delay_ms(), by_speed)
+
+
+def _tracking_during_move_enabled() -> bool:
+    return os.environ.get("D1_PROG_TRACKING_DURING_MOVE", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _tracking_violation_limit() -> int:
+    return max(1, int(os.environ.get("D1_PROG_TRACKING_MAX_VIOLATIONS", "3")))
+
+
 def _shortest_servo_delta_deg(from_deg: float, to_deg: float) -> float:
     d = float(to_deg) - float(from_deg)
     while d > 180.0:
@@ -118,6 +134,12 @@ def _within_target_range(current: list[float], target: list[float]) -> tuple[boo
         ok = arm_ok and (len(errs) < 7 or errs[6] <= grip_tol)
         max_err = max(errs) if errs else 0.0
     return ok, max_err, errs
+
+
+def _hold_measured_pose_for_abort(reason: str) -> dict[str, Any]:
+    """Safety abort: never hold the cached target; freeze the measured pose."""
+    hold = service.request_emergency_hold(reason=reason)
+    return {"safety_hold": hold, "hold_source": "measured_feedback"}
 
 
 def _estimate_move_duration_s(from_sd: list[float], to_sd: list[float]) -> float:
@@ -250,6 +272,7 @@ def move_to_servo_deg_smooth(
     keep_lock: bool = False,
     stop_check: Callable[[], bool] | None = None,
     pin_joints: dict[int, float] | None = None,
+    tracking_max_error_deg: float | None = None,
 ) -> dict[str, Any]:
     """Interpola in spazio giunti con funcode 2 mode 1."""
     if safety_preempt_active():
@@ -284,14 +307,17 @@ def move_to_servo_deg_smooth(
         cur = fb["servo_deg"]
         target = service.clamp_servo_deg(target_servo_deg)
         waypoints = plan_joint_waypoints(cur, target, pin_joints=pin_joints)
-        delay_ms = motion_profile.stream_delay_ms()
+        delay_ms = _waypoint_delay_ms()
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}
         service.set_servo_cache(cur)
         sent = 0
+        tracking_violations = 0
+        tracking_missing = 0
+        tracking_during_move = tracking_max_error_deg is not None and _tracking_during_move_enabled()
+        tracking_violation_limit = _tracking_violation_limit()
         for i, sd in enumerate(waypoints):
             if safety_preempt_active():
-                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
                 return {
                     "ok": False,
                     "reason": "motion_preempted:safety",
@@ -299,9 +325,9 @@ def move_to_servo_deg_smooth(
                     "waypoints": sent,
                     "target_servo_deg": target,
                     "preempted_before_waypoint": i,
+                    **_hold_measured_pose_for_abort("program_preempted_before_waypoint"),
                 }
             if _stop_requested:
-                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
                 return {
                     "ok": False,
                     "reason": "stopped",
@@ -309,6 +335,7 @@ def move_to_servo_deg_smooth(
                     "waypoints": sent,
                     "target_servo_deg": target,
                     "stopped_before_waypoint": i,
+                    **_hold_measured_pose_for_abort("program_stopped_before_waypoint"),
                 }
             msg = service._pose_message(sd, seq=int(time.time()) % 100000 + i)
             pub = service.publish_messages_stream([msg], delay_ms=delay_ms)
@@ -318,8 +345,51 @@ def move_to_servo_deg_smooth(
             service.set_servo_cache(sd)
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
+            if tracking_during_move:
+                fb_guard = service.read_servo_deg(fast=True)
+                cur_guard = fb_guard.get("servo_deg") if fb_guard.get("ok") else None
+                if not isinstance(cur_guard, list) or len(cur_guard) < 7:
+                    tracking_missing += 1
+                    if tracking_missing >= tracking_violation_limit:
+                        hold = service.request_emergency_hold(reason="program_tracking_feedback_missing")
+                        return {
+                            "ok": False,
+                            "reason": "tracking_feedback_missing",
+                            "action": "move_to_point",
+                            "waypoints": sent,
+                            "target_servo_deg": target,
+                            "last_waypoint_servo_deg": sd,
+                            "feedback": fb_guard,
+                            "tracking_missing_count": tracking_missing,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": hold,
+                        }
+                    continue
+                tracking_missing = 0
+                errs = _joint_errors(cur_guard, sd)
+                max_err = max(errs[:6]) if errs else 0.0
+                if max_err > float(tracking_max_error_deg):
+                    tracking_violations += 1
+                    if tracking_violations >= tracking_violation_limit:
+                        hold = service.request_emergency_hold(reason="program_tracking_error")
+                        return {
+                            "ok": False,
+                            "reason": "tracking_error_too_high",
+                            "action": "move_to_point",
+                            "waypoints": sent,
+                            "target_servo_deg": target,
+                            "last_waypoint_servo_deg": sd,
+                            "servo_deg": cur_guard,
+                            "tracking_errors_deg": errs,
+                            "max_tracking_error_deg": round(max_err, 2),
+                            "tracking_limit_deg": float(tracking_max_error_deg),
+                            "tracking_violation_count": tracking_violations,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": hold,
+                        }
+                else:
+                    tracking_violations = 0
             if _stop_requested:
-                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
                 return {
                     "ok": False,
                     "reason": "stopped",
@@ -327,9 +397,9 @@ def move_to_servo_deg_smooth(
                     "waypoints": sent,
                     "target_servo_deg": target,
                     "stopped_after_waypoint": i,
+                    **_hold_measured_pose_for_abort("program_stopped_after_waypoint"),
                 }
             if safety_preempt_active():
-                service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
                 return {
                     "ok": False,
                     "reason": "motion_preempted:safety",
@@ -337,20 +407,73 @@ def move_to_servo_deg_smooth(
                     "waypoints": sent,
                     "target_servo_deg": target,
                     "preempted_after_waypoint": i,
+                    **_hold_measured_pose_for_abort("program_preempted_after_waypoint"),
                 }
-        time.sleep(_estimate_move_duration_s(cur, target))
+        settle_deadline = time.monotonic() + _estimate_move_duration_s(cur, target)
+        settle_violations = 0
+        settle_missing = 0
+        while time.monotonic() < settle_deadline:
+            time.sleep(min(0.15, max(0.0, settle_deadline - time.monotonic())))
+            if tracking_max_error_deg is not None:
+                fb_guard = service.read_servo_deg(fast=True)
+                cur_guard = fb_guard.get("servo_deg") if fb_guard.get("ok") else None
+                if not isinstance(cur_guard, list) or len(cur_guard) < 7:
+                    settle_missing += 1
+                    if settle_missing >= tracking_violation_limit:
+                        hold = service.request_emergency_hold(reason="program_settle_feedback_missing")
+                        return {
+                            "ok": False,
+                            "reason": "settle_feedback_missing",
+                            "action": "move_to_point",
+                            "waypoints": sent,
+                            "target_servo_deg": target,
+                            "feedback": fb_guard,
+                            "tracking_missing_count": settle_missing,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": hold,
+                        }
+                    continue
+                settle_missing = 0
+                errs = _joint_errors(cur_guard, target)
+                max_err = max(errs[:6]) if errs else 0.0
+                if max_err > float(tracking_max_error_deg):
+                    settle_violations += 1
+                    if settle_violations >= tracking_violation_limit:
+                        hold = service.request_emergency_hold(reason="program_settle_tracking_error")
+                        return {
+                            "ok": False,
+                            "reason": "settle_tracking_error_too_high",
+                            "action": "move_to_point",
+                            "waypoints": sent,
+                            "target_servo_deg": target,
+                            "servo_deg": cur_guard,
+                            "tracking_errors_deg": errs,
+                            "max_tracking_error_deg": round(max_err, 2),
+                            "tracking_limit_deg": float(tracking_max_error_deg),
+                            "tracking_violation_count": settle_violations,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": hold,
+                        }
+                else:
+                    settle_violations = 0
         if safety_preempt_active():
-            service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
             return {
                 "ok": False,
                 "reason": "motion_preempted:safety",
                 "action": "move_to_point",
                 "waypoints": sent,
                 "target_servo_deg": target,
+                **_hold_measured_pose_for_abort("program_preempted_after_settle"),
             }
         if _stop_requested:
-            service.hold_pose_stream(servo_deg=service.get_servo_cache() or cur)
-            return {"ok": False, "reason": "stopped", "action": "move_to_point", "waypoints": sent, "target_servo_deg": target}
+            return {
+                "ok": False,
+                "reason": "stopped",
+                "action": "move_to_point",
+                "waypoints": sent,
+                "target_servo_deg": target,
+                **_hold_measured_pose_for_abort("program_stopped_after_settle"),
+            }
         service.hold_pose_stream(servo_deg=target)
         wait = wait_until_at_target(target, stop_check=stop_check)
         if not wait.get("ok"):

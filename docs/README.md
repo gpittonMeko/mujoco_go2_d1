@@ -11,3 +11,23 @@ Guide operative:
 | [d1_arm_protocol_feasibility.md](d1_arm_protocol_feasibility.md) | D1 DDS, drag-follow |
 
 Script in `scripts/` — nomi parlanti; deploy dashboard: `python scripts/deploy_dashboard_to_nx.py`.
+
+## Safety restart/handoff D1
+
+- `scripts/launch_d1_jog_dashboard_nx.py` puo' fare restart/handoff del controllo braccio.
+- Non eseguire restart con braccio sospeso: sostenere il braccio o metterlo prima in posa sicura.
+- Per sola diagnostica usare `python scripts/launch_d1_jog_dashboard_nx.py --status-only`.
+- Per restart esplicito usare `python scripts/launch_d1_jog_dashboard_nx.py --confirm-restart-risk`.
+
+## Debug grafico cluster 6D
+
+- JSON debug cluster: `/api/pick/grasp6d/debug`
+- Overlay JPEG cluster: `/api/pick/grasp6d/debug.jpg`
+- In UI 5056: pulsante `Diagnostica 6D grafica` (tab Teach).
+
+## Sequenza operativa presa 6D
+
+- Durante la calibrazione hand-eye la AprilGrid deve restare libera, ferma e visibile: non lasciare cuboidi o oggetti sopra la griglia.
+- Gli oggetti di presa vanno inseriti solo dopo build calibrazione valido (`/api/pick/metric/calibration` con calibrazione `ok`).
+- Prima di muovere il braccio: `POST /api/pick/grasp6d/preview`, poi `POST /api/pick/grasp6d/cluster_probe`.
+- Se `cluster_probe.summary.ready_for_pregrasp` e' true, procedere con pregrasp; eseguire la presa completa solo dopo conferma visiva e `confirm: "EXECUTE_GRASP6D"`.

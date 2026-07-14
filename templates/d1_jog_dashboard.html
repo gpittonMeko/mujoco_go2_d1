@@ -30,6 +30,8 @@
     body::before { height:26vh; bottom:-12vh; background:linear-gradient(180deg,#8be269,#36b965); transform:rotate(-2deg); box-shadow:0 -10px 45px rgba(41,154,91,.22); }
     body::after { width:190px; height:190px; left:auto; right:7vw; top:78px; background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.92),rgba(109,219,255,.38) 38%,rgba(33,139,214,.12) 69%,transparent 72%); border-radius:50%; filter:blur(.2px); }
     .top { position:sticky; top:0; z-index:20; padding:14px clamp(16px,4vw,48px); border-bottom:1px solid rgba(255,255,255,.75); background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(222,248,255,.63)); backdrop-filter:blur(18px) saturate(145%); display:flex; justify-content:space-between; align-items:center; gap:18px; box-shadow:0 8px 30px rgba(17,98,143,.12); }
+    .hold-fixed { padding:9px 14px; border-color:rgba(255,255,255,.65); background:linear-gradient(180deg,#6f8fa1,#416f85); box-shadow:0 6px 14px rgba(65,111,133,.18),inset 0 1px 0 rgba(255,255,255,.42); }
+    .safety-state { font:11px/1.2 Consolas,monospace; padding:6px 8px; border-radius:999px; color:#0a527b; background:rgba(255,255,255,.62); border:1px solid rgba(21,106,151,.16); }
     .brand { display:flex; align-items:center; gap:13px; min-width:260px; }
     .brand-logo { width:66px; height:50px; object-fit:contain; mix-blend-mode:multiply; filter:drop-shadow(0 5px 8px rgba(6,83,127,.16)); }
     .top h1 { margin:0; font-size:clamp(19px,2.2vw,28px); letter-spacing:-.04em; color:#0a4f79; }
@@ -97,11 +99,68 @@
     .scan-metric small { display:block; color:#598095; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
     .scan-metric strong { display:block; margin-top:4px; color:#0a527b; font-size:14px; overflow-wrap:anywhere; }
     .scan-log { grid-column:1/-1; max-height:190px; overflow:auto; margin:0; padding:11px; border-radius:12px; background:#0b374f; color:#dff8ff; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; }
+    .rt-panel { margin-top:10px; padding:10px 12px; border-radius:12px; background:rgba(12,57,83,.9); color:#dff8ff; border:1px solid rgba(22,118,167,.35); }
+    .rt-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:8px; }
+    .rt-badge { font:11px/1.2 Consolas,monospace; padding:5px 8px; border-radius:999px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); }
+    .rt-badge.good { color:#6ef2a7; }
+    .rt-badge.bad { color:#ff9ea8; }
+    .rt-json { margin-top:8px; max-height:150px; overflow:auto; font:11px/1.35 Consolas,monospace; white-space:pre-wrap; }
+    .rt-preview { margin-top:8px; width:100%; max-height:240px; object-fit:contain; border-radius:10px; border:1px solid rgba(255,255,255,.2); background:#081f30; }
+    .teach-section { margin-top:14px; }
+    .teach-section:first-child { margin-top:0; }
+    .section-title { margin:0 0 10px; color:#0a527b; font-size:18px; }
+    .workflow-card { position:relative; margin:12px 0 14px; padding:14px; border-radius:20px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(220,248,255,.82)); border:1px solid rgba(255,255,255,.92); box-shadow:0 12px 32px rgba(13,88,132,.16); }
+    .workflow-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
+    .workflow-head strong { color:#075681; }
+    .workflow-head span { color:var(--muted); font-size:12px; }
+    .workflow-grid { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; }
+    .workflow-step { padding:10px; border-radius:14px; background:rgba(255,255,255,.58); border:1px solid rgba(21,106,151,.18); color:#52788e; }
+    .workflow-step b { display:block; margin-bottom:3px; color:#315f75; font-size:12px; }
+    .workflow-step.ready { background:rgba(199,248,219,.78); border-color:rgba(19,140,85,.28); }
+    .workflow-step.ready b { color:#087446; }
+    .workflow-step.blocked { background:rgba(255,232,202,.78); border-color:rgba(214,133,38,.3); }
+    .camera-state { display:inline-block; margin-top:7px; padding:4px 8px; border-radius:999px; background:rgba(8,127,208,.1); color:#315f75; font-size:11px; font-weight:700; }
+    .threshold-row { align-items:center; padding-top:8px; border-top:1px solid rgba(25,130,175,.16); }
+    .pointcloud-preview { max-height:520px; }
+    .calibration-details { margin-top:12px; padding:10px 12px; border-radius:12px; background:rgba(255,255,255,.46); }
+    .calibration-details summary { cursor:pointer; color:#315f75; font-weight:700; }
+    .ops-section { margin-top:12px; }
+    .ops-section summary { cursor:pointer; color:#0a527b; font-weight:800; }
+    .ops-body { padding-top:10px; }
+    .calib-steps { display:grid; grid-template-columns:repeat(2,minmax(260px,1fr)); gap:10px; margin-top:12px; }
+    .calib-step { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:12px; border-radius:14px; background:rgba(220,247,255,.64); border:1px solid rgba(25,130,175,.18); }
+    .calib-step strong { color:#0a527b; }
+    .calib-step span { color:var(--muted); font-size:12px; line-height:1.4; }
+    .calib-guide { margin-top:10px; padding:14px; border-radius:16px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(214,244,255,.82)); border:1px solid rgba(25,130,175,.2); }
+    .calib-guide strong { display:block; color:#075681; font-size:15px; margin-bottom:4px; }
+    .calib-guide p { margin:0; color:#315f75; font-size:13px; line-height:1.45; }
+    .calib-guide.good { background:linear-gradient(145deg,rgba(235,255,242,.94),rgba(198,245,218,.82)); border-color:rgba(24,158,92,.26); }
+    .calib-guide.bad { background:linear-gradient(145deg,rgba(255,245,232,.94),rgba(255,224,184,.84)); border-color:rgba(220,132,38,.28); }
+    .button-link { display:inline-block; padding:10px 13px; border-radius:12px; color:#fff; text-decoration:none; font-weight:700; background:linear-gradient(180deg,#279ee7,#0879c5); box-shadow:0 6px 14px rgba(8,102,166,.18); }
+    .calib-history { margin-top:10px; padding:10px 12px; border-radius:12px; background:rgba(12,57,83,.9); color:#dff8ff; font-size:12px; }
+    #calibHistory { margin-top:6px; max-height:150px; overflow:auto; white-space:pre-line; font:11px/1.5 Consolas,monospace; }
+    .auto-trace { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .auto-step-pill { min-width:96px; max-width:170px; padding:8px; border-radius:12px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.10); font:11px/1.35 Consolas,monospace; }
+    .auto-step-pill.saved { border-color:rgba(91,243,154,.45); background:rgba(35,149,86,.25); color:#9ff5be; }
+    .auto-step-pill.skip { border-color:rgba(255,205,91,.45); background:rgba(167,111,20,.24); color:#ffe0a0; }
+    .auto-step-pill.error { border-color:rgba(255,121,137,.45); background:rgba(172,48,61,.25); color:#ffb3bc; }
+    .auto-step-pill.running { border-color:rgba(95,210,255,.55); background:rgba(31,125,173,.28); color:#a8eaff; }
+    .auto-step-pill b { display:block; margin-bottom:3px; color:inherit; }
+    button:disabled { opacity:.45; cursor:not-allowed; transform:none; }
     .mode-grid { display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:8px; margin-top:10px; }
     .mode-kpi { padding:10px 12px; border-radius:12px; background:rgba(220,247,255,.66); border:1px solid rgba(25,130,175,.16); }
     .mode-kpi small { display:block; color:#598095; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
     .mode-kpi strong { display:block; margin-top:4px; color:#0a527b; font-size:14px; overflow-wrap:anywhere; }
+    .debug-grid { display:grid; grid-template-columns:repeat(4,minmax(170px,1fr)); gap:10px; margin-top:10px; }
+    .debug-tile { padding:8px; border-radius:12px; background:rgba(210,242,255,.62); border:1px solid rgba(25,130,175,.18); }
+    .debug-tile h4 { margin:0 0 6px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#256580; }
+    .debug-tile img { width:100%; height:180px; object-fit:contain; border-radius:10px; background:#09283b; border:1px solid rgba(19,91,127,.3); }
+    .log-grid { display:grid; grid-template-columns:repeat(2,minmax(280px,1fr)); gap:10px; margin-top:10px; }
+    .log-block { padding:10px 12px; border-radius:12px; background:rgba(12,57,83,.9); color:#dff8ff; border:1px solid rgba(22,118,167,.35); }
+    .log-block h4 { margin:0 0 6px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#dff8ff; }
+    .log-pre { margin:0; max-height:240px; overflow:auto; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; }
     .hide { display: none; }
+    @media (max-width:900px) { .debug-grid,.calib-steps,.log-grid,.workflow-grid { grid-template-columns:1fr; } .workflow-card { position:relative; top:auto; } }
     @keyframes orbFloat {
       0%, 100% { transform:translateY(0) scale(1); opacity:.42; }
       50% { transform:translateY(-18px) scale(1.03); opacity:.64; }
@@ -144,166 +203,139 @@
       <button class="tabbtn" id="tabMoveBtn">Movimento</button>
       <button class="tabbtn" id="tabMotorBtn">Motori</button>
       <button class="tabbtn" id="tabHermesBtn">Hermes</button>
+      <button id="btnHoldNowFixed" class="hold-fixed" type="button">HOLD ORA</button>
     </div>
   </div>
 
   <div class="wrap">
     <section id="tabTeach">
-      <div class="grid2">
-        <div class="card camera-card">
-          <div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div>
-          <img id="wristStream" class="stream" src="/api/orbbec/live.mjpg?t=0" alt="Wrist stream" />
-          <div class="sub" id="wristCameraMeta">Detection presa attiva esclusivamente su questa camera.</div>
-        </div>
-        <div class="card camera-card">
-          <div class="camera-head"><h3>Camera frontale · D435i</h3><span class="rgb-badge" id="frontRgbBadge">RGB ONLY</span></div>
-          <img id="frontStream" class="stream" src="/api/front/live.mjpg?t=0" alt="Front stream" />
-          <div class="sub" id="frontCameraMeta">Vista ambiente RGB · non usata dalla detection presa.</div>
-        </div>
+      <div class="teach-section" data-teach-section="cameras"><h2 class="section-title">1. Camere</h2><div class="grid2">
+        <div class="card camera-card"><div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div><img id="wristStream" class="stream" alt="Wrist stream" /><div class="sub" id="wristCameraMeta">Detection e depth della presa.</div><span class="camera-state" id="wristCameraState">Connessione…</span></div>
+        <div class="card camera-card"><div class="camera-head"><h3>Camera frontale · D435i</h3><span class="rgb-badge" id="frontRgbBadge">RGB ONLY</span></div><img id="frontStream" class="stream" alt="Front stream" /><div class="sub" id="frontCameraMeta">Vista ambiente, non usata dalla presa.</div><span class="camera-state" id="frontCameraState">Connessione…</span></div>
+      </div></div>
+      <div class="card teach-section" data-teach-section="grasp2d"><h2 class="section-title">2. Presa 2D e teaching</h2>
+        <div class="row"><button id="btnLeftScan">Vai a sinistra e fai scan 2D</button><button id="btnRightScan">Vai a destra e fai scan 2D</button><button id="btnLegacyExecute" class="warn">Scansione fresca + presa 2D</button></div>
+        <details class="calibration-details" open>
+          <summary>Procedura guidata calibrazione presa 2D</summary>
+          <div class="calib-steps">
+            <div class="calib-step"><strong>1 · Inizia sessione</strong><span>Azzera i campioni Teach precedenti. Durante la sessione non usare “presa 2D” finché il nuovo modello non è valido.</span><button id="btnTeachReset" class="neutral">Inizia nuova calibrazione 2D</button></div>
+            <div class="calib-step"><strong>2 · Posiziona scatola e scansiona</strong><span id="teachNextScenario">Scenario 1: scatola centrata e diritta.</span><button id="btnTeachScanScenario">Scansiona scenario 2D</button><span id="teachScanState">Scansione fresca richiesta.</span></div>
+            <div class="calib-step"><strong>3 · Insegna la presa</strong><span>Senza spostare la scatola: Release, sostieni il braccio e portalo nella posa finale corretta.</span><div class="row"><button id="btnTeachRelease" class="danger">A. Release per insegnare</button><button id="btnTeachCapture" class="warn">B. Memorizza presa + HOLD</button></div><span>Il salvataggio viene rifiutato se la detection è assente o vecchia; HOLD viene comunque riattivato.</span></div>
+            <div class="calib-step"><strong>4 · Completa gli 8 scenari</strong><span>Centro, sinistra, destra, alto, basso, ruotata ±30° e angolo. Solo allora il modello può essere calcolato.</span><button id="btnTeachBuild" class="neutral" disabled>Calcola calibrazione 2D</button></div>
+          </div>
+          <div class="mode-grid"><div class="mode-kpi"><small>Copertura guidata</small><strong id="teachCoverage">0 / 8</strong></div><div class="mode-kpi"><small>Modello 2D</small><strong id="legacyModel">—</strong></div><div class="mode-kpi"><small>Ultima azione</small><strong id="teachLastAction">—</strong></div></div>
+          <div class="calib-history"><strong>Storico calibrazione 2D</strong><div id="teachHistory">Nessun evento registrato.</div></div>
+          <span id="teachSampleCount" class="hide">0</span><span id="legacyTarget" class="hide">—</span>
+        </details>
+        <div id="scanResult" class="scan-result"><img id="scanPreview" class="scan-preview hide" alt="Overlay detection scansione" /><div class="scan-metrics"><div class="scan-metric"><small>Oggetto</small><strong id="scanObject">—</strong></div><div class="scan-metric"><small>Confidenza</small><strong id="scanConfidence">—</strong></div><div class="scan-metric"><small>Centro immagine</small><strong id="scanCenter">—</strong></div><div class="scan-metric"><small>Orientamento</small><strong id="scanOrientation">—</strong></div><div class="scan-metric"><small>Distanza stimata</small><strong id="scanDistance">—</strong></div><div class="scan-metric"><small>Errore posa scan</small><strong id="scanMoveError">—</strong></div><div class="scan-metric"><small>Target presa giunti</small><strong id="scanGraspJoints">—</strong></div><div class="scan-metric"><small>TCP presa stimato</small><strong id="scanTcp">—</strong></div><pre id="scanLog" class="scan-log">Nessuna scansione.</pre></div></div>
       </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Motori Braccio (stile legacy)</h3>
-        <div class="row">
-          <button id="btnCouple">Coppia ON</button>
-          <button id="btnEnable" class="neutral">Enable motori</button>
-          <button id="btnPower" class="neutral">Power ON</button>
-          <button id="btnHold" class="neutral">Hold posa</button>
-          <button id="btnRelease" class="danger">Release</button>
-          <button id="btnZero" class="warn">Zero</button>
-        </div>
-        <div id="scanResult" class="scan-result">
-          <img id="scanPreview" class="scan-preview hide" alt="Overlay detection scansione" />
-          <div class="scan-metrics">
-            <div class="scan-metric"><small>Oggetto</small><strong id="scanObject">—</strong></div>
-            <div class="scan-metric"><small>Confidenza</small><strong id="scanConfidence">—</strong></div>
-            <div class="scan-metric"><small>Centro immagine</small><strong id="scanCenter">—</strong></div>
-            <div class="scan-metric"><small>Orientamento</small><strong id="scanOrientation">—</strong></div>
-            <div class="scan-metric"><small>Distanza stimata</small><strong id="scanDistance">—</strong></div>
-            <div class="scan-metric"><small>Errore posa scan</small><strong id="scanMoveError">—</strong></div>
-            <div class="scan-metric"><small>Target presa giunti</small><strong id="scanGraspJoints">—</strong></div>
-            <div class="scan-metric"><small>TCP presa stimato</small><strong id="scanTcp">—</strong></div>
-            <pre id="scanLog" class="scan-log">Nessuna scansione.</pre>
+      <div class="card teach-section" data-teach-section="grasp6d"><h2 class="section-title">3. Presa 6D RGB-D</h2>
+        <div class="sub">Vista metrica live nel frame D456: RGB a sinistra, point cloud top/side a destra. Funziona anche mentre sposti il braccio in Release.</div>
+        <div class="workflow-card">
+          <div class="workflow-head"><strong>Percorso presa 6D</strong><span id="workflowHint">Verifica automatica dei prerequisiti</span></div>
+          <div class="workflow-grid">
+            <div class="workflow-step blocked" id="flowCamera"><b>1. Camere</b><span>In verifica</span></div>
+            <div class="workflow-step blocked" id="flowCalibration"><b>2. Hand-eye</b><span>Richiesta per il grasp</span></div>
+            <div class="workflow-step blocked" id="flowDetection"><b>3. Oggetto 3D</b><span>Esegui il debug</span></div>
+            <div class="workflow-step blocked" id="flowExecute"><b>4. Presa</b><span>Bloccata finché non è sicura</span></div>
           </div>
         </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Pose rapide e programmi</h3>
-        <div class="row">
-          <button id="btnHoldNow" class="danger">HOLD ORA</button>
-          <button id="btnSaveZeroPose" class="warn">Memorizza ZERO POSE</button>
-          <button id="btnGotoZeroPose" class="neutral">Vai a ZERO POSE</button>
-          <button id="btnSavePose" class="warn">Memorizza posa + HOLD</button>
-        </div>
-        <div class="sub" id="teachZeroStatus">ZERO POSE: —</div>
-        <div class="sl">
-          <label>Programma
-            <select id="teachProgramSelect" style="padding:9px 12px;border-radius:12px;border:1px solid rgba(20,95,136,.18);background:#fff;color:#10334a;">
-              <option value="">Caricamento…</option>
-            </select>
-            <span id="teachProgramCount">—</span>
-          </label>
-          <label>Nome punto
-            <input id="teachPointName" type="text" value="Punto 1" style="padding:9px 12px;border-radius:12px;border:1px solid rgba(20,95,136,.18);background:#fff;color:#10334a;" />
-            <span id="teachPointHint">usa la posa attuale</span>
-          </label>
-        </div>
-        <div class="row">
-          <button id="btnRefreshPrograms" class="neutral">Aggiorna programmi</button>
-          <button id="btnCreateProgram" class="neutral">Nuovo programma</button>
-          <span class="sub">Dopo Release: sostieni il braccio, posizionalo e premi “Memorizza posa + HOLD”.</span>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Scansione 90 e Detection</h3>
-        <div class="row">
-          <button id="btnRightScan">Vai a destra 90 e scannerizza</button>
-          <button id="btnLeftScan">Vai a sinistra 90 e scannerizza</button>
-          <button id="btnDetectNow" class="neutral">Solo detection</button>
-          <button id="btnTestGrasp" class="warn">Prova presa 6D rapida</button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Presa legacy (2D scan)</h3>
-        <div class="row">
-          <button id="btnLegacyPreview" class="neutral">Preview legacy</button>
-          <button id="btnLegacyExecute" class="warn">Esegui presa legacy</button>
-        </div>
-        <div class="mode-grid">
-          <div class="mode-kpi"><small>Offset efficaci</small><strong id="legacyOffsets">—</strong></div>
-          <div class="mode-kpi"><small>Target giunti</small><strong id="legacyTarget">—</strong></div>
-          <div class="mode-kpi"><small>Teach model</small><strong id="legacyModel">—</strong></div>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Presa 6D RGB-D + calibrazione</h3>
-        <div class="row">
-          <button id="btn6dStatus" class="neutral">Stato 6D</button>
-          <button id="btn6dPreview" class="neutral">Preview 6D</button>
-          <button id="btn6dPregrasp" class="warn">Solo pregrasp 6D</button>
-          <button id="btn6dExecute" class="danger">Esegui presa 6D</button>
-        </div>
-        <div class="row">
-          <button id="btn6dSample" class="neutral">Sample calibrazione</button>
-          <button id="btn6dBuild" class="neutral">Build calibrazione</button>
-          <button id="btn6dReset" class="danger">Reset samples</button>
-        </div>
-        <div class="mode-grid">
-          <div class="mode-kpi"><small>RGB-D wrist</small><strong id="grasp6dRgbd">—</strong></div>
-          <div class="mode-kpi"><small>Calibrazione hand-eye</small><strong id="grasp6dCalib">—</strong></div>
-          <div class="mode-kpi"><small>Samples</small><strong id="grasp6dSamples">—</strong></div>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3>Taratura posizione robot con Slider (solo posa)</h3>
-        <div class="sl">
-          <label>Yaw scan DX (J0)
-            <input id="scanRight" type="range" min="-120" max="120" step="1" value="90" />
-            <span id="scanRightVal">90</span>
-          </label>
-          <label>Yaw scan SX (J0)
-            <input id="scanLeft" type="range" min="-120" max="120" step="1" value="-90" />
-            <span id="scanLeftVal">-90</span>
-          </label>
-          <label>J0
-            <input id="poseJ0" type="range" min="-135" max="135" step="0.5" value="0" />
-            <span id="poseJ0Val">0.0</span>
-          </label>
-          <label>J1
-            <input id="poseJ1" type="range" min="-90" max="90" step="0.5" value="35" />
-            <span id="poseJ1Val">35.0</span>
-          </label>
-          <label>J2
-            <input id="poseJ2" type="range" min="-90" max="90" step="0.5" value="-2" />
-            <span id="poseJ2Val">-2.0</span>
-          </label>
-          <label>J3
-            <input id="poseJ3" type="range" min="-135" max="135" step="0.5" value="0" />
-            <span id="poseJ3Val">0.0</span>
-          </label>
-          <label>J4
-            <input id="poseJ4" type="range" min="-90" max="90" step="0.5" value="36" />
-            <span id="poseJ4Val">36.0</span>
-          </label>
-          <label>J5
-            <input id="poseJ5" type="range" min="-135" max="135" step="0.5" value="0" />
-            <span id="poseJ5Val">0.0</span>
-          </label>
-          <label>Gripper J6
-            <input id="poseJ6" type="range" min="0" max="90" step="0.5" value="5" />
-            <span id="poseJ6Val">5.0</span>
-          </label>
-        </div>
-        <div class="row">
-          <button id="btnReadPose" class="neutral">Leggi posa robot</button>
-          <button id="btnApplyPose" class="neutral">Applica posa slider</button>
-          <button id="btnHoldPose" class="neutral">Hold posa slider</button>
-        </div>
+        <details class="ops-section" open>
+          <summary>Operazioni rapide</summary>
+          <div class="ops-body">
+            <div class="row"><span id="fixedHoldState" class="safety-state">hold: verifica…</span><button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button><button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button></div>
+            <div class="sl" aria-label="Slider giunti D1">
+              <strong>Slider giunti D1</strong>
+              <div class="sub">Prima carica la posa attuale. Gli slider non muovono nulla finché non premi “Invia posa slider”.</div>
+              <label>J0 base
+                <input id="poseJ0" type="range" min="-135" max="135" step="0.1" value="0" />
+                <span id="poseJ0Val">0.0</span>
+              </label>
+              <label>J1 spalla
+                <input id="poseJ1" type="range" min="-95" max="95" step="0.1" value="0" />
+                <span id="poseJ1Val">0.0</span>
+              </label>
+              <label>J2 gomito
+                <input id="poseJ2" type="range" min="-95" max="95" step="0.1" value="0" />
+                <span id="poseJ2Val">0.0</span>
+              </label>
+              <label>J3 polso roll
+                <input id="poseJ3" type="range" min="-135" max="135" step="0.1" value="0" />
+                <span id="poseJ3Val">0.0</span>
+              </label>
+              <label>J4 polso pitch
+                <input id="poseJ4" type="range" min="-95" max="95" step="0.1" value="0" />
+                <span id="poseJ4Val">0.0</span>
+              </label>
+              <label>J5 polso yaw
+                <input id="poseJ5" type="range" min="-135" max="135" step="0.1" value="0" />
+                <span id="poseJ5Val">0.0</span>
+              </label>
+              <label>J6 pinza
+                <input id="poseJ6" type="range" min="0" max="90" step="0.1" value="5" />
+                <span id="poseJ6Val">5.0</span>
+              </label>
+              <div class="row"><button id="btnReadPoseSliders" class="neutral" type="button">Carica posa attuale</button><button id="btnSendPoseSliders" class="warn" type="button">Invia posa slider</button></div>
+            </div>
+            <div class="row"><button id="btnGoLeftPose" class="neutral">Vai in posizione presa sinistra</button><button id="btnGoRightPose" class="neutral">Vai in posizione presa destra</button><button id="btnLeft6dDebug">Prova presa a sinistra + debug</button><button id="btnRight6dDebug">Prova presa a destra + debug</button></div>
+            <div class="row"><button id="btnDepthStart">Avvia scan 3D live</button><button id="btnDepthStop" class="neutral">Ferma live</button><button id="btnReleaseMonitor" class="danger">Release + 3D live</button><button id="btn6dPreview" class="neutral">Riconosci oggetto e prese</button><button id="btn6dClusterProbe" class="neutral">Verifica stabilità cluster</button><button id="btn6dDebugGraphic" class="neutral">Debug grafico presa 6D</button><button id="btn6dPregrasp" class="warn">Prova pregrasp</button><button id="btn6dExecute" class="danger">Grasp 6D</button></div>
+          </div>
+        </details>
+        <div class="mode-grid"><div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div><div class="mode-kpi"><small>Centro camera XYZ</small><strong id="grasp6dCenter">—</strong></div><div class="mode-kpi"><small>Dimensioni XYZ</small><strong id="grasp6dDimensions">—</strong></div><div class="mode-kpi"><small>Punti cluster</small><strong id="grasp6dPointCount">—</strong></div><div class="mode-kpi"><small>Depth valida</small><strong id="grasp6dDepthValid">—</strong></div><div class="mode-kpi"><small>Stabilità cluster</small><strong id="grasp6dClusterStability">—</strong></div><div class="mode-kpi"><small>Hand-eye</small><strong id="grasp6dCalib">—</strong></div></div>
+        <details class="ops-section" open>
+          <summary>Debug grafico e stato live</summary>
+          <div class="ops-body">
+            <div class="row threshold-row"><span class="sub">Se il cluster non viene rilevato:</span><button id="btnLowerHeight" class="neutral">↓ soglia altezza</button><button id="btnLowerCluster" class="neutral">↓ punti cluster</button><button id="btnLowerDimension" class="neutral">↓ dimensione minima</button><button id="btnResetThresholds" class="neutral">Reset soglie</button></div>
+            <div class="rt-panel"><div class="rt-row"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div><div class="rt-json" id="rtFeedback">Monitor non avviato.</div><img id="rtDepthPreview" class="rt-preview pointcloud-preview" src="/api/pick/grasp6d/debug.jpg?capture=0&t=0" alt="RGB e point cloud metrica realtime" /></div>
+          </div>
+        </details>
+        <details class="ops-section">
+          <summary>Log e diagnostica funcode / hold</summary>
+          <div class="ops-body">
+            <div class="row"><button id="btnRefresh6dLogs" class="neutral">Aggiorna log</button></div>
+            <div class="log-grid">
+              <div class="log-block"><h4>Runtime hold / daemon</h4><pre id="holdRuntimeLog" class="log-pre">Attendo diagnostica runtime…</pre></div>
+              <div class="log-block"><h4>Ultimo run grasp 6D</h4><pre id="graspLastRunLog" class="log-pre">Nessun run salvato.</pre></div>
+              <div class="log-block"><h4>Command daemon log</h4><pre id="commandDaemonLog" class="log-pre">Log non caricato.</pre></div>
+              <div class="log-block"><h4>Errori sintetici</h4><pre id="graspErrorLog" class="log-pre">Nessun errore ancora.</pre></div>
+            </div>
+          </div>
+        </details>
+        <details class="calibration-details" open>
+          <summary>Procedura guidata calibrazione hand-eye 6D</summary>
+          <div id="calibGuide" class="calib-guide">
+            <strong id="calibGuideTitle">FLUSSO REALE: segui solo questi passi</strong>
+            <p id="calibGuideBody">Togli il cuboide, lascia AprilGrid ferma, premi 1, poi 2. Dopo: 3 Release, muovi a mano. Prima di 8 sample il live valuta solo vista nuova; da 8 in poi deve anche migliorare il residuo. Salva con 4 solo quando lo dice la guida.</p>
+            <div class="row" style="margin-top:10px"><button id="btn6dAutoCalibTop" class="warn" type="button" disabled>AUTO CALIBRAZIONE 6D SOSPESA</button><span>Movimento automatico sospeso: usa guida live + movimento manuale finché il flusso DDS/daemon non è stabilizzato.</span></div>
+          </div>
+          <div class="workflow-grid" id="calibPhaseFlow">
+            <div class="workflow-step blocked" id="calibPhase1"><b>1. Reset</b><span>inizia pulito</span></div>
+            <div class="workflow-step blocked" id="calibPhase2"><b>2. Live</b><span>spento</span></div>
+            <div class="workflow-step blocked" id="calibPhase3"><b>3. Muovi</b><span>attendi live</span></div>
+            <div class="workflow-step blocked" id="calibPhase4"><b>4. Salva</b><span>bloccato</span></div>
+            <div class="workflow-step blocked" id="calibPhase5"><b>5. Calcola</b><span>non pronto</span></div>
+          </div>
+          <div class="calib-steps">
+            <div class="calib-step"><strong>1 · Inizia sessione pulita</strong><span>Prima cosa: togli il cuboide da AprilGrid e azzera i sample vecchi. La griglia deve restare ferma fino alla fine.</span><button id="btn6dCalibReset" class="neutral">1. Inizia nuova calibrazione 6D</button></div>
+            <div class="calib-step"><strong>2 · Accendi la guida live</strong><span>Questo è il controllo principale. Ti dice se AprilGrid è vista, se la posa è nuova e se puoi salvare.</span><div class="row"><button id="btn6dCalibLive" class="neutral" type="button">2. Avvia guida live</button><button id="btn6dCalibLiveStop" class="neutral" type="button">Stop guida live</button></div></div>
+            <div class="calib-step"><strong>Auto · calibrazione sospesa</strong><span>Il movimento automatico è disabilitato: il flusso DDS/daemon va separato prima di usarlo in sicurezza.</span><div class="row"><button id="btn6dAutoCalib" class="warn" type="button" disabled>Auto sospesa</button><button id="btn6dAutoCalibStop" class="neutral" type="button">Stop auto</button></div><span id="autoCalibState">Auto movimento disabilitato: usa live + movimento manuale.</span></div>
+            <div class="calib-step"><strong>3 · Muovi a mano</strong><span id="calibNextPose">Premi Release solo se stai sostenendo fisicamente il braccio. Poi muovi piano seguendo la guida live.</span><button id="btn6dCalibRelease" class="danger">3. Release: lo sostengo io</button></div>
+            <div class="calib-step"><strong>4 · Salva solo se la guida lo consiglia</strong><span>Prima di 8 sample cerca viste nuove; dopo 8 salva solo se il residuo previsto non peggiora o migliora.</span><button id="btn6dSample" class="warn" disabled>4. Salva sample + HOLD</button><span id="calibSaveGate">Bloccato finché il live non raccomanda il salvataggio.</span></div>
+            <div class="calib-step"><strong>5 · Calcola solo quando si abilita</strong><span>Il pulsante resta disabilitato finché progresso reale, diversità pose e residuo provvisorio non sono plausibili.</span><button id="btn6dBuild" class="neutral" disabled>5. Calcola hand-eye 6D</button></div>
+            <div class="calib-step"><strong>Controllo opzionale</strong><span>Usalo solo se il live non vede la griglia o vuoi controllare la camera senza salvare sample.</span><button id="btn6dCalibProbe" class="neutral">Verifica AprilGrid senza salvare</button><span id="calibProbeHint">Non fa parte del ciclo normale: serve solo diagnosi.</span></div>
+          </div>
+          <div class="mode-grid">
+            <div class="mode-kpi"><small>Progresso reale</small><strong id="calibProgress">0% · 0 / 8</strong></div>
+            <div class="mode-kpi"><small>Ultima azione</small><strong id="calibLastAction">—</strong></div>
+            <div class="mode-kpi"><small>Risultato salvato</small><strong id="calibSavedState">—</strong></div>
+            <div class="mode-kpi"><small>Target visibile</small><strong id="calibTargetState">non verificato</strong></div>
+            <div class="mode-kpi"><small>Vista live</small><strong id="calibLiveState">non avviata</strong></div>
+            <div class="mode-kpi"><small>Residuo provvisorio</small><strong id="calibResidualState">—</strong></div>
+          </div>
+          <div class="calib-history"><strong>Debug grafico calibrazione</strong><div id="calibDebugGraph">Serve almeno un refresh stato calibrazione.</div></div>
+          <div class="calib-history"><strong>Debug grafico auto-calibrazione</strong><div id="autoCalibDebugGraph">Auto non avviata: qui vedrai step, tag, sample salvati/skippati e residuo.</div></div>
+          <div class="calib-history"><strong>Storico calibrazione</strong><div id="calibHistory">Nessun evento registrato.</div></div>
+        </details>
       </div>
     </section>
 
@@ -355,7 +387,7 @@
           <button id="btnThermalSave" class="warn">Salva soglie</button>
         </div>
         <div class="status" id="thermalStatus">Nessun dato temperatura.</div>
-        <iframe id="motorFrame" class="motor-frame" src="/motors" title="Gestione completa motori Go2"></iframe>
+        <iframe id="motorFrame" class="motor-frame" data-src="/motors" title="Gestione completa motori Go2"></iframe>
       </div>
     </section>
 
@@ -370,18 +402,39 @@
     </section>
 
     <div class="status" id="status">Pronto.</div>
-    <div class="diag-panel">
-      <div class="diag-head">
-        <h3>Dettagli ultimo comando</h3>
-        <div class="diag-note" id="diagSummary">Nessun dettaglio ancora.</div>
-      </div>
-      <pre class="diag-json" id="diagJson">Attendo input UI…</pre>
+    <div class="hide" aria-hidden="true">
+      <span id="diagSummary">Nessun dettaglio ancora.</span>
+      <pre id="diagJson">Attendo input UI…</pre>
     </div>
   </div>
 
   <script>
     function q(id) { return document.getElementById(id); }
+    function bindClick(id, handler) { const el = q(id); if (el) el.onclick = handler; }
     let activeOps = 0;
+    let rtTimer = null;
+    let rtBase = null;
+    let depthTimer = null;
+    let calibLiveTimer = null;
+    let depthRunning = false;
+    let rtInFlight = false;
+    let depthInFlight = false;
+    let calibLiveInFlight = false;
+    let calibrationFocusActive = false;
+    let calibrationSessionStarted = false;
+    let calibrationSaveAllowed = false;
+    let calibrationBuildReady = false;
+    let autoCalibRunning = false;
+    let autoCalibStep = 0;
+    let autoCalibBase = null;
+    let autoCalibTrace = [];
+    let rgbStatusInFlight = false;
+    let wristCameraOnline = false;
+    let frontCameraOnline = false;
+    let grasp6dCalibrationOk = false;
+    let grasp6dDetectionOk = false;
+    let pendingTeachVision = null;
+    let pendingTeachScenario = null;
     async function api(path, method, body, timeoutMs) {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), timeoutMs || 90000);
@@ -461,26 +514,65 @@
       }
     }
 
-    function bindMjpeg(imgId, baseUrl, label) {
+    function update6dWorkflow() {
+      const camerasOk = wristCameraOnline && frontCameraOnline;
+      const setStep = function (id, ready, text) {
+        const el = q(id);
+        el.classList.toggle('ready', ready);
+        el.classList.toggle('blocked', !ready);
+        el.querySelector('span').textContent = text;
+      };
+      setStep('flowCamera', camerasOk, camerasOk ? 'Polso e frontale online' : 'Attendo entrambi gli stream');
+      setStep('flowCalibration', grasp6dCalibrationOk, grasp6dCalibrationOk ? 'Calibrazione valida' : 'Obbligatoria per muovere il braccio');
+      setStep('flowDetection', grasp6dDetectionOk, grasp6dDetectionOk ? 'Cluster 3D valido' : 'Esegui debug o riconoscimento');
+      const executable = wristCameraOnline && grasp6dCalibrationOk && grasp6dDetectionOk;
+      setStep('flowExecute', executable, executable ? 'Pregrasp e grasp abilitati' : 'Comandi di presa bloccati');
+      q('btn6dPregrasp').disabled = !grasp6dCalibrationOk;
+      q('btn6dExecute').disabled = !grasp6dCalibrationOk;
+      q('workflowHint').textContent = grasp6dCalibrationOk
+        ? 'Calibrazione OK: verifica il cluster prima della presa'
+        : 'Prima calibra hand-eye; debug camera e point cloud restano disponibili';
+    }
+
+    function bindSnapshot(imgId, baseUrl, label, periodMs) {
       const el = q(imgId);
       let seq = 0;
       let retryTimer = null;
       function loadNow() {
+        if (document.hidden) {
+          retryTimer = setTimeout(loadNow, 2500);
+          return;
+        }
         seq += 1;
         el.src = baseUrl + '?t=' + Date.now() + '_' + seq;
       }
       function scheduleRetry(delayMs) {
         if (retryTimer) clearTimeout(retryTimer);
-        retryTimer = setTimeout(loadNow, delayMs || 900);
+        retryTimer = setTimeout(loadNow, delayMs || periodMs || 1800);
       }
+      el.onload = function () {
+        const role = imgId === 'wristStream' ? 'wrist' : 'front';
+        if (role === 'wrist') wristCameraOnline = true;
+        else frontCameraOnline = true;
+        q(role + 'CameraState').textContent = 'LIVE · snapshot seriali';
+        update6dWorkflow();
+        scheduleRetry(periodMs || 1800);
+      };
       el.onerror = function () {
-        setStatus(label + ' offline, retry...', false);
-        scheduleRetry(1200);
+        const role = imgId === 'wristStream' ? 'wrist' : 'front';
+        if (role === 'wrist') wristCameraOnline = false;
+        else frontCameraOnline = false;
+        q(role + 'CameraState').textContent = 'OFFLINE · nuovo tentativo tra 5 s';
+        update6dWorkflow();
+        setStatus(label + ' offline, nuovo tentativo controllato', false);
+        scheduleRetry(5000);
       };
       loadNow();
     }
 
     async function refreshRgbStatus() {
+      if (rgbStatusInFlight) return;
+      rgbStatusInFlight = true;
       try {
         const d = await api('/api/cameras/rgb_status', 'GET');
         ['wrist', 'front'].forEach(function (role) {
@@ -497,6 +589,8 @@
       } catch (e) {
         q('wristRgbBadge').textContent = 'CHECK RGB';
         q('frontRgbBadge').textContent = 'CHECK RGB';
+      } finally {
+        rgbStatusInFlight = false;
       }
     }
 
@@ -645,19 +739,58 @@
     }
 
     async function holdNow() {
-      const d = await api('/api/joints/hold_now', 'POST', { reason: 'teach_ui' }, 70000);
+      const d = await api('/api/joints/hold_now', 'POST', { reason: 'fixed_ui' }, 70000);
       setStatus(d.ok ? 'HOLD immediato attivo' : (d.reason || 'hold_now fallito'), !!d.ok);
       setDiag('HOLD ORA', d);
+      updateFixedHoldState(d);
+      return d;
+    }
+
+    function updateFixedHoldState(payload) {
+      const el = q('fixedHoldState');
+      if (!el) return;
+      const daemon = (payload && payload.command_daemon) || (payload && payload.hold) || (payload && payload.daemon) || {};
+      const hold = daemon.hold_active != null ? daemon.hold_active : (payload && payload.ok);
+      const age = daemon.heartbeat_age_ms != null ? (' · hb ' + daemon.heartbeat_age_ms + 'ms') : '';
+      el.textContent = 'hold: ' + (hold ? 'ATTIVO' : 'NON OK') + age;
+      el.classList.toggle('bad', !hold);
+    }
+
+    async function refreshFixedSafetyState() {
+      try {
+        const d = await api('/api/health', 'GET', null, 10000);
+        updateFixedHoldState(d && d.command_daemon ? { ok: d.ok, hold: d.command_daemon } : d);
+      } catch (e) {
+        q('fixedHoldState').textContent = 'hold: errore';
+      }
+    }
+
+    async function sendSliderPose() {
+      const pose = sliderPose();
+      const accepted = window.confirm('Inviare la posa completa dagli slider? Verifica che il braccio sia sostenuto e che il volume sia libero.');
+      if (!accepted) return;
+      setStatus('Invio posa slider...', null);
+      setBusy(true, 'Posa slider');
+      try {
+        const d = await api('/api/joints/jog', 'POST', { servo_deg: pose, with_enable: true }, 90000);
+        setStatus(d.ok ? 'Posa slider inviata' : (d.reason || 'invio posa slider fallito'), !!d.ok);
+        setDiag('Posa slider', d);
+        updateFixedHoldState(d);
+        await readPoseToSliders().catch(function () {});
+      } catch (e) {
+        setStatus(String(e), false);
+      } finally {
+        setBusy(false);
+        await refreshFixedSafetyState();
+      }
     }
 
     async function sideScanDetect(side) {
-      const left = Number(q('scanLeft').value);
-      const right = Number(q('scanRight').value);
       const vals = {
-        left: [left, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
-        right: [right, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
+        left: [-90, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
+        right: [90, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0],
       };
-      const body = { side: side, override_servo_deg: vals[side] };
+      const body = { side: side, override_servo_deg: vals[side], vision_mode: '2d' };
       setStatus('Scan ' + side + ' + detection...', null);
       setBusy(true, 'Scan ' + side);
       try {
@@ -679,14 +812,97 @@
       );
       if (!accepted) {
         setStatus('Release annullato: coppia mantenuta.', true);
-        return;
+        return false;
       }
-      await callAndShow(
+      const out = await callAndShow(
         'Release',
         '/api/joints/release',
         'POST',
         { confirm: 'RELEASE_ARM_TORQUE' }
       );
+      return !!(out && out.ok);
+    }
+
+    async function refreshTeachSamples() {
+      const d = await api('/api/pick/teach/samples', 'GET');
+      const quality = d.quality || {};
+      setKpi('teachSampleCount', String(d.count == null ? 0 : d.count));
+      setKpi('legacyModel', d.has_active_model ? 'attivo' : 'da calcolare');
+      setKpi('teachCoverage', String(quality.guided_count || 0) + ' / 8');
+      q('btnTeachBuild').disabled = !quality.ready;
+      const scenarioLabels = {
+        center: 'Scatola centrata e diritta.',
+        left: 'Scatola nella parte sinistra della ROI.',
+        right: 'Scatola nella parte destra della ROI.',
+        upper: 'Scatola nella parte alta della ROI.',
+        lower: 'Scatola nella parte bassa della ROI.',
+        rotate_cw: 'Scatola centrata e ruotata circa +30°.',
+        rotate_ccw: 'Scatola centrata e ruotata circa -30°.',
+        corner: 'Scatola in un angolo della ROI, ancora completamente visibile.',
+      };
+      const missing = Array.isArray(quality.missing_scenarios) ? quality.missing_scenarios : [];
+      const next = missing.length ? missing[0] : null;
+      q('teachNextScenario').textContent = next ? ('Scenario ' + ((quality.guided_count || 0) + 1) + ': ' + scenarioLabels[next]) : 'Copertura completa: puoi calcolare il modello.';
+      const history = Array.isArray(d.history) ? d.history.slice().reverse().slice(0, 20) : [];
+      q('teachHistory').textContent = history.length ? history.map(function (row) {
+        return String(row.at || '') + ' · ' + String(row.event || '') + (row.scenario ? (' · ' + row.scenario) : '');
+      }).join('\n') : 'Nessun evento registrato.';
+      pendingTeachScenario = next;
+      return d;
+    }
+
+    async function scanTeachScenario() {
+      const state = await refreshTeachSamples();
+      const quality = state.quality || {};
+      const missing = Array.isArray(quality.missing_scenarios) ? quality.missing_scenarios : [];
+      pendingTeachScenario = missing.length ? missing[0] : null;
+      if (!pendingTeachScenario) {
+        setStatus('Tutti gli scenari 2D sono già coperti.', true);
+        return;
+      }
+      const d = await callAndShow('Scansione scenario 2D', '/api/pick/teach/scan', 'POST', {}, 120000);
+      if (d && d.ok && d.detection_ok && d.last_detection) {
+        pendingTeachVision = d.last_detection;
+        q('teachScanState').textContent = 'Detection valida · ora fai Release e insegna la presa senza spostare la scatola.';
+        setKpi('teachLastAction', 'scan valido · ' + pendingTeachScenario);
+        renderScanResult(d);
+      } else {
+        pendingTeachVision = null;
+        q('teachScanState').textContent = 'Detection non valida: correggi luce/posizione e ripeti la scansione.';
+        setKpi('teachLastAction', 'scan rifiutato');
+      }
+    }
+
+    async function captureTeachGrasp() {
+      const d = await callAndShow('Memorizza presa + HOLD', '/api/pick/teach/finish', 'POST', {
+        vision_at_scan: pendingTeachVision,
+        scenario: pendingTeachScenario,
+        require_valid_vision: true,
+      }, 70000);
+      if (d) {
+        const teachReasonIt = {
+          fresh_2d_detection_required: 'Manca la scansione: rimetti il braccio in scan e acquisisci di nuovo.',
+          '2d_detection_too_old': 'Scansione scaduta: ripeti lo scenario senza spostare poi la scatola.',
+          move_box_further_left: 'Sposta maggiormente la scatola a sinistra e ripeti la scansione.',
+          move_box_further_right: 'Sposta maggiormente la scatola a destra e ripeti la scansione.',
+          move_box_further_up: 'Sposta maggiormente la scatola in alto nell’immagine.',
+          move_box_further_down: 'Sposta maggiormente la scatola in basso nell’immagine.',
+          rotate_box_more_clockwise: 'Ruota maggiormente la scatola in senso orario.',
+          rotate_box_more_counterclockwise: 'Ruota maggiormente la scatola in senso antiorario.',
+          move_box_to_roi_corner: 'Porta la scatola più vicino a un angolo della ROI.',
+        };
+        setKpi('teachSampleCount', String(d.count == null ? 0 : d.count));
+        setKpi('legacyModel', d.has_active_model ? 'attivo' : 'da calcolare');
+        setKpi('teachLastAction', d.ok ? ('sample salvato · ' + pendingTeachScenario + ' · HOLD') : ('rifiutato · ' + (d.reason || 'errore') + ' · HOLD'));
+        if (d.ok) {
+          pendingTeachVision = null;
+          q('teachScanState').textContent = 'Scenario salvato. Sposta la scatola come indicato nel prossimo scenario.';
+        } else {
+          pendingTeachVision = null;
+          q('teachScanState').textContent = teachReasonIt[d.reason] || 'Campione rifiutato: ripeti la scansione dello scenario.';
+        }
+        await refreshTeachSamples();
+      }
     }
 
     function compactNumbers(values, digits) {
@@ -699,6 +915,130 @@
       if (el) el.textContent = value;
     }
 
+    function _fmtServo(arr) {
+      if (!Array.isArray(arr) || arr.length < 7) return '—';
+      return '[' + arr.slice(0, 7).map(v => Number(v).toFixed(1)).join(', ') + ']';
+    }
+
+    function _fmtDelta(arr) {
+      if (!Array.isArray(arr) || !Array.isArray(rtBase) || arr.length < 7 || rtBase.length < 7) return '—';
+      const d = arr.slice(0, 7).map((v, i) => Number(v - rtBase[i]).toFixed(2));
+      return '[' + d.join(', ') + ']';
+    }
+
+    async function tickRealtimeMonitor() {
+      if (rtInFlight) return;
+      rtInFlight = true;
+      try {
+        const [fb, ds, ms] = await Promise.all([
+          api('/api/joints/feedback', 'GET'),
+          api('/api/daemon/status', 'GET'),
+          api('/api/motion/status', 'GET'),
+        ]);
+        const servo = fb && Array.isArray(fb.servo_deg) ? fb.servo_deg.slice(0, 7) : null;
+        if (!rtBase && servo) rtBase = servo.slice();
+        const daemon = (ds && ds.command_daemon) || {};
+        const coupled = !!(ds && (ds.arm_coupled || daemon.desired_coupled));
+        const hold = !!daemon.hold_active;
+        const daemonAlive = !!daemon.publisher_alive;
+        const motion = (ms && ms.kind) ? String(ms.kind) : '—';
+
+        q('rtCoupled').textContent = 'coupled: ' + coupled;
+        q('rtHold').textContent = 'hold: ' + hold;
+        q('rtDaemon').textContent = 'daemon: ' + daemonAlive;
+        q('rtMotion').textContent = 'motion: ' + motion;
+        q('rtCoupled').className = 'rt-badge ' + (coupled ? 'good' : 'bad');
+        q('rtHold').className = 'rt-badge ' + (hold ? 'good' : 'bad');
+        q('rtDaemon').className = 'rt-badge ' + (daemonAlive ? 'good' : 'bad');
+        q('rtMotion').className = 'rt-badge ' + (motion === 'idle' ? 'good' : '');
+
+        q('rtFeedback').textContent = JSON.stringify({
+          ts: new Date().toISOString(),
+          servo_deg: servo,
+          delta_deg_from_start: servo ? _fmtDelta(servo) : '—',
+          coupled: coupled,
+          desired_coupled: !!daemon.desired_coupled,
+          hold_active: hold,
+          publisher_alive: daemonAlive,
+          has_pose: !!daemon.has_pose,
+          heartbeat_age_ms: daemon.heartbeat_age_ms,
+          last_error: daemon.last_error || null,
+          motion: ms,
+          daemon_last_publish_age_ms: ds && ds.command_daemon ? ds.command_daemon.last_publish_age_ms : null,
+        }, null, 2);
+      } catch (e) {
+        q('rtFeedback').textContent = JSON.stringify({ ok: false, reason: String(e) }, null, 2);
+      } finally {
+        rtInFlight = false;
+      }
+    }
+
+    async function tickDepthMonitor() {
+      if (depthInFlight) return;
+      depthInFlight = true;
+      try {
+        const d = await api('/api/pick/grasp6d/debug?capture=1', 'GET', undefined, 120000);
+        const rgbd = d.rgbd || {};
+        q('rtDepth').textContent = 'depth: ' + (rgbd.depth_valid_fraction == null ? '—' : Number(rgbd.depth_valid_fraction).toFixed(3));
+        q('rt6dReason').textContent = '6d: ' + (d.reason || 'ok');
+        q('rtDepth').className = 'rt-badge ' + ((rgbd.depth_valid_fraction || 0) >= 0.20 ? 'good' : 'bad');
+        q('rt6dReason').className = 'rt-badge ' + (d.ok ? 'good' : 'bad');
+        apply6dPreviewKpis(d);
+        q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=0&t=' + Date.now();
+      } catch (e) {
+        q('rt6dReason').textContent = '6d: err';
+        q('rt6dReason').className = 'rt-badge bad';
+      } finally {
+        depthInFlight = false;
+      }
+    }
+
+    function startRealtimeMonitor() {
+      if (rtTimer) return;
+      rtBase = null;
+      const loop = async function () {
+        if (!rtTimer) return;
+        await tickRealtimeMonitor();
+        if (rtTimer) {
+          rtTimer = setTimeout(loop, 1200);
+        }
+      };
+      rtTimer = -1;
+      loop();
+      setStatus('Monitor realtime attivo (poll ridotto)', true);
+    }
+
+    function stopRealtimeMonitor() {
+      if (rtTimer) clearTimeout(rtTimer);
+      rtTimer = null;
+      setStatus('Monitor realtime fermato', true);
+    }
+
+    function startDepthMonitor() {
+      if (depthRunning) return;
+      depthRunning = true;
+      startRealtimeMonitor();
+      const loop = async function () {
+        if (!depthRunning) return;
+        await tickDepthMonitor();
+        if (depthRunning) depthTimer = setTimeout(loop, 3000);
+      };
+      loop();
+      setStatus('Scan 3D live attivo (acquisizioni seriali)', true);
+    }
+
+    function stopDepthMonitor() {
+      depthRunning = false;
+      if (depthTimer) clearTimeout(depthTimer);
+      depthTimer = null;
+      stopRealtimeMonitor();
+      setStatus('Scan 3D live fermato', true);
+    }
+
+    async function releaseAndMonitor() {
+      if (await releaseArm()) startDepthMonitor();
+    }
+
     async function refreshGrasp6dStatus(capture) {
       try {
         if (capture) {
@@ -707,9 +1047,9 @@
         const st = await api('/api/pick/grasp6d/status', 'GET');
         const cal = st.calibration || {};
         const rgbd = st.rgbd || {};
-        setKpi('grasp6dRgbd', rgbd.ok ? ('OK · valid ' + Number(rgbd.depth_valid_fraction || 0).toFixed(2)) : (rgbd.reason || 'non pronto'));
+        grasp6dCalibrationOk = !!cal.ok;
+        update6dWorkflow();
         setKpi('grasp6dCalib', cal.ok ? 'OK' : (cal.reason || 'mancante'));
-        setKpi('grasp6dSamples', String(st.sample_count == null ? '—' : st.sample_count));
         setDiag('Stato 6D', st);
         setStatus('Stato 6D aggiornato', true);
       } catch (e) {
@@ -717,10 +1057,554 @@
       }
     }
 
+    const calibrationPoseHints = [
+      'Posa 1: marker frontale e centrato.',
+      'Posa 2: sposta il polso a sinistra mantenendo il marker visibile.',
+      'Posa 3: sposta il polso a destra.',
+      'Posa 4: camera più alta e inclinata verso il basso.',
+      'Posa 5: camera più bassa e inclinata verso l’alto.',
+      'Posa 6: ruota il polso circa +25°.',
+      'Posa 7: ruota il polso circa -25°.',
+      'Posa 8: cambia distanza dal target.',
+      'Posa 9 consigliata: vista obliqua da sinistra.',
+      'Posa 10 consigliata: vista obliqua da destra.',
+      'Campioni sufficienti: puoi calcolare oppure aggiungere altre due pose diverse.',
+    ];
+
+    function setCalibGuide(kind, title, body) {
+      const box = q('calibGuide');
+      if (!box) return;
+      box.classList.toggle('good', kind === 'good');
+      box.classList.toggle('bad', kind === 'bad');
+      q('calibGuideTitle').textContent = title;
+      q('calibGuideBody').textContent = body;
+    }
+
+    function setCalibPhase(id, ready, text) {
+      const el = q(id);
+      if (!el) return;
+      el.classList.toggle('ready', !!ready);
+      el.classList.toggle('blocked', !ready);
+      const span = el.querySelector('span');
+      if (span) span.textContent = text;
+    }
+
+    function updateCalibrationPokaYoke() {
+      setCalibPhase('calibPhase1', calibrationSessionStarted, calibrationSessionStarted ? 'sessione attiva' : 'premi 1');
+      setCalibPhase('calibPhase2', calibrationFocusActive, calibrationFocusActive ? 'focus attivo' : 'premi 2');
+      setCalibPhase('calibPhase3', calibrationFocusActive, calibrationFocusActive ? 'muovi a mano' : 'attendi live');
+      setCalibPhase('calibPhase4', calibrationSaveAllowed, calibrationSaveAllowed ? 'salva ora' : 'bloccato');
+      setCalibPhase('calibPhase5', calibrationBuildReady, calibrationBuildReady ? 'calcola ora' : 'non pronto');
+      const sampleBtn = q('btn6dSample');
+      if (sampleBtn) sampleBtn.disabled = !calibrationSaveAllowed;
+      const saveGate = q('calibSaveGate');
+      if (saveGate) {
+        saveGate.textContent = calibrationSaveAllowed
+          ? 'OK: la guida live raccomanda questo sample.'
+          : 'Bloccato: avvia il live e salva solo quando dice VISTA NUOVA o MIGLIORA RESIDUO.';
+      }
+    }
+
+    function updateCalibGuideFromCount(count, calibrationOk) {
+      if (calibrationOk) {
+        setCalibGuide('good', 'Pronto per il cuboide', 'Hand-eye 6D valida. Rimetti il cuboide e usa “Riconosci oggetto e prese” prima del pregrasp.');
+      } else if (count <= 0) {
+        setCalibGuide('', 'Cosa fare adesso: 1 poi 2', 'Togli il cuboide, lascia AprilGrid ferma, premi “1. Inizia nuova calibrazione 6D”, poi “2. Avvia guida live”.');
+      } else if (count < 8) {
+        setCalibGuide('', 'Cosa fare adesso: sample ' + (count + 1), 'Premi “3. Release”, sostieni il braccio e muovi seguendo la guida live. Prima di 8 sample cerca viste nuove; dopo 8 deve migliorare il residuo.');
+      } else if (count < 10) {
+        setCalibGuide('', 'Minimo raggiunto: meglio aggiungere altre pose', 'Puoi calcolare, ma per evitare residui alti conviene arrivare a 10-12 sample con viste davvero diverse.');
+      } else {
+        setCalibGuide('', 'Cosa fare adesso: guarda il pulsante 5', 'Se “5. Calcola hand-eye 6D” è abilitato puoi calcolare. Se è disabilitato, aggiungi sample solo quando il live dice che migliora il residuo.');
+      }
+    }
+
+    function formatCalibResidual(quality) {
+      const residual = quality && quality.residual ? quality.residual : {};
+      if (residual.translation_rms_m == null || residual.rotation_rms_deg == null) {
+        return residual.reason || 'servono 8 sample';
+      }
+      return (Number(residual.translation_rms_m) * 100).toFixed(1) + ' cm · ' + Number(residual.rotation_rms_deg).toFixed(1) + '°';
+    }
+
+    function safeHtmlText(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderAutoCalibrationDebug() {
+      const el = q('autoCalibDebugGraph');
+      if (!el) return;
+      if (!autoCalibTrace.length) {
+        el.textContent = 'Auto non avviata: qui vedrai step, tag, sample salvati/skippati e residuo.';
+        return;
+      }
+      const saved = autoCalibTrace.filter(row => row.status === 'saved').length;
+      const running = autoCalibTrace.some(row => row.status === 'running');
+      const lastResidual = [...autoCalibTrace].reverse().find(row => row.residual);
+      const summary = 'Step: ' + autoCalibTrace.length + ' · salvati: ' + saved + ' · stato: ' + (running ? 'in corso' : 'attesa') + (lastResidual ? ' · residuo: ' + safeHtmlText(lastResidual.residual) : '');
+      const pills = autoCalibTrace.map(function (row) {
+        const cls = row.status || 'skip';
+        const tagText = row.tags == null ? 'tag ?' : (row.tags + ' tag');
+        const reason = row.reason ? String(row.reason) : '';
+        const residual = row.residual ? (' · ' + row.residual) : '';
+        return '<div class="auto-step-pill ' + cls + '"><b>#' + row.step + ' · ' + cls + '</b>' + safeHtmlText(tagText + residual) + '<br>' + safeHtmlText(reason) + '</div>';
+      }).join('');
+      el.innerHTML = '<div>' + summary + '</div><div class="auto-trace">' + pills + '</div>';
+    }
+
+    function renderCalibrationDebugGraph(quality) {
+      const el = q('calibDebugGraph');
+      if (!el) return;
+      const samples = Array.isArray(quality && quality.sample_debug) ? quality.sample_debug : [];
+      if (!samples.length) {
+        el.textContent = 'Nessun sample diagnostico disponibile.';
+        return;
+      }
+      const trend = Array.isArray(quality.residual_trend) ? quality.residual_trend : [];
+      const transLimitCm = Number(quality.max_translation_rms_m || 0.010) * 100;
+      const rotLimitDeg = Number(quality.max_rotation_rms_deg || 3.0);
+      const centers = samples.map(s => s.base_target_center_m).filter(v => Array.isArray(v) && v.length >= 3);
+      const tx = centers.map(v => Number(v[0]));
+      const ty = centers.map(v => Number(v[1]));
+      const minX = Math.min.apply(null, tx), maxX = Math.max.apply(null, tx);
+      const minY = Math.min.apply(null, ty), maxY = Math.max.apply(null, ty);
+      const sx = x => 20 + 260 * ((Number(x) - minX) / Math.max(0.001, maxX - minX));
+      const sy = y => 150 - 120 * ((Number(y) - minY) / Math.max(0.001, maxY - minY));
+      const points = centers.map(function (v, i) {
+        const row = samples[i] || {};
+        const terr = Number(row.translation_error_m || 0) * 100;
+        const rerr = Number(row.rotation_error_deg || 0);
+        const bad = terr > 5 || rerr > 12;
+        return '<circle cx="' + sx(v[0]).toFixed(1) + '" cy="' + sy(v[1]).toFixed(1) + '" r="' + (bad ? 5 : 4) + '" fill="' + (bad ? '#ff7b86' : '#6ef2a7') + '"><title>sample ' + row.index + ' · ' + terr.toFixed(1) + 'cm · ' + rerr.toFixed(1) + '°</title></circle>';
+      }).join('');
+      const trendSvg = trend.length ? (function () {
+        const maxTransCm = Math.max(transLimitCm * 2, ...trend.map(r => Number(r.translation_rms_m || 0) * 100));
+        const maxRotDeg = Math.max(rotLimitDeg * 2, ...trend.map(r => Number(r.rotation_rms_deg || 0)));
+        const x = (i) => 25 + 250 * (i / Math.max(1, trend.length - 1));
+        const yTrans = (cm) => 140 - 115 * (Number(cm) / Math.max(0.001, maxTransCm));
+        const yRot = (deg) => 140 - 115 * (Number(deg) / Math.max(0.001, maxRotDeg));
+        const transPts = trend.map((r, i) => x(i).toFixed(1) + ',' + yTrans(Number(r.translation_rms_m || 0) * 100).toFixed(1)).join(' ');
+        const rotPts = trend.map((r, i) => x(i).toFixed(1) + ',' + yRot(Number(r.rotation_rms_deg || 0)).toFixed(1)).join(' ');
+        const transLimitY = yTrans(transLimitCm).toFixed(1);
+        const rotLimitY = yRot(rotLimitDeg).toFixed(1);
+        return '<div style="margin-top:10px">Trend residuo: deve scendere sotto ' + transLimitCm.toFixed(1) + 'cm e ' + rotLimitDeg.toFixed(1) + '°</div><svg viewBox="0 0 300 160" style="width:100%;max-width:520px;height:160px;margin-top:6px;background:#081f30;border-radius:10px"><rect x="25" y="20" width="250" height="120" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.18)"/><line x1="25" x2="275" y1="' + transLimitY + '" y2="' + transLimitY + '" stroke="#6ef2a7" stroke-dasharray="4 3"/><line x1="25" x2="275" y1="' + rotLimitY + '" y2="' + rotLimitY + '" stroke="#8fd3ff" stroke-dasharray="4 3"/><polyline points="' + transPts + '" fill="none" stroke="#ffb86b" stroke-width="3"/><polyline points="' + rotPts + '" fill="none" stroke="#8fd3ff" stroke-width="3"/></svg><div>arancio = cm, azzurro = gradi, linee tratteggiate = soglie</div>';
+      })() : '<div style="margin-top:10px">Trend residuo: disponibile da 8 sample.</div>';
+      const rows = samples.map(function (row) {
+        const terr = Number(row.translation_error_m || 0) * 100;
+        const rerr = Number(row.rotation_error_deg || 0);
+        const tag = row.visible_marker_count == null ? '?' : row.visible_marker_count;
+        const img = row.reprojection_rms_px == null ? '?' : Number(row.reprojection_rms_px).toFixed(2);
+        const w = Math.min(100, Math.max(2, terr * 4));
+        const bad = terr > 5 || rerr > 12;
+        return '<div style="margin-top:5px;color:' + (bad ? '#ffb3ba' : '#dff8ff') + '">#' + row.index + ' · err ' + terr.toFixed(1) + 'cm / ' + rerr.toFixed(1) + '° · tag ' + tag + ' · img ' + img + 'px<div style="height:5px;border-radius:999px;background:rgba(255,255,255,.14)"><span style="display:block;height:5px;width:' + w.toFixed(0) + '%;border-radius:999px;background:' + (bad ? '#ff7b86' : '#6ef2a7') + '"></span></div></div>';
+      }).join('');
+      const residual = formatCalibResidual(quality);
+      const worst = quality && quality.worst_sample ? (' · peggiore #' + quality.worst_sample.index) : '';
+      const solver = quality && quality.residual ? quality.residual : {};
+      const solverInfo = solver.solver_method ? ('<div>Solver: ' + solver.solver_method + ' · ' + solver.solver_variant + (solver.candidate_inverted ? ' · invertito' : '') + '</div>') : '';
+      el.innerHTML = '<div>Residuo: ' + residual + worst + '</div>' + solverInfo + trendSvg + '<div style="margin-top:10px">Scatter target ricostruito dai sample:</div><svg viewBox="0 0 300 170" style="width:100%;max-width:520px;height:170px;margin-top:8px;background:#081f30;border-radius:10px"><rect x="20" y="20" width="260" height="130" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.18)"/>' + points + '</svg><div style="margin-top:8px">' + rows + '</div>';
+    }
+
+    function applyCalibrationQuality(quality) {
+      if (!quality || !quality.ok) return;
+      const count = Number(quality.sample_count || 0);
+      const progress = Number(quality.progress_percent || 0);
+      setKpi('calibProgress', progress + '% · ' + count + ' / 8');
+      setKpi('calibResidualState', formatCalibResidual(quality));
+      renderCalibrationDebugGraph(quality);
+      const ready = !!quality.build_ready;
+      calibrationBuildReady = ready;
+      q('btn6dBuild').disabled = !ready;
+      updateCalibrationPokaYoke();
+      if (ready) {
+        setCalibGuide('good', 'Qualità OK: premi 5', 'Residuo provvisorio sotto soglia. Ora puoi premere “5. Calcola hand-eye 6D”.');
+      } else if (count >= 8 && quality.next_action === 'sessione_incoerente_reset') {
+        const worst = quality.worst_sample && quality.worst_sample.index ? (' Peggiore sample: #' + quality.worst_sample.index + '.') : '';
+        setCalibGuide('bad', 'Sessione incoerente: rifai pulito', 'I sample non bastano se sono incompatibili. Residuo attuale: ' + formatCalibResidual(quality) + '.' + worst + ' Premi 1 e rifai: prima salva viste nuove, poi da 8 sample salva solo se migliora il residuo.');
+      } else if (count >= 8 && quality.next_action === 'residuo_alto_non_calcolare') {
+        setCalibGuide('bad', 'Non calcolare ancora: residuo alto', 'Aggiungi viste diverse. Residuo attuale: ' + formatCalibResidual(quality) + '.');
+      }
+    }
+
+    function applyCalibrationLiveStatus(d) {
+      const marker = (d && d.marker) || {};
+      const novelty = (d && d.novelty) || {};
+      const quality = (d && d.quality) || {};
+      applyCalibrationQuality(quality);
+      if (marker.ok) {
+        const methodText = marker.pose_method ? (' · ' + String(marker.pose_method)) : '';
+        const tagText = String(marker.visible_marker_count || 0) + ' tag · RMS ' + Number(marker.reprojection_rms_px || 0).toFixed(2) + ' px' + methodText;
+        setKpi('calibTargetState', tagText);
+        calibrationSaveAllowed = false;
+        if (marker.pose_method === 'tag_centers' && novelty.useful) {
+          setKpi('calibLiveState', 'NON SALVARE · solo centri');
+          setCalibGuide('bad', 'Non salvare: AprilGrid stimata solo dai centri', 'Vede i tag, ma la posa da corner è stata scartata. Con i soli centri la calibrazione può divergere. Cambia orientamento/distanza finché compare tag_corners.');
+          setDiag('Live calibrazione 6D', d);
+          updateCalibrationPokaYoke();
+          return;
+        }
+        if (novelty.useful && d.save_recommended && d.residual_improves === true) {
+          calibrationSaveAllowed = true;
+          setKpi('calibLiveState', 'MIGLIORA RESIDUO · salva');
+          setCalibGuide('good', 'Questo sample migliora: premi 4', 'Il residuo previsto migliora. Premi “4. Salva sample + HOLD”. Delta posa: ' + ((Number(novelty.min_translation_delta_m || 0) * 100).toFixed(1)) + ' cm / ' + Number(novelty.min_rotation_delta_deg || 0).toFixed(1) + '°.');
+        } else if (novelty.useful && d.save_recommended) {
+          calibrationSaveAllowed = true;
+          setKpi('calibLiveState', 'VISTA NUOVA · salva');
+          setCalibGuide('good', 'Vista nuova: premi 4', 'Non posso ancora giudicare il residuo: servono almeno 8 sample. Questa vista è diversa e AprilGrid è valida, quindi puoi salvare.');
+        } else if (novelty.useful && d.residual_improves === false) {
+          setKpi('calibLiveState', 'NON SALVARE · peggiora');
+          setCalibGuide('bad', 'Non salvare: peggiora il residuo', 'La vista è nuova, ma il residuo previsto peggiora o non migliora. Cambia orientamento/posizione prima di salvare.');
+        } else {
+          setKpi('calibLiveState', 'troppo simile');
+          setCalibGuide('', 'Muovi ancora: vista troppo simile', 'Cambia di più posizione o orientamento del polso. Non salvare sample duplicati.');
+        }
+      } else {
+        calibrationSaveAllowed = false;
+        setKpi('calibLiveState', 'target non valido');
+        setKpi('calibTargetState', marker.reason || 'non visto');
+        setCalibGuide('bad', 'AprilGrid non valida in questa vista', 'Orientati sulla griglia: serve AprilGrid visibile prima di salvare.');
+      }
+      updateCalibrationPokaYoke();
+      setDiag('Live calibrazione 6D', d);
+    }
+
+    async function tickCalibrationLive() {
+      if (calibLiveInFlight) return;
+      calibLiveInFlight = true;
+      try {
+        const d = await api('/api/pick/metric/calibration/live_status', 'POST', {}, 70000);
+        applyCalibrationLiveStatus(d);
+      } catch (e) {
+        calibrationSaveAllowed = false;
+        updateCalibrationPokaYoke();
+        setKpi('calibLiveState', 'errore live');
+      } finally {
+        calibLiveInFlight = false;
+      }
+    }
+
+    function startCalibrationLive() {
+      if (calibLiveTimer) return;
+      calibrationFocusActive = true;
+      calibrationSaveAllowed = false;
+      stopDepthMonitor();
+      stopRealtimeMonitor();
+      setCalibrationFocus(true);
+      updateCalibrationPokaYoke();
+      setStatus('Modalità focus calibrazione: risorse dedicate al live hand-eye', true);
+      const loop = async function () {
+        if (!calibLiveTimer) return;
+        await tickCalibrationLive();
+        if (calibLiveTimer) calibLiveTimer = setTimeout(loop, 900);
+      };
+      calibLiveTimer = -1;
+      loop();
+    }
+
+    function stopCalibrationLive() {
+      if (calibLiveTimer) clearTimeout(calibLiveTimer);
+      calibLiveTimer = null;
+      calibrationFocusActive = false;
+      calibrationSaveAllowed = false;
+      setCalibrationFocus(false);
+      updateCalibrationPokaYoke();
+      setKpi('calibLiveState', 'fermato');
+      setStatus('Guida live calibrazione 6D fermata', true);
+    }
+
+    function setCalibrationFocus(active) {
+      [
+        'btnFixedRefresh6d', 'btnFixedStartDepth', 'btnDepthStart', 'btnReleaseMonitor',
+        'btn6dPreview', 'btn6dClusterProbe', 'btn6dDebugGraphic', 'btn6dPregrasp', 'btn6dExecute',
+        'btnGoLeftPose', 'btnGoRightPose', 'btnLeft6dDebug', 'btnRight6dDebug',
+        'btnSendPoseSliders'
+      ].forEach(function (id) {
+        const el = q(id);
+        if (el) el.disabled = !!active;
+      });
+    }
+
+    async function startAutoCalibration() {
+      const status = await api('/api/pick/metric/calibration', 'GET', null, 30000);
+      const existingSamples = Number((status && status.sample_count) || 0);
+      const message = existingSamples > 0
+        ? ('Riprendere AUTO calibrazione 6D dai ' + existingSamples + ' sample già salvati? Non resetto la sessione. Area libera, AprilGrid ferma, mano pronta su HOLD.')
+        : 'Avviare AUTO calibrazione 6D? Il braccio si muoverà in piccole pose. Area libera, AprilGrid ferma, mano pronta su HOLD.';
+      const accepted = window.confirm(message);
+      if (!accepted) return;
+      autoCalibRunning = true;
+      autoCalibStep = existingSamples;
+      autoCalibTrace = [];
+      if (existingSamples > 0) {
+        autoCalibTrace = Array.from({ length: existingSamples }, function (_, i) {
+          return { step: i + 1, status: 'saved', reason: 'sample già presente', tags: '?' };
+        });
+      }
+      renderAutoCalibrationDebug();
+      calibrationSessionStarted = true;
+      calibrationSaveAllowed = false;
+      setCalibrationFocus(true);
+      stopDepthMonitor();
+      stopRealtimeMonitor();
+      q('btn6dAutoCalib').disabled = true;
+      q('btn6dAutoCalibTop').disabled = true;
+      q('autoCalibState').textContent = existingSamples > 0
+        ? ('Auto: riprendo da sample ' + (existingSamples + 1) + ' partendo dal preset scan SX...')
+        : 'Auto: azzero sessione e parto dal preset scan SX...';
+      if (existingSamples === 0) {
+        const reset = await api('/api/pick/metric/calibration', 'DELETE', {}, 70000);
+        if (!reset.ok) {
+          q('autoCalibState').textContent = 'Auto: reset fallito';
+          autoCalibRunning = false;
+          q('btn6dAutoCalib').disabled = false;
+          q('btn6dAutoCalibTop').disabled = false;
+          return;
+        }
+      }
+      autoCalibBase = null;
+      await refreshHandeyeCalibration();
+      autoCalibrationLoop();
+    }
+
+    function stopAutoCalibration() {
+      autoCalibRunning = false;
+      q('btn6dAutoCalib').disabled = false;
+      q('btn6dAutoCalibTop').disabled = false;
+      q('autoCalibState').textContent = 'Auto fermata.';
+      renderAutoCalibrationDebug();
+      setCalibrationFocus(false);
+      setStatus('Auto calibrazione fermata', true);
+    }
+
+    async function autoCalibrationLoop() {
+      if (!autoCalibRunning) return;
+      if (autoCalibStep >= 28) {
+        stopAutoCalibration();
+        setCalibGuide('bad', 'Auto fermata: limite step raggiunto', 'Non insisto oltre: controlla il grafico e la diagnostica solver/FK.');
+        return;
+      }
+      q('autoCalibState').textContent = 'Auto step ' + (autoCalibStep + 1) + ': muovo/verifico/salvo se valido...';
+      setStatus('Auto calibrazione step ' + (autoCalibStep + 1), null);
+      autoCalibTrace.push({ step: autoCalibStep + 1, status: 'running', reason: 'muovo/verifico/salvo' });
+      renderAutoCalibrationDebug();
+      try {
+        const d = await api('/api/pick/metric/calibration/auto_step', 'POST', {
+          confirm: 'AUTO_CALIBRATE_6D',
+          step: autoCalibStep,
+          max_samples: 10,
+        }, 180000);
+        setDiag('Auto calibrazione 6D', d);
+        if (!d.ok) {
+          const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
+          if (traceRow) {
+            traceRow.status = 'error';
+            traceRow.reason = d.reason || 'server_non_ok';
+            traceRow.tags = d.marker && d.marker.visible_marker_count;
+            traceRow.residual = d.quality ? formatCalibResidual(d.quality) : null;
+          }
+          renderAutoCalibrationDebug();
+          autoCalibRunning = false;
+          q('btn6dAutoCalib').disabled = false;
+          q('btn6dAutoCalibTop').disabled = false;
+          q('autoCalibState').textContent = 'Auto bloccata: ' + (d.reason || 'server_non_ok');
+          setCalibGuide('bad', 'Auto calibrazione bloccata', 'Il server ha rifiutato lo step: ' + (d.reason || 'server_non_ok') + '. Controlla daemon/HOLD e diagnostica.');
+          return;
+        }
+        if (d.quality) applyCalibrationQuality(d.quality);
+        await refreshHandeyeCalibration();
+        const msg = 'Auto step ' + (autoCalibStep + 1) + ': ' + (d.saved ? 'sample salvato' : ('skip · ' + (d.reason || 'non valido')));
+        const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
+        if (traceRow) {
+          traceRow.status = d.saved ? 'saved' : 'skip';
+          traceRow.reason = d.saved ? 'sample salvato' : (d.reason || 'non valido');
+          traceRow.tags = d.marker && d.marker.visible_marker_count;
+          traceRow.residual = d.quality ? formatCalibResidual(d.quality) : null;
+        }
+        renderAutoCalibrationDebug();
+        q('autoCalibState').textContent = msg;
+        setKpi('calibLastAction', msg);
+        if (d.done || (d.build && d.build.ok)) {
+          autoCalibRunning = false;
+          q('btn6dAutoCalib').disabled = false;
+          q('btn6dAutoCalibTop').disabled = false;
+          setCalibGuide('good', 'Auto calibrazione completata', 'Calibrazione valida salvata. Ora puoi passare a riconoscimento cuboide/pregrasp.');
+          return;
+        }
+      } catch (e) {
+        const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
+        if (traceRow) {
+          traceRow.status = 'error';
+          traceRow.reason = String(e);
+        }
+        renderAutoCalibrationDebug();
+        q('autoCalibState').textContent = 'Auto errore: ' + String(e);
+        autoCalibRunning = false;
+        q('btn6dAutoCalib').disabled = false;
+        q('btn6dAutoCalibTop').disabled = false;
+        setCalibGuide('bad', 'Auto calibrazione interrotta', String(e));
+        return;
+      }
+      autoCalibStep += 1;
+      if (autoCalibRunning) setTimeout(autoCalibrationLoop, 800);
+    }
+
+    async function refreshHandeyeCalibration() {
+      try {
+        const d = await api('/api/pick/metric/calibration', 'GET');
+        const count = Number(d.sample_count || 0);
+        calibrationSessionStarted = calibrationSessionStarted || count > 0 || calibrationFocusActive;
+        applyCalibrationQuality(d.quality);
+        q('calibNextPose').textContent = calibrationPoseHints[Math.min(count, calibrationPoseHints.length - 1)];
+        const cal = d.calibration || {};
+        grasp6dCalibrationOk = !!cal.ok;
+        update6dWorkflow();
+        if (!(d.quality && d.quality.sample_count >= 8)) updateCalibGuideFromCount(count, grasp6dCalibrationOk);
+        setKpi('calibSavedState', cal.ok ? 'VALIDA · ' + (cal.sample_count || count) + ' sample' : 'non presente');
+        const history = Array.isArray(d.history) ? d.history.slice().reverse().slice(0, 20) : [];
+        q('calibHistory').textContent = history.length ? history.map(function (row) {
+          const parts = [String(row.at || ''), String(row.event || '')];
+          if (row.sample_count != null) parts.push('sample ' + row.sample_count);
+          if (row.visible_marker_count != null) parts.push(row.visible_marker_count + ' tag');
+          if (row.reprojection_rms_px != null) parts.push('RMS img ' + Number(row.reprojection_rms_px).toFixed(2) + ' px');
+          if (row.translation_rms_m != null) parts.push('RMS xyz ' + (Number(row.translation_rms_m) * 100).toFixed(1) + ' cm');
+          if (row.rotation_rms_deg != null) parts.push('RMS rot ' + Number(row.rotation_rms_deg).toFixed(1) + '°');
+          if (row.reason) parts.push(String(row.reason));
+          return parts.join(' · ');
+        }).join('\n') : 'Nessun evento registrato.';
+      } catch (e) {
+        setKpi('calibLastAction', 'errore stato');
+      }
+    }
+
     function applyLegacySummary(d) {
       setKpi('legacyOffsets', compactNumbers(d && d.joint_offset_deg_effective, 1));
       setKpi('legacyTarget', compactNumbers(d && d.target_servo_deg, 1));
       setKpi('legacyModel', d && d.has_teach_model ? 'attivo' : 'non attivo');
+    }
+
+    function refresh6dDebugImages() {
+      q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=0&t=' + Date.now();
+    }
+
+    function apply6dPreviewKpis(d) {
+      const rgbd = (d && d.rgbd) || {};
+      const box = (d && d.box) || {};
+      const source = box.source ? (' · ' + box.source) : '';
+      const heightSource = box.height_source ? (' · h=' + box.height_source) : '';
+      setKpi('grasp6dReason', (d && d.reason ? String(d.reason) : 'OK') + source + heightSource);
+      setKpi('grasp6dDepthValid', rgbd.depth_valid_fraction == null ? '—' : Number(rgbd.depth_valid_fraction).toFixed(3));
+      setKpi('grasp6dCenter', compactNumbers(box.center_camera_m, 3) + ' m');
+      setKpi('grasp6dDimensions', compactNumbers(box.dimensions_m, 3) + ' m');
+      const pts = box.point_count == null ? '—' : String(box.point_count);
+      const above = box.points_above_floor == null ? '' : (' · sopra piano ' + box.points_above_floor);
+      setKpi('grasp6dPointCount', pts + above);
+      grasp6dDetectionOk = !!(box && box.ok);
+      update6dWorkflow();
+    }
+
+    function apply6dClusterProbeKpis(d) {
+      const s = (d && d.summary) || {};
+      const valid = s.valid_observations == null ? '?' : String(s.valid_observations);
+      const total = s.total_observations == null ? '?' : String(s.total_observations);
+      const spread = s.spread_m == null ? 'n/d' : (Number(s.spread_m) * 1000).toFixed(1) + ' mm';
+      const rot = s.rotation_spread_deg == null ? 'n/d' : Number(s.rotation_spread_deg).toFixed(1) + ' deg';
+      setKpi('grasp6dClusterStability', (s.ok ? 'OK' : 'NO') + ' - ' + valid + '/' + total + ' - ' + spread + ' - ' + rot);
+      if (Array.isArray(d && d.observations)) {
+        const last = d.observations.slice().reverse().find(function (o) { return o && o.ok; });
+        if (last) apply6dPreviewKpis(last);
+      }
+      update6dWorkflow();
+    }
+
+    async function run6dClusterProbe() {
+      setStatus('Verifica stabilita cluster 6D...', null);
+      setBusy(true, 'Cluster 6D');
+      try {
+        const d = await api('/api/pick/grasp6d/cluster_probe', 'POST', { frames: 5, interval_s: 0.18 }, 180000);
+        apply6dClusterProbeKpis(d);
+        setDiag('Stabilita cluster 6D', d);
+        await refresh6dLogs();
+        const s = (d && d.summary) || {};
+        setStatus(
+          s.ok ? 'Cluster stabile: puoi fare prima il pregrasp.' : 'Cluster non stabile: usa debug grafico o riposiziona oggetto.',
+          !!s.ok
+        );
+      } catch (e) {
+        setStatus('Stabilita cluster 6D: ' + String(e), false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function adjust6dThreshold(action, reset) {
+      const d = await callAndShow('Soglie 6D', '/api/pick/grasp6d/tuning', 'POST', reset ? { reset: true } : { action: action });
+      if (d && d.ok) startDepthMonitor();
+    }
+
+    async function run6dDebug() {
+      setStatus('Diagnostica 6D grafica...', null);
+      setBusy(true, 'Diagnostica 6D');
+      try {
+        await api('/api/pick/snapshot', 'POST', {}, 120000);
+        let preview = await api('/api/pick/grasp6d/preview', 'POST', {}, 120000);
+        if (!preview.ok) {
+          preview = await enrichFailure('Preview 6D', preview);
+        }
+        const diag = await api('/api/pick/diagnostic', 'GET', null, 120000);
+        apply6dPreviewKpis(preview);
+        refresh6dDebugImages();
+        setDiag('Diagnostica 6D grafica', { preview: preview, diagnostic: diag });
+        setStatus(summarizeResult('Diagnostica 6D', preview), !!preview.ok);
+      } catch (e) {
+        setStatus('Diagnostica 6D: ' + String(e), false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function gotoSidePose(side) {
+      const variant = side === 'left' ? 'left' : 'right';
+      return await callAndShow('Goto presa ' + side, '/api/presets/scan/goto', 'POST', { variant: variant }, 180000);
+    }
+
+    async function runSide6dDebug(side) {
+      const moved = await gotoSidePose(side);
+      if (!moved || !moved.ok) return;
+      const d = await api('/api/pick/grasp6d/preview', 'POST', {}, 120000);
+      setDiag('Presa 6D ' + side, d);
+      renderScanResult(d);
+      apply6dPreviewKpis(d);
+      refresh6dDebugImages();
+      await refreshGrasp6dStatus(false);
+      await refresh6dLogs();
+      setStatus(summarizeResult('Presa 6D ' + side, d), !!d.ok);
+    }
+
+    async function refresh6dLogs() {
+      try {
+        const [runtime, lastRun, daemonLog] = await Promise.all([
+          api('/api/daemon/status', 'GET'),
+          api('/api/pick/grasp6d/last_run', 'GET'),
+          api('/api/logs/d1_command_daemon', 'GET'),
+        ]);
+        q('holdRuntimeLog').textContent = JSON.stringify(runtime, null, 2);
+        q('graspLastRunLog').textContent = lastRun && lastRun.ok ? JSON.stringify(lastRun.run, null, 2) : JSON.stringify(lastRun, null, 2);
+        q('commandDaemonLog').textContent = daemonLog && daemonLog.ok ? (daemonLog.tail || '(log vuoto)') : JSON.stringify(daemonLog, null, 2);
+        const errs = [];
+        if (runtime && runtime.command_daemon && runtime.command_daemon.last_error) errs.push('daemon: ' + runtime.command_daemon.last_error);
+        if (lastRun && lastRun.run && lastRun.run.reason) errs.push('ultimo_run: ' + lastRun.run.reason);
+        if (lastRun && lastRun.run && Array.isArray(lastRun.run.steps)) {
+          const bad = lastRun.run.steps.filter(function (s) { return s && s.ok === false; }).slice(-6);
+          bad.forEach(function (s) { errs.push((s.name || 'step') + ': ' + (s.reason || 'ok=false')); });
+        }
+        q('graspErrorLog').textContent = errs.length ? errs.join('\n') : 'Nessun errore sintetico.';
+      } catch (e) {
+        q('graspErrorLog').textContent = String(e);
+      }
     }
 
     function renderScanResult(payload) {
@@ -784,155 +1668,255 @@
         const frame = q('hermesFrame');
         if (!frame.src) frame.src = frame.dataset.src;
       }
+      if (name === 'Motor') {
+        const frame = q('motorFrame');
+        if (!frame.src) frame.src = frame.dataset.src;
+        refreshThermal();
+      }
     }
     q('tabTeachBtn').onclick = () => selectTab('Teach');
     q('tabMoveBtn').onclick = () => selectTab('Move');
     q('tabMotorBtn').onclick = () => selectTab('Motor');
     q('tabHermesBtn').onclick = () => selectTab('Hermes');
+    bindClick('btnHoldNowFixed', holdNow);
+    bindClick('btnFixedRefresh6d', run6dDebug);
+    bindClick('btnFixedStartDepth', startDepthMonitor);
+    bindClick('btnReadPoseSliders', readPoseToSliders);
+    bindClick('btnSendPoseSliders', sendSliderPose);
 
-    bindSlider('scanRight', 'scanRightVal', 0);
-    bindSlider('scanLeft', 'scanLeftVal', 0);
-    bindSlider('poseJ0', 'poseJ0Val', 1);
-    bindSlider('poseJ1', 'poseJ1Val', 1);
-    bindSlider('poseJ2', 'poseJ2Val', 1);
-    bindSlider('poseJ3', 'poseJ3Val', 1);
-    bindSlider('poseJ4', 'poseJ4Val', 1);
-    bindSlider('poseJ5', 'poseJ5Val', 1);
-    bindSlider('poseJ6', 'poseJ6Val', 1);
+    ['poseJ0', 'poseJ1', 'poseJ2', 'poseJ3', 'poseJ4', 'poseJ5', 'poseJ6'].forEach(function (id) {
+      bindSlider(id, id + 'Val', 1);
+    });
     bindSlider('tempWarn', 'tempWarnVal', 0);
     bindSlider('tempCrit', 'tempCritVal', 0);
-    bindMjpeg('wristStream', '/api/orbbec/live.mjpg', 'Camera polso');
-    bindMjpeg('frontStream', '/api/front/live.mjpg', 'Camera frontale');
+    bindSnapshot('wristStream', '/api/orbbec/last.jpg', 'Camera polso', 2500);
+    bindSnapshot('frontStream', '/api/front/last.jpg', 'Camera frontale', 2500);
     refreshRgbStatus();
-    refreshTeachPrograms();
-    refreshZeroPoseStatus();
-    setInterval(refreshRgbStatus, 5000);
+    refreshFixedSafetyState();
+    refreshTeachSamples();
+    readPoseToSliders().catch(function () {});
+    setInterval(function () {
+      if (document.hidden) return;
+      refreshRgbStatus();
+    }, 12000);
 
-    q('btnCouple').onclick = () => callAndShow('Coppia ON', '/api/arm/couple', 'POST', {});
-    q('btnEnable').onclick = () => callAndShow('Enable motori', '/api/joints/enable', 'POST', { with_power: true, mode: 1 });
-    q('btnPower').onclick = () => callAndShow('Power ON', '/api/joints/power', 'POST', {});
-    q('btnHold').onclick = () => callAndShow('Hold', '/api/joints/hold', 'POST', {});
-    q('btnRelease').onclick = releaseArm;
-    q('btnZero').onclick = () => callAndShow('Zero', '/api/joints/zero', 'POST', {});
-    q('btnHoldNow').onclick = holdNow;
-    q('btnSaveZeroPose').onclick = saveZeroPose;
-    q('btnGotoZeroPose').onclick = gotoZeroPose;
-    q('btnSavePose').onclick = addTeachWaypoint;
-    q('btnRefreshPrograms').onclick = () => refreshTeachPrograms();
-    q('btnCreateProgram').onclick = createTeachProgram;
+    bindClick('btnDepthStart', startDepthMonitor);
+    bindClick('btnDepthStop', stopDepthMonitor);
+    bindClick('btnReleaseMonitor', releaseAndMonitor);
+    bindClick('btnTeachRelease', releaseArm);
+    bindClick('btnTeachCapture', captureTeachGrasp);
+    bindClick('btnTeachScanScenario', scanTeachScenario);
+    bindClick('btnTeachReset', async () => {
+      const accepted = window.confirm('Azzerare i campioni Teach 2D e iniziare gli 8 scenari guidati? Il modello precedente verrà disattivato.');
+      if (!accepted) return;
+      const d = await callAndShow('Nuova calibrazione 2D', '/api/pick/teach/samples', 'DELETE', {}, 70000);
+      pendingTeachVision = null;
+      pendingTeachScenario = null;
+      q('teachScanState').textContent = 'Scansione fresca richiesta.';
+      setKpi('teachLastAction', d && d.ok ? 'sessione azzerata' : 'reset fallito');
+      await refreshTeachSamples();
+    });
+    bindClick('btnTeachBuild', async () => {
+      const d = await callAndShow('Calcola calibrazione 2D', '/api/pick/teach/build_model', 'POST', { guided: true }, 70000);
+      const teachBuildLabel = d && d.ok
+        ? 'modello 2D attivo'
+        : ('calcolo rifiutato · ' + ((d && d.reason) || 'copertura incompleta'));
+      setKpi('teachLastAction', teachBuildLabel);
+      await refreshTeachSamples();
+    });
 
-    q('btnRightScan').onclick = () => sideScanDetect('right');
-    q('btnLeftScan').onclick = () => sideScanDetect('left');
-    q('btnDetectNow').onclick = async () => {
-      const d = await callAndShow('Detection', '/api/pick/detect', 'POST', { capture_if_missing: true }, 120000);
-      if (d) renderScanResult(d);
-    };
-    q('btnTestGrasp').onclick = async () => {
-      const accepted = window.confirm(
-        'Eseguire la presa 6D completa? Verifica prima che il pregrasp sia libero e che nessuno sia vicino al braccio.'
-      );
-      if (!accepted) {
-        setStatus('Presa annullata: HOLD mantenuto.', true);
-        return;
-      }
-      await callAndShow(
-        'Prova presa', '/api/pick/grasp/goto', 'POST',
-        { confirm: 'EXECUTE_GRASP6D' }, 300000
-      );
-    };
-    q('btnLegacyPreview').onclick = async () => {
-      const d = await callAndShow('Preview presa legacy', '/api/pick/grasp_legacy/preview', 'POST', {}, 120000);
-      if (d) {
-        renderScanResult(d);
-        applyLegacySummary(d);
-      }
-    };
-    q('btnLegacyExecute').onclick = async () => {
+    bindClick('btnRightScan', () => sideScanDetect('right'));
+    bindClick('btnLeftScan', () => sideScanDetect('left'));
+    bindClick('btnGoLeftPose', () => gotoSidePose('left'));
+    bindClick('btnGoRightPose', () => gotoSidePose('right'));
+    bindClick('btnLeft6dDebug', () => runSide6dDebug('left'));
+    bindClick('btnRight6dDebug', () => runSide6dDebug('right'));
+    bindClick('btnLegacyExecute', async () => {
       const accepted = window.confirm('Eseguire la presa legacy (scan 2D + offset)?');
       if (!accepted) return;
       const d = await callAndShow('Esegui presa legacy', '/api/pick/grasp_legacy/execute', 'POST', {}, 120000);
       if (d) applyLegacySummary(d);
-    };
-    q('btn6dStatus').onclick = () => refreshGrasp6dStatus(true);
-    q('btn6dPreview').onclick = async () => {
+    });
+    bindClick('btn6dPreview', async () => {
       const d = await callAndShow('Preview 6D', '/api/pick/grasp6d/preview', 'POST', {}, 120000);
       if (d) {
         renderScanResult(d);
+        apply6dPreviewKpis(d);
+        refresh6dDebugImages();
         refreshGrasp6dStatus(false);
       }
-    };
-    q('btn6dPregrasp').onclick = async () => {
-      await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', {}, 300000);
-    };
-    q('btn6dExecute').onclick = async () => {
-      const accepted = window.confirm('Confermi presa 6D completa? Usa solo se preview e pregrasp sono OK.');
+    });
+    bindClick('btn6dClusterProbe', run6dClusterProbe);
+    bindClick('btn6dPregrasp', async () => {
+      const accepted = window.confirm('Muovere il braccio solo fino al pregrasp 6D? Verifica che il volume sia libero.');
+      if (accepted) await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', {}, 300000);
+    });
+    bindClick('btn6dDebugGraphic', run6dDebug);
+    bindClick('btn6dExecute', async () => {
+      const accepted = window.confirm('Eseguire la presa 6D completa? Area libera e box correttamente evidenziato nella point cloud?');
+      if (accepted) await callAndShow('Grasp 6D', '/api/pick/grasp6d/execute', 'POST', { confirm: 'EXECUTE_GRASP6D' }, 300000);
+    });
+    bindClick('btnRefresh6dLogs', refresh6dLogs);
+    bindClick('btnLowerHeight', () => adjust6dThreshold('lower_height', false));
+    bindClick('btnLowerCluster', () => adjust6dThreshold('lower_cluster', false));
+    bindClick('btnLowerDimension', () => adjust6dThreshold('lower_dimension', false));
+    bindClick('btnResetThresholds', () => adjust6dThreshold('', true));
+    bindClick('btn6dCalibLive', startCalibrationLive);
+    bindClick('btn6dCalibLiveStop', stopCalibrationLive);
+    bindClick('btn6dAutoCalib', startAutoCalibration);
+    bindClick('btn6dAutoCalibTop', startAutoCalibration);
+    bindClick('btn6dAutoCalibStop', stopAutoCalibration);
+    bindClick('btn6dCalibReset', async () => {
+      const accepted = window.confirm('Azzerare i sample della sessione hand-eye? La calibrazione valida precedente resta attiva finché il nuovo calcolo non riesce.');
       if (!accepted) return;
-      await callAndShow('Presa 6D completa', '/api/pick/grasp6d/execute', 'POST', { confirm: 'EXECUTE_GRASP6D' }, 300000);
-    };
-    q('btn6dSample').onclick = async () => {
-      await callAndShow('Sample calibrazione 6D', '/api/pick/metric/calibration/sample', 'POST', {}, 120000);
+      calibrationSessionStarted = true;
+      calibrationSaveAllowed = false;
+      calibrationBuildReady = false;
+      updateCalibrationPokaYoke();
+      setCalibGuide('', 'Reset in corso', 'Sto cancellando i sample vecchi. Poi verifica AprilGrid e salva una nuova serie di pose.');
+      const d = await callAndShow('Nuova calibrazione hand-eye', '/api/pick/metric/calibration', 'DELETE', {}, 70000);
+      setKpi('calibLastAction', d && d.ok ? 'sessione azzerata' : 'reset fallito');
+      if (d && d.ok) {
+        setKpi('calibTargetState', 'da verificare');
+        setCalibGuide('', 'Sessione pulita: ora premi 2', 'Cuboide tolto e griglia ferma. Premi “2. Avvia guida live” e usa “Verifica AprilGrid” solo se il live non vede il target.');
+      } else {
+        setCalibGuide('bad', 'Reset fallito', 'Non continuare: controlla il messaggio di errore e riprova.');
+      }
+      await refreshHandeyeCalibration();
+    });
+    bindClick('btn6dCalibProbe', async () => {
+      stopDepthMonitor();
+      setKpi('calibTargetState', 'verifica in corso...');
+      setKpi('calibLastAction', 'sto cercando AprilGrid');
+      setCalibGuide('', 'Verifica in corso', 'Tengo il braccio fermo e controllo quanti tag AprilGrid vede la camera del polso.');
+      const d = await callAndShow('Verifica AprilGrid', '/api/pick/metric/calibration/probe', 'POST', {}, 120000);
+      const count = Number((d && d.visible_marker_count) || 0);
+      const rms = d && d.reprojection_rms_px;
+      const rmsText = rms == null ? 'RMS n/d' : ('RMS ' + Number(rms).toFixed(2) + ' px');
+      setKpi('calibTargetState', d && d.ok
+        ? (count + ' tag · ' + rmsText)
+        : ('non valido · ' + ((d && d.reason) || 'errore')));
+      setKpi('calibLastAction', d && d.ok ? 'AprilGrid verificato' : 'AprilGrid non valido');
+      if (d && d.ok) {
+        setCalibGuide('good', 'AprilGrid OK', count + ' tag visibili, ' + rmsText + '. Questo era solo un controllo: il flusso reale resta 1, 2, 3, 4, 5.');
+      } else {
+        setCalibGuide('bad', 'AprilGrid NON vista bene', 'Togli il cuboide, avvicina/orienta la camera verso la griglia, illumina meglio e ripremi “Verifica AprilGrid”. Errore: ' + ((d && d.reason) || 'sconosciuto'));
+      }
+    });
+    bindClick('btn6dCalibRelease', async () => {
+      stopDepthMonitor();
+      setCalibGuide('', 'Release richiesto', 'Tieni fisicamente il braccio. Dopo aver cambiato vista, premi “B. Salva sample + HOLD”.');
+      const ok = await releaseArm();
+      if (ok) {
+        setKpi('calibLastAction', 'RELEASE · sostieni il braccio');
+        setCalibGuide('', 'Ora muovi a mano', 'Guarda “Vista live”: prima di 8 sample salva viste nuove; da 8 sample salva solo se indica che migliora il residuo.');
+      } else {
+        setCalibGuide('bad', 'Release non riuscito', 'Non forzare il braccio. Premi HOLD ORA e verifica lo stato.');
+      }
+    });
+    bindClick('btn6dSample', async () => {
+      if (!calibrationSaveAllowed) {
+        setCalibGuide('bad', 'Salvataggio bloccato', 'Il live non sta raccomandando questo sample. Muovi ancora o riavvia la guida live.');
+        return;
+      }
+      calibrationSaveAllowed = false;
+      updateCalibrationPokaYoke();
+      stopDepthMonitor();
+      setStatus('Acquisizione marker e riattivazione HOLD...', null);
+      setCalibGuide('', 'Salvataggio sample in corso', 'Acquisisco AprilGrid e riattivo HOLD sulla posa corrente.');
+      const d = await callAndShow('Sample hand-eye + HOLD', '/api/pick/metric/calibration/sample', 'POST', {}, 120000);
+      const sampleLabel = d && d.ok
+        ? ('sample ' + d.sample_count + ' salvato · HOLD')
+        : ('fallito · HOLD ' + ((d && d.hold && d.hold.ok) ? 'attivo' : 'da verificare'));
+      setKpi('calibLastAction', sampleLabel);
+      if (d && d.ok) {
+        setKpi('calibTargetState', 'OK nel sample · ' + ((d.marker && d.marker.visible_marker_count) || '?') + ' tag');
+        updateCalibGuideFromCount(Number(d.sample_count || 0), false);
+        setCalibGuide('', 'Sample salvato: torna al passo 3', 'HOLD attivo. Premi “3. Release”, muovi in una nuova vista, poi aspetta che il live abiliti di nuovo il passo 4.');
+      } else {
+        setCalibGuide('bad', 'Sample non salvato', 'HOLD è stato richiesto comunque. Controlla che AprilGrid sia visibile e ripeti 3 Release -> 4 Salva sample.');
+      }
       await refreshGrasp6dStatus(false);
-    };
-    q('btn6dBuild').onclick = async () => {
-      await callAndShow('Build calibrazione 6D', '/api/pick/metric/calibration/build', 'POST', {}, 120000);
+      await refreshHandeyeCalibration();
+    });
+    bindClick('btn6dBuild', async () => {
+      setStatus('Build calibrazione: calcolo hand-eye dai sample raccolti...', null);
+      setCalibGuide('', 'Calcolo hand-eye 6D in corso', 'Uso i sample salvati per collegare camera del polso e braccio.');
+      const d = await callAndShow('Build calibrazione 6D', '/api/pick/metric/calibration/build', 'POST', {}, 120000);
+      const buildLabel = d && d.ok
+        ? 'calibrazione salvata'
+        : ('calcolo fallito · ' + ((d && d.reason) || 'controlla pose'));
+      setKpi('calibLastAction', buildLabel);
+      if (d && d.ok) {
+        setCalibGuide('good', 'Calibrazione 6D valida', 'Ora rimetti il cuboide e premi “Riconosci oggetto e prese”. Poi fai prima il pregrasp.');
+      } else {
+        setCalibGuide('bad', 'Calibrazione fallita: non usare la presa', 'Rifai una sessione pulita: 1, 2, poi salva con 4 solo quando il live indica vista nuova o miglioramento residuo. Errore: ' + ((d && d.reason) || 'sconosciuto'));
+      }
       await refreshGrasp6dStatus(false);
-    };
-    q('btn6dReset').onclick = async () => {
-      const accepted = window.confirm('Eliminare tutti i sample hand-eye 6D?');
-      if (!accepted) return;
-      await callAndShow('Reset sample 6D', '/api/pick/metric/calibration', 'DELETE', {}, 120000);
-      await refreshGrasp6dStatus(false);
-    };
-    q('btnReadPose').onclick = readPoseToSliders;
-    q('btnApplyPose').onclick = () => callAndShow('Applica posa', '/api/joints/jog', 'POST', { servo_deg: sliderPose() }, 70000);
-    q('btnHoldPose').onclick = () => callAndShow('Hold posa', '/api/joints/hold', 'POST', { servo_deg: sliderPose() }, 70000);
-
-    q('btnStand').onclick = () => baseMode('stand_up', true);
-    q('btnCrouch').onclick = () => baseMode('crouch', true);
-    q('btnBalance').onclick = () => baseMode('balance_hold', true);
-    q('btnDamping').onclick = () => baseMode('damping', true);
-    q('btnJoyOn').onclick = () => baseMode('joystick', true);
-    q('btnJoyOff').onclick = () => baseMode('joystick', false);
+      await refreshHandeyeCalibration();
+    });
+    bindClick('btnStand', () => baseMode('stand_up', true));
+    bindClick('btnCrouch', () => baseMode('crouch', true));
+    bindClick('btnBalance', () => baseMode('balance_hold', true));
+    bindClick('btnDamping', () => baseMode('damping', true));
+    bindClick('btnJoyOn', () => baseMode('joystick', true));
+    bindClick('btnJoyOff', () => baseMode('joystick', false));
 
     async function moveNudge(direction) {
       await callAndShow('Move ' + direction, '/api/base/move_nudge', 'POST', { direction: direction, duration_s: 0.35 });
     }
-    q('mvForward').onclick = () => moveNudge('forward');
-    q('mvBackward').onclick = () => moveNudge('backward');
-    q('mvLeft').onclick = () => moveNudge('left');
-    q('mvRight').onclick = () => moveNudge('right');
-    q('mvTurnLeft').onclick = () => moveNudge('turn_left');
-    q('mvTurnRight').onclick = () => moveNudge('turn_right');
-    q('mvStop').onclick = () => baseMode('damping', true);
+    bindClick('mvForward', () => moveNudge('forward'));
+    bindClick('mvBackward', () => moveNudge('backward'));
+    bindClick('mvLeft', () => moveNudge('left'));
+    bindClick('mvRight', () => moveNudge('right'));
+    bindClick('mvTurnLeft', () => moveNudge('turn_left'));
+    bindClick('mvTurnRight', () => moveNudge('turn_right'));
+    bindClick('mvStop', () => baseMode('damping', true));
 
     async function refreshThermal() {
       try {
-        const d = await api('/api/motor/thermal_status', 'GET');
+        const d = await api('/api/motor/thermal/status', 'GET');
         const el = q('thermalStatus');
         if (!d.ok) {
           el.textContent = 'Thermal read fail: ' + (d.reason || 'unknown');
           el.className = 'status bad';
           return;
         }
-        const maxT = (d.max_temp_c == null) ? 'n/a' : Number(d.max_temp_c).toFixed(1);
-        el.textContent = 'State: ' + d.state + ' | max temp: ' + maxT + ' C';
-        el.className = 'status ' + (d.state === 'critical' ? 'bad' : (d.state === 'warn' ? '' : 'ok'));
+        const maxT = (d.max_leg_temp_c == null) ? 'n/a' : Number(d.max_leg_temp_c).toFixed(1);
+        const mode = d.thermal_mode || 'normal';
+        const enabled = !!d.enabled;
+        el.textContent = 'AUTO-CROUCH ' + (enabled ? 'ATTIVO' : 'DISATTIVO') +
+          ' | modalità: ' + mode + ' | max: ' + maxT + ' °C' +
+          ' | bilancio: ' + d.balance_threshold_c + ' °C | crouch: ' + d.crouch_threshold_c + ' °C';
+        el.className = 'status ' + (!enabled || mode === 'crouch' ? 'bad' : 'ok');
+        if (d.balance_threshold_c != null) q('tempWarn').value = Number(d.balance_threshold_c);
+        if (d.crouch_threshold_c != null) q('tempCrit').value = Number(d.crouch_threshold_c);
+        q('tempWarn').dispatchEvent(new Event('input'));
+        q('tempCrit').dispatchEvent(new Event('input'));
       } catch (e) {
         q('thermalStatus').textContent = String(e);
         q('thermalStatus').className = 'status bad';
       }
     }
-    q('btnThermalRefresh').onclick = refreshThermal;
-    q('btnMotorReload').onclick = () => { q('motorFrame').src = '/motors?t=' + Date.now(); };
-    q('btnHermesReload').onclick = () => { q('hermesFrame').src = '/focus/hermes?t=' + Date.now(); };
-    q('btnThermalSave').onclick = async () => {
-      await callAndShow('Salva soglie termiche', '/api/motor/thermal_settings', 'POST', {
-        warn_c: Number(q('tempWarn').value),
-        critical_c: Number(q('tempCrit').value),
+    bindClick('btnThermalRefresh', refreshThermal);
+    bindClick('btnMotorReload', () => { q('motorFrame').src = '/motors?t=' + Date.now(); });
+    bindClick('btnHermesReload', () => { q('hermesFrame').src = '/focus/hermes?t=' + Date.now(); });
+    bindClick('btnThermalSave', async () => {
+      await callAndShow('Salva soglie termiche', '/api/motor/thermal/settings', 'POST', {
+        balance_threshold_c: Number(q('tempWarn').value),
+        crouch_threshold_c: Number(q('tempCrit').value),
       });
       await refreshThermal();
-    };
+    });
     refreshGrasp6dStatus(false);
+    refreshHandeyeCalibration();
+    refresh6dLogs();
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        stopRealtimeMonitor();
+        stopCalibrationLive();
+      }
+    });
     if (typeof loadPickTuning === 'function') {
       loadPickTuning();
     }

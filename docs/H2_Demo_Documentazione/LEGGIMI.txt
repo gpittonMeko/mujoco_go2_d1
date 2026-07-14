@@ -1,0 +1,13 @@
+H2 Demo — Documentazione
+=========================
+
+APRI NEL BROWSER (doppio click):
+
+    APRI_DOCUMENTAZIONE.html
+
+Ordine consigliato:
+  1) 01_LA_DEMO.md        — cosa fa la demo e come lanciarla
+  2) 02_ACCENSIONE_...    — accensione, password, mani Revo sul .162
+  3) 03_FILE_SUL_ROBOT.md — dove sta il codice
+
+Cartella markdown/ = sorgenti per aggiornamenti.

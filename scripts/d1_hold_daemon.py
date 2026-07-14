@@ -8,6 +8,7 @@ close the DDS writer or interrupt the funcode-2 hold heartbeat.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,8 @@ class HoldController:
         self.last_publish_mono = 0.0
         self.last_heartbeat_mono = 0.0
         self.heartbeat_count = 0
+        self.event_seq = 0
+        self.recent_events: deque[dict[str, Any]] = deque(maxlen=80)
         self.publisher_restart_count = 0
         self.last_error: str | None = None
         self.last_error_at: float | None = None
@@ -148,7 +151,46 @@ class HoldController:
     def _record_error_locked(self, message: str) -> None:
         self.last_error = message
         self.last_error_at = time.time()
+        self._record_event_locked(source="daemon", message={"funcode": -1, "data": {"event": message}}, ok=False)
         print(json.dumps({"level": "error", "event": message, "time": self.last_error_at}), flush=True)
+
+    @staticmethod
+    def _pose_servo_deg(message: dict[str, Any] | None) -> list[float] | None:
+        data = message.get("data") if isinstance(message, dict) and isinstance(message.get("data"), dict) else None
+        if not isinstance(data, dict):
+            return None
+        out: list[float] = []
+        for index in range(7):
+            key = f"angle{index}"
+            if key not in data:
+                return None
+            try:
+                out.append(round(float(data[key]), 3))
+            except (TypeError, ValueError):
+                return None
+        return out
+
+    def _record_event_locked(self, *, source: str, message: dict[str, Any], ok: bool = True) -> None:
+        fc = int(message.get("funcode", -1))
+        self.event_seq += 1
+        event: dict[str, Any] = {
+            "seq": self.event_seq,
+            "source": source,
+            "ok": bool(ok),
+            "at": round(time.time(), 3),
+            "mono_s": round(time.monotonic() - self.started_mono, 3),
+            "funcode": fc,
+            "desired_coupled": bool(self.desired_coupled),
+        }
+        pose = self._pose_servo_deg(message)
+        if pose is not None:
+            event["servo_deg"] = pose
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        if fc == 5:
+            event["mode"] = data.get("mode")
+        elif fc == 6:
+            event["power"] = data.get("power")
+        self.recent_events.append(event)
 
     def _raw_write_locked(self, message: dict[str, Any], *, source: str) -> bool:
         if self.fake_log is not None:
@@ -164,6 +206,8 @@ class HoldController:
             except (BrokenPipeError, OSError):
                 return False
         self.last_publish_mono = time.monotonic()
+        if source != "heartbeat" or self.heartbeat_count % 10 == 0:
+            self._record_event_locked(source=source, message=message, ok=True)
         return True
 
     def _restore_hold_locked(self) -> bool:
@@ -225,7 +269,14 @@ class HoldController:
             return {"ok": True, "count": sent, "stream": True, **self._status_locked()}
 
     def _heartbeat_loop(self) -> None:
-        while not self.stop_event.wait(self.heartbeat_s):
+        # Python 3.8 on the NX implements timed Event.wait through a realtime
+        # deadline. If NTP/RTC moves the system clock backwards (common after
+        # boot without RTC), a 100 ms wait can block for months. sleep() uses
+        # the kernel monotonic clock and keeps the hold heartbeat alive.
+        while not self.stop_event.is_set():
+            time.sleep(self.heartbeat_s)
+            if self.stop_event.is_set():
+                break
             with self.lock:
                 if not self.desired_coupled or self.last_pose is None:
                     continue
@@ -262,6 +313,8 @@ class HoldController:
             "desired_coupled": self.desired_coupled,
             "hold_active": hold_active,
             "has_pose": self.last_pose is not None,
+            "hold_target_servo_deg": self._pose_servo_deg(self.last_pose),
+            "recent_events": list(self.recent_events)[-24:],
             "last_publish_age_ms": publish_age_ms,
             "heartbeat_age_ms": heartbeat_age_ms,
             "heartbeat_count": self.heartbeat_count,

@@ -3,7 +3,7 @@
 
 Uso locale / NX:
   python scripts/serve_d1_jog_dashboard.py
-  # http://0.0.0.0:5053/  (porta D1_JOG_PORT)
+  # http://0.0.0.0:5056/  (porta D1_JOG_PORT)
 
 Prima compilazione sulla macchina con DDS (NX o controller D1):
   bash scripts/build_d1_sdk.sh
@@ -31,7 +31,7 @@ def main() -> None:
     if os.environ.get("GO2_LOCAL", "0").lower() in {"1", "true", "yes", "on"}:
         os.environ.setdefault("D1_JOG_ENABLE_REAL_ARM", "1")
         os.environ.setdefault("GO2_ENABLE_REAL_ARM", "1")
-    port = int(os.environ.get("D1_JOG_PORT", "5053"))
+    port = int(os.environ.get("D1_JOG_PORT", "5056"))
     bind = os.environ.get("D1_JOG_BIND", "0.0.0.0")
     app = create_d1_jog_app()
     print(f"D1 jog dashboard http://{bind}:{port}/")

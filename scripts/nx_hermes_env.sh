@@ -6,7 +6,7 @@ if [ -f "$(dirname "$0")/nx_dashboard_env.sh" ]; then
 fi
 export HERMES_PORT=5056
 export HERMES_BIND=0.0.0.0
-export HERMES_OPERATOR_URL=http://127.0.0.1:5052
+export HERMES_OPERATOR_URL=http://127.0.0.1:5056
 export HERMES_D1_JOG_URL=http://127.0.0.1:5056
 export HERMES_REQUIRE_OPERATOR=0
 export GO2_HOST="${GO2_HOST:-192.168.123.18}"
@@ -22,7 +22,7 @@ export HERMES_FAST="${HERMES_FAST:-1}"
 export HERMES_USE_LLM="${HERMES_USE_LLM:-0}"
 export HERMES_SPEAK_ASYNC="${HERMES_SPEAK_ASYNC:-1}"
 export HERMES_INTERACTION_VOICE="${HERMES_INTERACTION_VOICE:-1}"
-# Sport via DDS diretto (5052 opzionale). Direct DDS su NX può SIGSEGV — fallback HTTP se DIRECT fallisce.
+# Sport via DDS diretto nella dashboard integrata 5056. Direct DDS su NX può SIGSEGV — fallback HTTP se DIRECT fallisce.
 export HERMES_SPORT_SYNC="${HERMES_SPORT_SYNC:-0}"
 export HERMES_SPORT_DIRECT="${HERMES_SPORT_DIRECT:-1}"
 export GO2_ENABLE_BASE_MOTION="${GO2_ENABLE_BASE_MOTION:-1}"

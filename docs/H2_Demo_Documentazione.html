@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>H2 Demo — Documentazione</title>
+  <style>
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --text: #1a1d21;
+  --muted: #5c6570;
+  --accent: #0b57d0;
+  --border: #e2e6ea;
+  --code-bg: #f0f3f7;
+  --warn: #fff8e1;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+}
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+nav {
+  background: #1e2430;
+  color: #e8ecf1;
+  padding: 1.25rem 1rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+nav h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9aa3ad;
+  margin: 0 0 0.75rem 0.5rem;
+}
+nav a {
+  display: block;
+  color: #dce3eb;
+  text-decoration: none;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.92rem;
+  margin-bottom: 2px;
+}
+nav a:hover { background: rgba(255,255,255,0.08); }
+main {
+  padding: 2rem 2.5rem 4rem;
+  max-width: 920px;
+}
+article {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2rem 2.25rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+article h1 {
+  font-size: 1.75rem;
+  margin-top: 0;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 0.5rem;
+}
+article h2 { margin-top: 2rem; font-size: 1.25rem; }
+article h3 { margin-top: 1.5rem; font-size: 1.05rem; }
+article p, article li { color: var(--text); }
+article blockquote {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--warn);
+  border-left: 4px solid #f9a825;
+  border-radius: 0 6px 6px 0;
+}
+article code {
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: Consolas, "Cascadia Code", monospace;
+}
+article pre {
+  background: #1e2430;
+  color: #e8ecf1;
+  padding: 1rem 1.15rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+article pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.92rem;
+}
+article th, article td {
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+}
+article th { background: #f0f3f7; font-weight: 600; }
+article a { color: var(--accent); }
+article hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  nav { position: static; height: auto; }
+  main { padding: 1rem; }
+}
+</style>
+</head>
+<body>
+  <div class="layout">
+    <nav>
+      <h2>Indice</h2>
+    <a href="#leggimi">LEGGIMI</a>
+    <a href="#01-la-demo">La demo — cosa fa e come lanciarla</a>
+    <a href="#02-accensione-accessi-mani">Accensione, accessi e mani Revo</a>
+    <a href="#03-file-sul-robot">Dove sono i file</a>
+    <a href="#04-riferimenti">Riferimenti Unitree</a>
+    <a href="#readme-thor">Dal PC lab</a>
+    </nav>
+    <main>
+<article id="leggimi">
+<p>﻿# Demo H2 — Documentazione</p>
+<p><strong>Apri <code>APRI_DOCUMENTAZIONE.html</code> nel browser</strong> (doppio click).<br />
+I file <code>.md</code> in <code>markdown/</code> sono solo sorgente per aggiornamenti.</p>
+<hr />
+<h2>Cosa leggere</h2>
+<table>
+<thead>
+<tr>
+<th>Documento</th>
+<th>Per chi</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>01_LA_DEMO.md</strong></td>
+<td>Tutti — cosa fa la demo e come lanciarla</td>
+</tr>
+<tr>
+<td><strong>02_ACCENSIONE_ACCESSI_MANI.md</strong></td>
+<td>Operatori — accensione robot, password, mani Revo</td>
+</tr>
+<tr>
+<td><strong>03_FILE_SUL_ROBOT.md</strong></td>
+<td>Dove sta il codice sul robot</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>In sintesi</h2>
+<p><strong>Robot:</strong> Unitree H2<br />
+<strong>Demo gira su:</strong> Jetson Thor <code>192.168.123.163</code><br />
+<strong>Mani Revo:</strong> servizio sul PC <code>192.168.123.162</code> (va acceso prima della demo)</p>
+<pre><code class="language-powershell">python scripts/h2_start_brainco_pc2.py          # mani ON
+python scripts/h2_smoke_remote.py demo --confirm-arm   # demo
+</code></pre>
+<p>Repository PC lab: <code>mujoco_go2_d1</code></p>
+</article>
+<article id="01-la-demo">
+<h1>La demo — cosa fa e come lanciarla</h1>
+<h2>Cosa succede (circa 30 secondi)</h2>
+<ol>
+<li><strong>Voce TTS</strong> — «Pellegrino Casoria di Accenture…»</li>
+<li><strong>In parallelo</strong> (~16 s):</li>
+<li>parte l’audio Cyberpunk</li>
+<li>il <strong>braccio sinistro</strong> sale lentamente</li>
+<li>la <strong>mano sinistra</strong> (BrainCo Revo) si chiude</li>
+<li>Braccio e mano tornano alla posizione di riposo</li>
+</ol>
+<p>Tutto parte dalla <strong>Jetson Thor</strong> (<code>.163</code>) via rete DDS.<br />
+Le mani funzionano solo se il servizio sul <strong>PC <code>.162</code></strong> è attivo.</p>
+<hr />
+<h2>Prima di lanciare — checklist</h2>
+<ul>
+<li>[ ] Robot sul <strong>protection frame</strong>, in piedi, <strong>piedi a terra</strong></li>
+<li>[ ] Telecomando: <strong>Regular Mode 1</strong> (non Mode 2 — vedi sotto)</li>
+<li>[ ] Area libera intorno al braccio sinistro</li>
+<li>[ ] Cavo Ethernet PC lab ↔ rete <code>192.168.123.x</code></li>
+<li>[ ] Servizio mani Revo attivo sul <code>.162</code></li>
+<li>[ ] Operatore presente con telecomando</li>
+</ul>
+<hr />
+<h2>Accensione robot (telecomando)</h2>
+<pre><code>Zero Torque  →  Damping  →  Locked Standing
+       ↓
+   ATTENDI piedi a terra (robot non sollevato)
+       ↓
+   Regular Mode 1   ← usare questo per la demo
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Modalità</th>
+<th>Gesti braccio dal telecomando (kiss, clap…)</th>
+<th>Per la demo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Regular Mode 1</strong></td>
+<td>No</td>
+<td><strong>Sì — usare questa</strong></td>
+</tr>
+<tr>
+<td>Regular Mode 2</td>
+<td>Sì</td>
+<td>No — interferisce col braccio automatico</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Comandi (dal PC lab)</h2>
+<p>Apri PowerShell nella cartella <code>mujoco_go2_d1</code>:</p>
+<pre><code class="language-powershell"># 1) Attiva mani Revo (dopo ogni reboot del .162)
+python scripts/h2_start_brainco_pc2.py
+
+# 2) Controlli rapidi
+python scripts/h2_smoke_remote.py recover-check
+python scripts/h2_smoke_remote.py hand-dds
+
+# 3) Demo
+python scripts/h2_smoke_remote.py demo --confirm-arm
+</code></pre>
+<p><code>--confirm-arm</code> = confermi che il robot è in piedi e l’area è libera.</p>
+<hr />
+<h2>Se qualcosa non va</h2>
+<table>
+<thead>
+<tr>
+<th>Problema</th>
+<th>Soluzione</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mani non rispondono</td>
+<td>Riavvia servizio sul <code>.162</code> (vedi doc 02) o <code>h2_start_brainco_pc2.py</code></td>
+</tr>
+<tr>
+<td>Braccio rifiutato</td>
+<td>Robot in Damp? Ripristina da telecomando, poi Regular Mode 1</td>
+</tr>
+<tr>
+<td>Thor non raggiungibile</td>
+<td>Verifica cavo e IP <code>192.168.123.163</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Sicurezza (3 regole)</h2>
+<ol>
+<li><strong>Non</strong> usare Damp automatico da codice con il protection frame montato.</li>
+<li>Demo solo con operatore presente e telecomando a portata.</li>
+<li>Durante la demo: <strong>Regular Mode 1</strong>, nessuno preme gesti braccio sul controller.</li>
+</ol>
+</article>
+<article id="02-accensione-accessi-mani">
+<h1>Accensione, accessi e mani Revo</h1>
+<h2>Macchine in rete</h2>
+<table>
+<thead>
+<tr>
+<th>IP</th>
+<th>Cosa è</th>
+<th>Accesso</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.161</code></td>
+<td>PC locomozione Unitree</td>
+<td><strong>Non accessibile</strong></td>
+</tr>
+<tr>
+<td><strong><code>.162</code></strong></td>
+<td>PC mani BrainCo Revo</td>
+<td>SSH solo per <strong>accendere le mani</strong></td>
+</tr>
+<tr>
+<td><strong><code>.163</code></strong></td>
+<td>Jetson Thor — <strong>qui gira la demo</strong></td>
+<td>SSH libero (lab)</td>
+</tr>
+<tr>
+<td><code>.50</code> (es.)</td>
+<td>PC laboratorio</td>
+<td>Da qui lanci i comandi</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Password</h2>
+<table>
+<thead>
+<tr>
+<th>Macchina</th>
+<th>Utente</th>
+<th>Password</th>
+<th>Quando serve</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Thor <code>.163</code></strong></td>
+<td><code>unitree</code></td>
+<td><code>123</code></td>
+<td>Debug, esecuzione manuale demo</td>
+</tr>
+<tr>
+<td><strong>PC2 <code>.162</code></strong></td>
+<td><code>unitree</code></td>
+<td><code>Unitree#24226</code></td>
+<td><strong>Solo per attivare le mani Revo</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Sul <code>.162</code> non serve fare altro: niente installazioni, niente modifiche. Solo avviare il servizio mani.</p>
+</blockquote>
+<hr />
+<h2>Mani Revo — come attivarle</h2>
+<p>Dopo ogni <strong>spegnimento o reboot del <code>.162</code></strong>, le mani non funzionano finché non riavvii il servizio.</p>
+<h3>Metodo A — dal PC lab (consigliato)</h3>
+<pre><code class="language-powershell">python scripts/h2_start_brainco_pc2.py
+</code></pre>
+<p>Verifica:</p>
+<pre><code class="language-powershell">python scripts/h2_smoke_remote.py hand-dds
+</code></pre>
+<p>Deve comparire <code>OK</code> su <code>rt/brainco/left/state</code>.</p>
+<h3>Metodo B — SSH diretto sul <code>.162</code></h3>
+<p>Solo per accendere le mani:</p>
+<pre><code class="language-bash">ssh unitree@192.168.123.162
+# password: Unitree#24226
+
+cd ~/brainco_hand_service/bin
+sudo ./brainco_hand_server -n eth0
+</code></pre>
+<p>Log errori: <code>/tmp/brainco_hand_server.log</code></p>
+<hr />
+<h2>Jetson Thor — accesso opzionale</h2>
+<pre><code class="language-bash">ssh unitree@192.168.123.163
+# password: 123
+
+cd ~/h2_demo
+export CYCLONEDDS_HOME=/usr/local LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH H2_DDS_IFACE=eth10
+python3 scripts/h2_demo_casoria.py --iface eth10 --yes
+</code></pre>
+<p>Di solito basta lanciare la demo dal PC lab con <code>h2_smoke_remote.py</code>.</p>
+<hr />
+<h2>Come funziona il collegamento mani</h2>
+<pre><code>Mani Revo (RS-485)  →  PC .162  →  brainco_hand_server
+                                        ↓ DDS
+                              Thor .163  →  comanda mano sinistra nella demo
+</code></pre>
+<p>La Thor <strong>non</strong> ha la seriale delle mani: senza <code>.162</code> attivo la demo fa audio e braccio ma <strong>la mano resta ferma</strong>.</p>
+<hr />
+<h2>Mode locomozione <code>ai</code> (opzionale)</h2>
+<p>Se <code>recover-check</code> non mostra mode <code>ai</code>:</p>
+<pre><code class="language-powershell">python scripts/h2_smoke_remote.py recover-select-ai --confirm-recovery
+</code></pre>
+<p>Non sostituisce Regular Mode 1 sul telecomando: sono due cose diverse.</p>
+</article>
+<article id="03-file-sul-robot">
+<h1>Dove sono i file</h1>
+<h2>Jetson Thor — <code>192.168.123.163</code></h2>
+<p>Tutto il demo:</p>
+<pre><code class="language-text">/home/unitree/h2_demo/
+├── scripts/h2_demo_casoria.py    ← demo principale
+├── scripts/h2_common.py          ← braccio
+├── scripts/h2_hand_util.py       ← mani
+├── data/audio/
+│   ├── pellegrino_tts.wav
+│   └── cyberpunk_meme.wav
+└── unitree_sdk2_python/          ← SDK Unitree
+</code></pre>
+<p>SSH: <code>unitree</code> / <code>123</code></p>
+<hr />
+<h2>PC2 mani — <code>192.168.123.162</code></h2>
+<p>Solo servizio mani:</p>
+<pre><code class="language-text">/home/unitree/brainco_hand_service/bin/brainco_hand_server
+</code></pre>
+<p>SSH: <code>unitree</code> / <code>Unitree#24226</code> — <strong>solo per avviare le mani</strong></p>
+<hr />
+<h2>PC laboratorio</h2>
+<p>Repository con script di controllo:</p>
+<pre><code class="language-text">mujoco_go2_d1/
+├── scripts/h2_smoke_remote.py         ← lancia la demo
+├── scripts/h2_start_brainco_pc2.py    ← accende mani sul .162
+└── scripts/deploy_h2_demo_to_jetson.py
+</code></pre>
+<hr />
+<h2>Stato attuale sul robot</h2>
+<table>
+<thead>
+<tr>
+<th>Cosa</th>
+<th>Stato</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Demo installata su Thor</td>
+<td>Sì (<code>~/h2_demo</code>)</td>
+</tr>
+<tr>
+<td>Demo testata</td>
+<td>Sì</td>
+</tr>
+<tr>
+<td>Mani dopo reboot <code>.162</code></td>
+<td><strong>Riavviare servizio</strong></td>
+</tr>
+</tbody>
+</table>
+</article>
+<article id="04-riferimenti">
+<h1>Riferimenti Unitree</h1>
+<ul>
+<li><a href="https://support.unitree.com/home/en/H2_developer/ros2_communication_routine">H2 ROS2 / rete</a></li>
+<li><a href="https://support.unitree.com/home/en/G1_developer/brainco_hand">BrainCo Hand</a></li>
+<li><a href="https://github.com/unitreerobotics/brainco_hand_service">brainco_hand_service</a></li>
+<li><a href="https://github.com/unitreerobotics/unitree_sdk2_python">unitree_sdk2_python</a></li>
+</ul>
+<p>Topic DDS usati dalla demo:</p>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Uso</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rt/arm_sdk</code></td>
+<td>Braccio sinistro</td>
+</tr>
+<tr>
+<td><code>rt/brainco/left/cmd</code></td>
+<td>Mano sinistra</td>
+</tr>
+<tr>
+<td><code>rt/lowstate</code></td>
+<td>Stato robot (lettura)</td>
+</tr>
+</tbody>
+</table>
+<p>Per estendere la demo: modificare <code>h2_demo_casoria.py</code> nel repo PC lab e fare deploy con <code>deploy_h2_demo_to_jetson.py</code>.</p>
+</article>
+<article id="readme-thor">
+<p>﻿# H2 demo — Jetson Thor</p>
+<p>Demo in <code>~/h2_demo</code>. SSH: <code>unitree</code> / <code>123</code>.</p>
+<p><strong>Prima della demo:</strong> Regular Mode 1 sul telecomando + servizio mani attivo sul <code>.162</code>.</p>
+<pre><code class="language-powershell"># Dal PC lab
+python scripts/h2_start_brainco_pc2.py
+python scripts/h2_smoke_remote.py demo --confirm-arm
+</code></pre>
+</article>
+    </main>
+  </div>
+</body>
+</html>

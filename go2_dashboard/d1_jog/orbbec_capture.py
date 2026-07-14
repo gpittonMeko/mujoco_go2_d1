@@ -1,4 +1,4 @@
-"""Cattura / stream Orbbec RGB via V4L diretto (USB 2bc5:080b). HTTP :5052 disabilitato su 5053."""
+"""Cattura / stream Orbbec RGB via V4L diretto per dashboard D1 5056."""
 
 from __future__ import annotations
 
@@ -272,7 +272,7 @@ def _operator_base() -> str:
     return (
         os.environ.get("D1_OPERATOR_URL")
         or os.environ.get("HERMES_OPERATOR_URL")
-        or "http://127.0.0.1:5052"
+        or "http://127.0.0.1:5056"
     ).strip().rstrip("/")
 
 
@@ -875,7 +875,7 @@ def _operator_http_fallback() -> bool:
 
 
 def _operator_pipeline_enabled() -> bool:
-    """5053 D1 jog: default solo V4L RGB — niente ping/fallback HTTP verso :5052."""
+    """Dashboard D1 5056: default solo V4L RGB, HTTP solo se abilitato via env."""
     return _use_operator_http() or _operator_http_fallback()
 
 

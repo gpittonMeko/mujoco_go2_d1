@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from go2_dashboard.d1_jog.motion_guard import (
 from go2_dashboard.paths import D1_ARM_SERVO_READ_PY, D1_SDK_COMMAND_BIN, D1_SDK_FEEDBACK_BIN, PROJECT_ROOT
 
 TRUE_ZERO_POSE_PATH = PROJECT_ROOT / "data" / "true_zero_pose.json"
+
 
 JOINT_LIMITS: list[tuple[float, float]] = [
     (-135.0, 135.0),
@@ -166,6 +168,21 @@ def _parse_feedback_stdout(stdout: str) -> list[float] | None:
     return latest
 
 
+def _parse_arm_feedback_stdout(stdout: str) -> list[Any]:
+    out: list[Any] = []
+    for line in (stdout or "").splitlines():
+        if not line.startswith("arm_feedback "):
+            continue
+        payload = line[len("arm_feedback ") :].strip()
+        if not payload:
+            continue
+        try:
+            out.append(json.loads(payload))
+        except (TypeError, ValueError):
+            out.append(payload)
+    return out[-20:]
+
+
 def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
     fb = D1_SDK_FEEDBACK_BIN
     if not fb.is_file():
@@ -185,6 +202,7 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         return {"ok": False, "reason": "feedback_timeout"}
     angles = _parse_feedback_stdout(result.stdout or "")
+    arm_feedback = _parse_arm_feedback_stdout(result.stdout or "")
     base: dict[str, Any] = {
         "ok": angles is not None,
         "servo_deg": angles,
@@ -193,6 +211,8 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
             (ln.strip() for ln in (result.stdout or "").splitlines() if ln.startswith("servo_count=")),
             None,
         ),
+        "arm_feedback": arm_feedback,
+        "arm_feedback_count": len(arm_feedback),
     }
     if angles is None:
         py_fb = D1_ARM_SERVO_READ_PY
@@ -204,6 +224,7 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
                     timeout_s=timeout_s,
                 )
                 py_angles = _parse_feedback_stdout(py_res.stdout or "")
+                py_arm_feedback = _parse_arm_feedback_stdout(py_res.stdout or "")
                 if py_angles is not None:
                     set_servo_cache(py_angles)
                     mark_coupled_from_feedback()
@@ -219,6 +240,8 @@ def read_servo_deg(*, fast: bool = False) -> dict[str, Any]:
                             ),
                             None,
                         ),
+                        "arm_feedback": py_arm_feedback,
+                        "arm_feedback_count": len(py_arm_feedback),
                         "fallback": "python_feedback",
                     }
             except subprocess.TimeoutExpired:
@@ -244,6 +267,7 @@ _last_publish: dict[str, Any] = {
     "funcodes": [],
     "path": None,
 }
+_recent_publishes: deque[dict[str, Any]] = deque(maxlen=80)
 
 
 def _spawn_cmd_daemon(delay_ms: int) -> subprocess.Popen[str]:
@@ -315,6 +339,15 @@ def _record_publish(messages: list[dict[str, Any]], *, ok: bool, reason: str | N
             if isinstance(m, dict) and m.get("funcode") is not None
         }
     )
+    pose_targets: list[list[float]] = []
+    for message in messages:
+        if int(message.get("funcode", -1)) != 2:
+            continue
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        try:
+            pose_targets.append([round(float(data[f"angle{i}"]), 3) for i in range(7)])
+        except (KeyError, TypeError, ValueError):
+            pass
     _last_publish = {
         "ok": bool(ok),
         "reason": reason,
@@ -322,7 +355,14 @@ def _record_publish(messages: list[dict[str, Any]], *, ok: bool, reason: str | N
         "count": len(messages),
         "funcodes": funcodes,
         "path": path,
+        "last_pose_target_servo_deg": pose_targets[-1] if pose_targets else None,
     }
+    _recent_publishes.append(
+        {
+            **_last_publish,
+            "pose_target_count": len(pose_targets),
+        }
+    )
 
 
 def runtime_safety_status() -> dict[str, Any]:
@@ -332,6 +372,7 @@ def runtime_safety_status() -> dict[str, Any]:
         "motion": motion_guard_status(),
         "safety_preempt_active": bool(safety_preempt_active()),
         "last_publish": dict(_last_publish),
+        "recent_publishes": list(_recent_publishes)[-24:],
     }
 
 
@@ -612,7 +653,9 @@ def safe_zero_pose_from_servo(servo_deg: list[float] | None) -> list[float] | No
     transit[1] = float(os.environ.get("D1_ZERO_TRANSIT_J1_DEG", "-90"))
     transit[2] = float(os.environ.get("D1_ZERO_TRANSIT_J2_DEG", "90"))
     transit[3] = float(os.environ.get("D1_ZERO_TRANSIT_J3_DEG", "0"))
-    transit[4] = float(os.environ.get("D1_ZERO_TRANSIT_J4_DEG", "0"))
+    # Sul D1 reale J4 si assesta a circa 4.7 deg; zero causava un falso
+    # position_timeout prima della rotazione laterale, pur a braccio ripiegato.
+    transit[4] = float(os.environ.get("D1_ZERO_TRANSIT_J4_DEG", "5"))
     transit[5] = float(os.environ.get("D1_ZERO_TRANSIT_J5_DEG", "0"))
     transit[6] = float(os.environ.get("D1_ZERO_TRANSIT_J6_DEG", str(cur[6] if len(cur) > 6 else 5.0)))
     return clamp_servo_deg(transit)
@@ -712,11 +755,11 @@ def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
         pose = _current_servo_deg_for_save(fast=True)
         if pose is None:
             hold = {"ok": False, "reason": "no_feedback_for_hold"}
-        elif _arm_coupled:
-            hold = hold_pose_stream(servo_deg=pose)
         else:
+            # Safety path: HOLD ORA must not trust the software-coupled flag.
+            # Always refresh power+couple and pose in one batch.
             hold = couple_and_hold_pose(pose, with_power=True, force=True, acquire_lock=False)
-            hold["forced_couple_before_hold"] = True
+            hold["forced_power_couple_before_hold"] = True
         return {
             "ok": bool(hold.get("ok") or hold.get("skipped")),
             "action": "hold_now",
@@ -728,6 +771,57 @@ def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
         }
     finally:
         end_safety_preempt(source=f"hold:{reason}")
+
+
+def micro_jog_current_pose(*, joint_index: int, delta_deg: float) -> dict[str, Any]:
+    """Tiny single-joint move with hard limits and atomic hold semantics."""
+    ji = int(joint_index)
+    if ji < 0 or ji > 6:
+        return {"ok": False, "reason": "joint_index_out_of_range", "allowed": [0, 6]}
+    max_delta = min(1.0, max(0.05, float(os.environ.get("D1_SAFE_MICRO_JOG_MAX_DEG", "1.0"))))
+    delta = float(delta_deg)
+    if abs(delta) < 1e-6 or abs(delta) > max_delta:
+        return {
+            "ok": False,
+            "reason": "delta_out_of_range",
+            "max_abs_delta_deg": max_delta,
+            "requested_delta_deg": delta,
+        }
+    feedback = read_servo_deg(fast=True)
+    pose = feedback.get("servo_deg") if feedback.get("ok") else None
+    if not isinstance(pose, list) or len(pose) < 7:
+        return {"ok": False, "reason": "feedback_unavailable", "feedback": feedback}
+    current = clamp_servo_deg([float(x) for x in pose[:7]])
+    pre_hold = couple_and_hold_pose(current, with_power=True, force=True, acquire_lock=False)
+    if not pre_hold.get("ok"):
+        return {"ok": False, "reason": "pre_hold_failed", "pre_hold": pre_hold, "feedback": feedback}
+    target = current[:]
+    target[ji] = current[ji] + delta
+    target = clamp_servo_deg(target)
+    effective_delta = round(target[ji] - current[ji], 3)
+    if abs(effective_delta) < 1e-6:
+        return {
+            "ok": False,
+            "reason": "clamped_no_motion",
+            "joint_index": ji,
+            "current_servo_deg": current,
+            "target_servo_deg": target,
+            "pre_hold": pre_hold,
+        }
+    move = couple_and_hold_pose(target, with_power=True, force=True, acquire_lock=False)
+    ok = bool(move.get("ok") or move.get("skipped"))
+    return {
+        "ok": ok,
+        "action": "micro_jog_current_pose",
+        "joint_index": ji,
+        "requested_delta_deg": delta,
+        "effective_delta_deg": effective_delta,
+        "current_servo_deg": current,
+        "target_servo_deg": target,
+        "pre_hold": pre_hold,
+        "move_hold": move,
+        "feedback": feedback,
+    }
 
 
 def merge_single_joint_jog(servo_deg: list[float], joint_index: int) -> list[float]:
@@ -774,7 +868,12 @@ def _couple_messages(*, with_power: bool, seq: int) -> list[dict[str, Any]]:
 def couple_and_hold_pose(
     servo_deg: list[float], *, with_power: bool = False, force: bool = True, acquire_lock: bool = True
 ) -> dict[str, Any]:
-    """Funcode 5 e funcode 2 nello stesso batch: nessuna finestra di cedimento."""
+    """Carica prima il target hold, poi abilita coppia, poi ribadisce il target.
+
+    Se abilitiamo la coppia prima di aggiornare la posa, il daemon/SDK può
+    inseguire per un istante il vecchio target di hold. Questo è esattamente
+    lo scatto osservabile "prima di holdare".
+    """
     global _arm_coupled, _couple_last_ts
     if _arm_coupled and not force:
         return {"ok": True, "skipped": True, "reason": "already_coupled"}
@@ -785,7 +884,11 @@ def couple_and_hold_pose(
     try:
         sd = clamp_servo_deg(servo_deg)
         seq = int(time.time()) % 100000
-        messages = _couple_messages(with_power=with_power, seq=seq)
+        messages: list[dict[str, Any]] = []
+        if with_power:
+            messages.append({"seq": seq, "address": 1, "funcode": 6, "data": {"power": 1}})
+        messages.append(_pose_message(sd, seq=seq + len(messages)))
+        messages.append({"seq": seq + len(messages), "address": 1, "funcode": 5, "data": {"mode": 1}})
         messages.append(_pose_message(sd, seq=seq + len(messages)))
         out = publish_messages_stream(messages)
         if out.get("ok") or out.get("skipped"):
@@ -795,6 +898,7 @@ def couple_and_hold_pose(
         out["action"] = "couple_and_hold_pose"
         out["target_servo_deg"] = sd
         out["atomic_batch"] = True
+        out["hold_order"] = "power_pose_couple_pose" if with_power else "pose_couple_pose"
         return out
     finally:
         if acquire_lock:

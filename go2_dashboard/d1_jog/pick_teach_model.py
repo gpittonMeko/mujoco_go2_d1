@@ -9,6 +9,28 @@ from typing import Any
 
 from go2_dashboard.d1_jog import pick_preset, program_store, service
 
+GUIDED_SCENARIOS = (
+    "center", "left", "right", "upper", "lower", "rotate_cw", "rotate_ccw", "corner",
+)
+
+
+def _append_history(data: dict[str, Any], event: str, **payload: Any) -> None:
+    rows = data.get("teach_history")
+    if not isinstance(rows, list):
+        rows = []
+    rows.append({"at": pick_preset._now_iso(), "event": event, **payload})
+    data["teach_history"] = rows[-200:]
+
+
+def _vision_age_s(vis: dict[str, Any] | None) -> float | None:
+    if not isinstance(vis, dict) or not vis.get("at"):
+        return None
+    try:
+        captured = time.mktime(time.strptime(str(vis["at"]), "%Y-%m-%dT%H:%M:%S"))
+        return max(0.0, time.time() - captured)
+    except (TypeError, ValueError):
+        return None
+
 
 def _feature_weights() -> dict[str, float]:
     return {
@@ -329,6 +351,72 @@ def interpolate_joint_offsets(
     return out, meta
 
 
+def guided_quality_report(samples: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (samples or []) if isinstance(row, dict)]
+    valid = [row for row in rows if _vision_features(row.get("vision_at_scan")) is not None]
+    covered = {str(row.get("scenario")) for row in valid if row.get("scenario") in GUIDED_SCENARIOS}
+    features = [_vision_features(row.get("vision_at_scan")) for row in valid]
+    features = [row for row in features if row]
+    xs = [float(row["norm_x"]) for row in features if "norm_x" in row]
+    ys = [float(row["norm_y"]) for row in features if "norm_y" in row]
+    return {
+        "ready": all(name in covered for name in GUIDED_SCENARIOS),
+        "required_scenarios": list(GUIDED_SCENARIOS),
+        "covered_scenarios": [name for name in GUIDED_SCENARIOS if name in covered],
+        "missing_scenarios": [name for name in GUIDED_SCENARIOS if name not in covered],
+        "guided_count": len(covered),
+        "valid_detection_count": len(valid),
+        "position_span_norm": {
+            "x": round(max(xs) - min(xs), 4) if len(xs) >= 2 else 0.0,
+            "y": round(max(ys) - min(ys), 4) if len(ys) >= 2 else 0.0,
+        },
+    }
+
+
+def validate_guided_scenario(
+    scenario: str,
+    vis: dict[str, Any],
+    samples: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    cur = _vision_features(vis)
+    if cur is None or "norm_x" not in cur or "norm_y" not in cur:
+        return {"ok": False, "reason": "2d_position_features_missing"}
+    if scenario == "center":
+        return {"ok": True}
+    center_sample = next(
+        (row for row in (samples or []) if isinstance(row, dict) and row.get("scenario") == "center"),
+        None,
+    )
+    center = _vision_features(center_sample.get("vision_at_scan")) if center_sample else None
+    if center is None:
+        return {"ok": False, "reason": "center_scenario_required_first"}
+    dx = float(cur["norm_x"]) - float(center["norm_x"])
+    dy = float(cur["norm_y"]) - float(center["norm_y"])
+    pos_margin = float(os.environ.get("D1_PICK_TEACH_SCENARIO_MARGIN_NORM", "0.08"))
+    if scenario == "left" and dx > -pos_margin:
+        return {"ok": False, "reason": "move_box_further_left", "delta_norm": [dx, dy]}
+    if scenario == "right" and dx < pos_margin:
+        return {"ok": False, "reason": "move_box_further_right", "delta_norm": [dx, dy]}
+    if scenario == "upper" and dy > -pos_margin:
+        return {"ok": False, "reason": "move_box_further_up", "delta_norm": [dx, dy]}
+    if scenario == "lower" and dy < pos_margin:
+        return {"ok": False, "reason": "move_box_further_down", "delta_norm": [dx, dy]}
+    if scenario == "corner" and (abs(dx) < pos_margin or abs(dy) < pos_margin):
+        return {"ok": False, "reason": "move_box_to_roi_corner", "delta_norm": [dx, dy]}
+    if scenario in {"rotate_cw", "rotate_ccw"}:
+        ref_a = center.get("short_deg")
+        cur_a = cur.get("short_deg")
+        if ref_a is None or cur_a is None:
+            return {"ok": False, "reason": "2d_orientation_features_missing"}
+        delta = ((float(cur_a) - float(ref_a) + 90.0) % 180.0) - 90.0
+        min_angle = float(os.environ.get("D1_PICK_TEACH_SCENARIO_ROT_DEG", "15"))
+        if scenario == "rotate_cw" and delta < min_angle:
+            return {"ok": False, "reason": "rotate_box_more_clockwise", "delta_angle_deg": delta}
+        if scenario == "rotate_ccw" and delta > -min_angle:
+            return {"ok": False, "reason": "rotate_box_more_counterclockwise", "delta_angle_deg": delta}
+    return {"ok": True, "delta_norm": [round(dx, 4), round(dy, 4)]}
+
+
 def list_teach_samples() -> dict[str, Any]:
     data = pick_preset.load_preset()
     samples = data.get("teach_samples")
@@ -341,13 +429,35 @@ def list_teach_samples() -> dict[str, Any]:
         "count": len(samples),
         "teach_model": model,
         "has_active_model": bool(model and model.get("active")),
+        "quality": guided_quality_report(samples),
+        "history": [row for row in (data.get("teach_history") or [])[-40:] if isinstance(row, dict)],
     }
+
+
+def reset_guided_session() -> dict[str, Any]:
+    data = pick_preset.load_preset()
+    previous = data.get("teach_samples")
+    previous_count = len(previous) if isinstance(previous, list) else 0
+    data["teach_samples"] = []
+    model = data.get("teach_model")
+    if isinstance(model, dict):
+        model["active"] = False
+        model["invalidated_at"] = pick_preset._now_iso()
+        model["invalidated_reason"] = "guided_session_reset"
+        data["teach_model"] = model
+    session_id = f"teach_session_{int(time.time())}"
+    data["teach_session"] = {"id": session_id, "started_at": pick_preset._now_iso()}
+    _append_history(data, "session_reset", previous_count=previous_count, session_id=session_id)
+    pick_preset.save_preset(data)
+    return {**list_teach_samples(), "session_id": session_id}
 
 
 def add_teach_sample(
     current_servo_deg: list[float],
     *,
     vision_at_scan: dict[str, Any] | None = None,
+    hold_out: dict[str, Any] | None = None,
+    scenario: str | None = None,
 ) -> dict[str, Any]:
     """Aggiunge un esempio teach (non sostituisce la calib zero singola)."""
     taught = pick_preset.compute_offsets_from_current_vs_scan(current_servo_deg)
@@ -389,6 +499,7 @@ def add_teach_sample(
         "taught_servo_deg": taught.get("taught_servo_deg"),
         "scan_servo_deg": taught.get("scan_servo_deg"),
         "scan_waypoint": taught.get("scan_waypoint"),
+        "scenario": scenario if scenario in GUIDED_SCENARIOS else None,
     }
     samples.append(entry)
     data["teach_samples"] = samples
@@ -396,11 +507,19 @@ def add_teach_sample(
         data["teach_model"]["active"] = False
         data["teach_model"]["invalidated_at"] = pick_preset._now_iso()
         data["teach_model"]["invalidated_reason"] = "new_sample_added"
+    _append_history(
+        data,
+        "sample_saved",
+        sample_id=sample_id,
+        scenario=entry.get("scenario"),
+        detection_ok=bool(vis and vis.get("detected")),
+    )
     pick_preset.save_preset(data)
 
-    hold_out = pick_preset._couple_and_hold_taught_pose(
-        taught.get("taught_servo_deg") or current_servo_deg
-    )
+    if hold_out is None:
+        hold_out = pick_preset._couple_and_hold_taught_pose(
+            taught.get("taught_servo_deg") or current_servo_deg
+        )
     out = list_teach_samples()
     out["ok"] = True
     out["sample"] = entry
@@ -419,7 +538,17 @@ def finish_teach_sample_after_release(
     *,
     vision_at_scan: dict[str, Any] | None = None,
     taught_servo_deg: list[float] | None = None,
+    scenario: str | None = None,
+    require_valid_vision: bool = False,
 ) -> dict[str, Any]:
+    def fail(reason: str, **payload: Any) -> dict[str, Any]:
+        data = pick_preset.load_preset()
+        _append_history(data, "sample_failed", reason=reason, scenario=scenario)
+        pick_preset.save_preset(data)
+        payload.pop("ok", None)
+        payload.pop("reason", None)
+        return {"ok": False, "reason": reason, **payload}
+
     taught: list[float] | None = None
     if isinstance(taught_servo_deg, list) and len(taught_servo_deg) >= 6:
         taught = service.clamp_servo_deg([float(x) for x in taught_servo_deg[:7]])
@@ -428,7 +557,35 @@ def finish_teach_sample_after_release(
         if not fb.get("ok") or not fb.get("servo_deg"):
             return {"ok": False, "reason": "no_feedback_in_release", "feedback": fb}
         taught = service.clamp_servo_deg(list(fb["servo_deg"]))
-    return add_teach_sample(taught, vision_at_scan=vision_at_scan)
+    # Safety first: in release riattiva coppia/HOLD prima di qualsiasi write.
+    # Se il processo si interrompe durante il salvataggio, il braccio resta
+    # comunque sostenuto dal publisher esterno già esistente.
+    hold_out = pick_preset._couple_and_hold_taught_pose(taught)
+    if not hold_out.get("ok"):
+        return fail("hold_before_teach_persist_failed", **hold_out)
+    vis = vision_at_scan if isinstance(vision_at_scan, dict) else pick_preset.load_preset().get("last_detection")
+    if require_valid_vision:
+        max_age = float(os.environ.get("D1_PICK_TEACH_MAX_VISION_AGE_S", "300"))
+        age = _vision_age_s(vis if isinstance(vis, dict) else None)
+        if not isinstance(vis, dict) or not vis.get("detected"):
+            return fail("fresh_2d_detection_required", **hold_out)
+        if age is None or age > max_age:
+            return fail("2d_detection_too_old", detection_age_s=age, **hold_out)
+        if scenario not in GUIDED_SCENARIOS:
+            return fail("guided_scenario_required", **hold_out)
+        validation = validate_guided_scenario(
+            str(scenario),
+            vis,
+            pick_preset.load_preset().get("teach_samples"),
+        )
+        if not validation.get("ok"):
+            return fail(str(validation.get("reason")), validation=validation, **hold_out)
+    return add_teach_sample(
+        taught,
+        vision_at_scan=vis if isinstance(vis, dict) else None,
+        hold_out=hold_out,
+        scenario=scenario,
+    )
 
 
 def delete_teach_sample(sample_id: str) -> dict[str, Any]:
@@ -457,7 +614,7 @@ def delete_teach_sample(sample_id: str) -> dict[str, Any]:
     return out
 
 
-def build_teach_model() -> dict[str, Any]:
+def build_teach_model(*, require_guided_quality: bool = False) -> dict[str, Any]:
     """Costruisce modello interpolato da tutti gli esempi teach."""
     data = pick_preset.load_preset()
     samples = data.get("teach_samples")
@@ -486,6 +643,12 @@ def build_teach_model() -> dict[str, Any]:
     valid = [s for s in samples if isinstance(s, dict) and isinstance(s.get("joint_offset_deg"), list)]
     if not valid:
         return {"ok": False, "reason": "no_valid_samples"}
+    quality = guided_quality_report(valid)
+    if require_guided_quality and not quality.get("ready"):
+        data = pick_preset.load_preset()
+        _append_history(data, "build_failed", reason="guided_scenarios_incomplete")
+        pick_preset.save_preset(data)
+        return {"ok": False, "reason": "guided_scenarios_incomplete", "quality": quality}
 
     centroid = _centroid_features(valid)
     baseline, blend_meta = interpolate_joint_offsets(
@@ -520,10 +683,12 @@ def build_teach_model() -> dict[str, Any]:
             data["teach_model"]["scan_servo_deg"] = [float(x) for x in sd[:7]]
             data["teach_model"]["scan_waypoint"] = wp.get("name")
 
+    _append_history(data, "build_ok", sample_count=len(valid), guided_ready=bool(quality.get("ready")))
     pick_preset.save_preset(data)
     info = pick_preset.preset_info()
     info["ok"] = True
     info["teach_model"] = model
+    info["quality"] = quality
     info["hint_it"] = (
         f"Modello teach attivo ({len(valid)} esempi). "
         "Le prossime prese interpolano offset da foto + libreria teach."

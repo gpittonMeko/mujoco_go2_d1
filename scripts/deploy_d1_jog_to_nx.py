@@ -92,6 +92,7 @@ PUSH_FILES = [
     "static/hermes/hermes.css",
     "static/hermes/hermes.js",
     "data/unitree_robot_main.png",
+    "output/pdf/d1_handeye_aruco_4x4_50_id0_60mm.pdf",
 ]
 
 

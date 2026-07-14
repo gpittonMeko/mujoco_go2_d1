@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ferma dashboard operator (5052) e il supervisore — usiamo solo D1 jog (5053).
+# Ferma dashboard operator (5052) e il supervisore — usiamo solo D1 jog (5056).
 set +e
 cd /home/unitree/go2_visual_dashboard 2>/dev/null || true
 echo "$(date -Is) nx_stop_operator_dashboard: stop 5052"

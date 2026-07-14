@@ -32,6 +32,10 @@ Thumbs.db
 *.log
 *.tmp
 MUJOCO_LOG.TXT
+.cache/
+_*.txt
+grasp_verbose_out.txt
+scripts/_*.py
 
 # CycloneDDS build (opzionale, se compilato in-place)
 cyclonedds/build/
@@ -47,3 +51,14 @@ data/true_zero_pose.json
 data/d1_grasp6d_calibration.json
 data/d1_grasp6d_handeye_samples.json
 data/d1_grasp6d_last.json
+data/d1_grasp6d_calibration_history.json
+data/d1_grasp6d_tuning.json
+data/d1_orbbec_snaps/
+data/_*.jpg
+data/*_debug*.jpg
+data/*_last.json
+data/*_state.json
+data/lab_run_images/
+# H2 demo meme (derived from external MP3; see docs/H2_DEMO.md)
+data/audio/cyberpunk_meme.wav
+data/audio/pellegrino_tts.*

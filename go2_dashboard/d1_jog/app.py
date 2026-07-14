@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import math
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import Flask, Response, after_this_request, jsonify, render_template, request, send_file, stream_with_context
 from werkzeug.exceptions import HTTPException
 
 from go2_dashboard.d1_jog import (
@@ -176,6 +177,10 @@ def create_d1_jog_app() -> Flask:
     )
     front_last_jpg: bytes | None = None
     wrist_last_jpg: bytes | None = None
+    front_last_at = 0.0
+    wrist_last_at = 0.0
+    front_snapshot_lock = threading.Lock()
+    auto_calibration_lock = threading.Lock()
     camera_diag: dict[str, dict[str, Any]] = {
         "wrist": {"index": None, "chroma": None, "rgb_like": False},
         "front": {"index": None, "chroma": None, "rgb_like": False},
@@ -252,7 +257,28 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/daemon/status")
     def daemon_status() -> Response:
-        return jsonify({"ok": True, **service.runtime_safety_status()})
+        out = {"ok": True, **service.runtime_safety_status()}
+        daemon = out.get("command_daemon") if isinstance(out.get("command_daemon"), dict) else {}
+        target = daemon.get("hold_target_servo_deg") if isinstance(daemon, dict) else None
+        if not isinstance(target, list):
+            last_publish = out.get("last_publish") if isinstance(out.get("last_publish"), dict) else {}
+            target = last_publish.get("last_pose_target_servo_deg")
+        feedback = service.read_servo_deg(fast=True)
+        raw = feedback.get("servo_deg") if feedback.get("ok") else None
+        if isinstance(target, list) and isinstance(raw, list) and len(target) >= 7 and len(raw) >= 7:
+            errs = [round(abs(float(target[i]) - float(raw[i])), 2) for i in range(7)]
+            out["hold_target_error_deg"] = errs
+            out["hold_target_max_error_deg"] = max(errs)
+            out["feedback"] = {
+                "ok": True,
+                "servo_deg": raw[:7],
+                "dds_counts": feedback.get("dds_counts"),
+                "arm_feedback": feedback.get("arm_feedback") or [],
+                "arm_feedback_count": feedback.get("arm_feedback_count") or 0,
+            }
+        else:
+            out["feedback"] = feedback
+        return jsonify(out)
 
     @app.route("/api/motion/reset", methods=["POST"])
     def motion_reset() -> Response:
@@ -385,7 +411,8 @@ def create_d1_jog_app() -> Flask:
         best_score = -1.0
         try:
             # Let auto-exposure settle: the first valid frame is often very dark.
-            for _ in range(18):
+            warmup_frames = max(3, int(os.environ.get("D1_CAMERA_SNAPSHOT_WARMUP", "3")))
+            for _ in range(warmup_frames):
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     continue
@@ -399,38 +426,60 @@ def create_d1_jog_app() -> Flask:
         return best
 
     def _front_camera_jpeg() -> bytes | None:
+        nonlocal front_last_jpg, front_last_at
+        cache_s = max(0.2, float(os.environ.get("D1_CAMERA_SNAPSHOT_CACHE_S", "2.2")))
+        if front_last_jpg is not None and time.monotonic() - front_last_at < cache_s:
+            return front_last_jpg
+        if not front_snapshot_lock.acquire(blocking=False):
+            return front_last_jpg
         try:
-            import cv2
-        except ImportError:
-            return None
-        idx = _resolve_realsense_rgb_index(role="front")
-        frame = _read_rgb_frame(cv2, idx)
-        if frame is None:
-            return None
-        chroma = _frame_chroma_bgr(frame)
-        camera_diag["front"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
-        ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok_enc or buf is None:
-            return None
-        return buf.tobytes()
+            try:
+                import cv2
+            except ImportError:
+                return front_last_jpg
+            idx = _resolve_realsense_rgb_index(role="front")
+            frame = _read_rgb_frame(cv2, idx)
+            if frame is None:
+                return front_last_jpg
+            chroma = _frame_chroma_bgr(frame)
+            camera_diag["front"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+            ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok_enc and buf is not None:
+                front_last_jpg = buf.tobytes()
+                front_last_at = time.monotonic()
+            return front_last_jpg
+        finally:
+            front_snapshot_lock.release()
 
     def _wrist_camera_jpeg() -> bytes | None:
-        nonlocal wrist_last_jpg
+        nonlocal wrist_last_jpg, wrist_last_at
+        cache_s = max(0.2, float(os.environ.get("D1_CAMERA_SNAPSHOT_CACHE_S", "2.2")))
+        if wrist_last_jpg is not None and time.monotonic() - wrist_last_at < cache_s:
+            return wrist_last_jpg
+        # Durante una capture 6D librealsense deve essere l'unico owner della
+        # D456. La UI continua a mostrare l'ultimo frame invece di contenderla.
+        if wrist_rgbd.capture_active():
+            return wrist_last_jpg
+        if not wrist_rgbd.try_acquire_camera():
+            return wrist_last_jpg
         try:
-            import cv2
-        except ImportError:
-            return None
-        idx = _resolve_realsense_rgb_index(role="wrist")
-        frame = _read_rgb_frame(cv2, idx)
-        if frame is None:
+            try:
+                import cv2
+            except ImportError:
+                return wrist_last_jpg
+            idx = _resolve_realsense_rgb_index(role="wrist")
+            frame = _read_rgb_frame(cv2, idx)
+            if frame is None:
+                return wrist_last_jpg
+            chroma = _frame_chroma_bgr(frame)
+            camera_diag["wrist"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+            ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok_enc and buf is not None:
+                wrist_last_jpg = buf.tobytes()
+                wrist_last_at = time.monotonic()
             return wrist_last_jpg
-        chroma = _frame_chroma_bgr(frame)
-        camera_diag["wrist"] = {"index": idx, "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
-        ok_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok_enc or buf is None:
-            return wrist_last_jpg
-        wrist_last_jpg = buf.tobytes()
-        return wrist_last_jpg
+        finally:
+            wrist_rgbd.release_camera()
 
     def _front_mjpeg_stream():
         nonlocal front_last_jpg
@@ -804,7 +853,8 @@ def create_d1_jog_app() -> Flask:
             move["coupling"] = couple
             move["feedback_before"] = fb_before
             return jsonify(move), 502
-        if os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        force_2d = str(body.get("vision_mode") or "").strip().lower() == "2d"
+        if not force_2d and os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
             detect = _capture_grasp6d_plan()
             grasp_estimate = detect.get("grasp_estimate") or {}
         else:
@@ -906,6 +956,18 @@ def create_d1_jog_app() -> Flask:
         reason = str(body.get("reason") or "ui").strip() or "ui"
         out = service.request_emergency_hold(reason=reason)
         code = 200 if out.get("ok") or out.get("skipped") else 502
+        return jsonify(out), code
+
+    @app.route("/api/joints/micro_jog", methods=["POST"])
+    def joints_micro_jog() -> Response:
+        body = request.get_json(silent=True) or {}
+        try:
+            joint_index = int(body.get("joint_index"))
+            delta_deg = float(body.get("delta_deg"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "reason": "joint_index_and_delta_deg_required"}), 400
+        out = service.micro_jog_current_pose(joint_index=joint_index, delta_deg=delta_deg)
+        code = 200 if out.get("ok") or out.get("skipped") else 422
         return jsonify(out), code
 
     @app.route("/api/joints/enable", methods=["POST"])
@@ -1450,11 +1512,18 @@ def create_d1_jog_app() -> Flask:
         code = 200 if out.get("ok") else 404
         return jsonify(out), code
 
-    @app.route("/api/pick/teach/samples", methods=["GET"])
+    @app.route("/api/pick/teach/samples", methods=["GET", "DELETE"])
     def pick_teach_samples_list() -> Response:
         from go2_dashboard.d1_jog import pick_teach_model
 
+        if request.method == "DELETE":
+            return jsonify(pick_teach_model.reset_guided_session())
         return jsonify(pick_teach_model.list_teach_samples())
+
+    @app.route("/api/pick/teach/scan", methods=["POST"])
+    def pick_teach_guided_scan() -> Response:
+        out = _legacy_scan_and_detect()
+        return jsonify(out), (200 if out.get("ok") else 422)
 
     @app.route("/api/pick/teach/finish", methods=["POST"])
     def pick_teach_finish() -> Response:
@@ -1463,6 +1532,8 @@ def create_d1_jog_app() -> Flask:
 
         body = request.get_json(silent=True) or {}
         vis = body.get("vision_at_scan")
+        scenario = str(body.get("scenario") or "").strip()
+        require_valid_vision = bool(body.get("require_valid_vision"))
         if body.get("servo_deg"):
             servo, err = _servo_deg_from_body(body)
             if servo is None:
@@ -1470,10 +1541,14 @@ def create_d1_jog_app() -> Flask:
             out = pick_teach_model.finish_teach_sample_after_release(
                 vision_at_scan=vis if isinstance(vis, dict) else None,
                 taught_servo_deg=servo,
+                scenario=scenario,
+                require_valid_vision=require_valid_vision,
             )
         else:
             out = pick_teach_model.finish_teach_sample_after_release(
                 vision_at_scan=vis if isinstance(vis, dict) else None,
+                scenario=scenario,
+                require_valid_vision=require_valid_vision,
             )
         code = 200 if out.get("ok") else 502
         return jsonify(out), code
@@ -1490,7 +1565,8 @@ def create_d1_jog_app() -> Flask:
     def pick_teach_build_model() -> Response:
         from go2_dashboard.d1_jog import pick_teach_model
 
-        out = pick_teach_model.build_teach_model()
+        body = request.get_json(silent=True) or {}
+        out = pick_teach_model.build_teach_model(require_guided_quality=bool(body.get("guided")))
         code = 200 if out.get("ok") else 400
         return jsonify(out), code
 
@@ -1600,6 +1676,39 @@ def create_d1_jog_app() -> Flask:
             "grasp_tcp_estimate": tcp,
         }
 
+    def _legacy_scan_and_detect() -> dict[str, Any]:
+        """Raggiunge la posa SCANSIONE canonica e acquisisce una detection 2D nuova."""
+        found = program_store.find_scan_waypoint()
+        if found is None:
+            return {"ok": False, "reason": "scan_waypoint_not_found"}
+        _program_id, waypoint = found
+        raw = waypoint.get("servo_deg")
+        if not isinstance(raw, list) or len(raw) < 6:
+            return {"ok": False, "reason": "invalid_scan_waypoint"}
+        scan_servo = service.clamp_servo_deg([float(x) for x in raw[:7]])
+        move = _move_via_safe_transit(scan_servo)
+        if not (move.get("ok") or move.get("skipped")):
+            return {"ok": False, "reason": move.get("reason", "scan_move_failed"), "move": move}
+        settle_s = float(os.environ.get("D1_PICK_2D_SCAN_SETTLE_S", "1.0"))
+        if settle_s > 0:
+            time.sleep(settle_s)
+        vision = pick_vision.capture_and_detect()
+        _apply_pick_detection_to_preset(vision)
+        feedback = service.read_servo_deg(fast=True)
+        out = {
+            **vision,
+            "scan_waypoint": waypoint.get("name"),
+            "scan_servo_deg": scan_servo,
+            "scan_move": move,
+            "scan_feedback": feedback,
+            "vision_mode": "2d",
+        }
+        out["grasp_estimate"] = _scan_grasp_estimate(scan_servo, vision)
+        if not vision.get("detection_ok"):
+            out["ok"] = False
+            out["reason"] = "box_2d_not_detected"
+        return out
+
     @app.route("/api/pick/vision/crop", methods=["GET"])
     def pick_vision_crop_get() -> Response:
         from go2_dashboard.d1_jog import pick_vision_crop
@@ -1655,6 +1764,10 @@ def create_d1_jog_app() -> Flask:
 
     def _public_box6d(box: dict[str, Any]) -> dict[str, Any]:
         out = dict(box)
+        # I punti servono al renderer server-side, non al browser: rimuoverli
+        # evita risposte JSON di migliaia di righe durante il monitor live.
+        out.pop("sample_px_yx", None)
+        out.pop("sample_height_m", None)
         for key in ("T_camera_box",):
             value = out.get(key)
             if hasattr(value, "tolist"):
@@ -1667,9 +1780,51 @@ def create_d1_jog_app() -> Flask:
             out["plane"] = plane
         return out
 
+    def _capture_wrist_rgbd_with_retry(*, median_frames: int | None = None) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                if median_frames is None:
+                    return wrist_rgbd.capture_aligned()
+                return wrist_rgbd.capture_aligned(median_frames=median_frames)
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    continue
+                raise
+        raise RuntimeError(str(last_exc) if last_exc else "wrist_rgbd_capture_failed")
+
+    def _estimate_grasp6d_box(frame: Any) -> dict[str, Any]:
+        depth_box = grasp6d.estimate_box_pose(frame.depth_m, frame.intrinsics)
+        if depth_box.get("ok"):
+            return depth_box
+        if os.environ.get("D1_GRASP6D_RGB_GUIDED_FALLBACK", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return depth_box
+        try:
+            from box_object_detector import detect_box_object
+
+            rgb_det = detect_box_object(frame.color_bgr)
+        except Exception as exc:
+            out = dict(depth_box)
+            out["rgb_guided_error"] = repr(exc)
+            return out
+        if not rgb_det.get("ok"):
+            out = dict(depth_box)
+            out["rgb_detection"] = rgb_det
+            return out
+        guided = grasp6d.estimate_box_pose_rgb_guided(
+            frame.depth_m,
+            frame.intrinsics,
+            rgb_det,
+            plane_hint=depth_box.get("plane") if isinstance(depth_box.get("plane"), dict) else None,
+        )
+        guided["depth_only_reason"] = depth_box.get("reason")
+        guided["depth_only_box"] = _public_box6d(depth_box)
+        return guided
+
     def _capture_grasp6d_plan() -> dict[str, Any]:
         try:
-            frame = wrist_rgbd.capture_aligned()
+            frame = _capture_wrist_rgbd_with_retry()
         except Exception as exc:
             return {
                 "ok": False,
@@ -1677,7 +1832,7 @@ def create_d1_jog_app() -> Flask:
                 "detail": str(exc),
                 "rgbd": wrist_rgbd.health(),
             }
-        box = grasp6d.estimate_box_pose(frame.depth_m, frame.intrinsics)
+        box = _estimate_grasp6d_box(frame)
         public_box = _public_box6d(box)
         if not box.get("ok"):
             return {"ok": False, "reason": box.get("reason"), "rgbd": frame.public_info(), "box": public_box}
@@ -1709,6 +1864,385 @@ def create_d1_jog_app() -> Flask:
             },
         }
 
+    def _summarize_grasp6d_cluster_observations(observations: list[dict[str, Any]]) -> dict[str, Any]:
+        import numpy as np
+
+        reason_counts: dict[str, int] = {}
+        valid: list[dict[str, Any]] = []
+        for obs in observations:
+            reason = str(obs.get("reason") or ("ok" if obs.get("ok") else "unknown"))
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            if obs.get("ok"):
+                valid.append(obs)
+        centers: list[np.ndarray] = []
+        rotations: list[np.ndarray] = []
+        point_counts: list[int] = []
+        for obs in valid:
+            selected = ((obs.get("plan") or {}).get("selected") or {})
+            raw_t = selected.get("T_base_grasp") or (obs.get("plan") or {}).get("T_base_box")
+            try:
+                T = np.asarray(raw_t, dtype=float).reshape(4, 4)
+            except (TypeError, ValueError):
+                continue
+            centers.append(T[:3, 3])
+            rotations.append(T[:3, :3])
+            box = obs.get("box") if isinstance(obs.get("box"), dict) else {}
+            try:
+                point_counts.append(int(box.get("point_count") or 0))
+            except (TypeError, ValueError):
+                point_counts.append(0)
+
+        valid_count = len(valid)
+        total = len(observations)
+        valid_ratio = valid_count / max(total, 1)
+        spread_m = None
+        rotation_spread_deg = None
+        if len(centers) >= 2:
+            c = np.stack(centers)
+            spread_m = float(np.max(np.linalg.norm(c - np.mean(c, axis=0), axis=1)))
+        elif len(centers) == 1:
+            spread_m = 0.0
+        if len(rotations) >= 2:
+            rot_spread = 0.0
+            ref = rotations[0]
+            for R in rotations[1:]:
+                cos_angle = float(np.clip((np.trace(R @ ref.T) - 1.0) * 0.5, -1.0, 1.0))
+                rot_spread = max(rot_spread, math.degrees(math.acos(cos_angle)))
+            rotation_spread_deg = rot_spread
+        elif len(rotations) == 1:
+            rotation_spread_deg = 0.0
+
+        min_valid = max(2, int(os.environ.get("D1_GRASP6D_CLUSTER_PROBE_MIN_VALID", "3")))
+        max_spread_m = float(os.environ.get("D1_GRASP6D_CLUSTER_PROBE_MAX_SPREAD_M", "0.012"))
+        max_rot_deg = float(os.environ.get("D1_GRASP6D_CLUSTER_PROBE_MAX_ROT_DEG", "7.0"))
+        stable = bool(
+            valid_count >= min_valid
+            and spread_m is not None
+            and rotation_spread_deg is not None
+            and spread_m <= max_spread_m
+            and rotation_spread_deg <= max_rot_deg
+        )
+        return {
+            "ok": stable,
+            "total_observations": total,
+            "valid_observations": valid_count,
+            "valid_ratio": round(valid_ratio, 3),
+            "reason_counts": reason_counts,
+            "spread_m": spread_m,
+            "rotation_spread_deg": rotation_spread_deg,
+            "point_count_min": min(point_counts) if point_counts else None,
+            "point_count_max": max(point_counts) if point_counts else None,
+            "thresholds": {
+                "min_valid_observations": min_valid,
+                "max_spread_m": max_spread_m,
+                "max_rotation_spread_deg": max_rot_deg,
+            },
+            "ready_for_pregrasp": stable,
+            "ready_for_execute": stable,
+            "next_action": "pregrasp" if stable else "debug_cluster_or_reposition_object",
+        }
+
+    def _probe_grasp6d_cluster(*, frames: int, interval_s: float) -> dict[str, Any]:
+        observations: list[dict[str, Any]] = []
+        for index in range(frames):
+            obs = _capture_grasp6d_plan()
+            observations.append(
+                {
+                    "index": index + 1,
+                    "ok": bool(obs.get("ok")),
+                    "reason": obs.get("reason"),
+                    "box": obs.get("box"),
+                    "plan": obs.get("plan"),
+                    "rgbd": obs.get("rgbd"),
+                }
+            )
+            if index < frames - 1 and interval_s > 0:
+                time.sleep(interval_s)
+        summary = _summarize_grasp6d_cluster_observations(observations)
+        out = {
+            "ok": bool(summary.get("ok")),
+            "mode": "cluster_probe",
+            "summary": summary,
+            "observations": observations,
+            "safety": {
+                "moves_arm": False,
+                "uses_cached_pose_for_execute": False,
+            },
+        }
+        _save_grasp6d_run({"at": time.time(), **out})
+        return out
+
+    def _grasp6d_debug_jpeg(*, capture_new: bool = True) -> tuple[bytes | None, dict[str, Any]]:
+        import cv2
+        import numpy as np
+
+        try:
+            frame = _capture_wrist_rgbd_with_retry() if capture_new else wrist_rgbd.last_frame()
+            if frame is None:
+                frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+        except Exception as exc:
+            return None, {"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc)}
+
+        box = _estimate_grasp6d_box(frame)
+        canvas = frame.color_bgr.copy()
+        h, w = canvas.shape[:2]
+        fx = float(frame.intrinsics.get("fx", 1.0))
+        fy = float(frame.intrinsics.get("fy", 1.0))
+        ppx = float(frame.intrinsics.get("ppx", w * 0.5))
+        ppy = float(frame.intrinsics.get("ppy", h * 0.5))
+
+        depth = np.asarray(frame.depth_m, dtype=np.float32)
+        valid_depth = np.isfinite(depth) & (depth > 0.10) & (depth < 1.5)
+        if np.count_nonzero(valid_depth) > 0:
+            dvals = depth[valid_depth]
+            dmin = float(np.percentile(dvals, 5))
+            dmax = float(np.percentile(dvals, 95))
+            if dmax <= dmin:
+                dmax = dmin + 0.05
+            depth_u8 = np.zeros_like(depth, dtype=np.uint8)
+            depth_u8[valid_depth] = np.clip(((depth[valid_depth] - dmin) / (dmax - dmin)) * 255.0, 0, 255).astype(np.uint8)
+            depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
+            depth_color[~valid_depth] = 0
+            dh = min(220, h // 2)
+            dw = min(300, w // 2)
+            inset = cv2.resize(depth_color, (dw, dh), interpolation=cv2.INTER_AREA)
+            x0 = max(0, w - dw - 8)
+            y0 = 8
+            canvas[y0 : y0 + dh, x0 : x0 + dw] = cv2.addWeighted(canvas[y0 : y0 + dh, x0 : x0 + dw], 0.20, inset, 0.80, 0)
+            cv2.rectangle(canvas, (x0, y0), (x0 + dw, y0 + dh), (30, 220, 220), 1)
+            cv2.putText(canvas, "depth heatmap", (x0 + 8, y0 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        debug_points = {"total_depth_points": 0, "above_floor_points": 0, "above_floor_default_points": 0}
+        plane_dbg = box.get("plane") if isinstance(box.get("plane"), dict) else {}
+        pts, pxs = grasp6d.depth_to_points(depth, frame.intrinsics)
+        debug_points["total_depth_points"] = int(len(pts))
+        if plane_dbg.get("ok"):
+            if len(pts) > 0:
+                nrm_raw = plane_dbg.get("normal")
+                if isinstance(nrm_raw, np.ndarray):
+                    nrm = nrm_raw.astype(float).reshape(3)
+                elif isinstance(nrm_raw, list) and len(nrm_raw) >= 3:
+                    nrm = np.asarray(nrm_raw[:3], dtype=float)
+                else:
+                    nrm = np.asarray([0.0, 0.0, -1.0], dtype=float)
+                d0 = float(plane_dbg.get("d") or 0.0)
+                signed = pts @ nrm + d0
+                min_h_default = float((box.get("height_threshold_m") or {}).get("default_min", 0.025))
+                min_h_used = float((box.get("height_threshold_m") or {}).get("min", min_h_default))
+                max_h_used = float((box.get("height_threshold_m") or {}).get("max", 0.45))
+                default_mask = (signed > min_h_default) & (signed < max_h_used)
+                used_mask = (signed > min_h_used) & (signed < max_h_used)
+                debug_points["above_floor_default_points"] = int(np.count_nonzero(default_mask))
+                debug_points["above_floor_points"] = int(np.count_nonzero(used_mask))
+                px_used = pxs[used_mask]
+                if len(px_used) > 1800:
+                    idx = np.linspace(0, len(px_used) - 1, 1800, dtype=int)
+                    px_used = px_used[idx]
+                for yx in px_used:
+                    py = int(float(yx[0]))
+                    px = int(float(yx[1]))
+                    if 0 <= px < w and 0 <= py < h:
+                        canvas[py, px] = (200, 70, 250)
+        cv2.putText(canvas, "6D cluster debug", (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 220, 40), 2, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            f"reason: {box.get('reason', 'ok')}",
+            (14, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.56,
+            (60, 230, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        stride = int(box.get("mask_stride") or 3)
+        components = box.get("components") if isinstance(box.get("components"), list) else []
+        selected_label = None
+        sel = box.get("selected_component")
+        if isinstance(sel, dict):
+            selected_label = int(sel.get("label") or -1)
+
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            label = int(comp.get("label") or -1)
+            cnt = int(comp.get("point_count") or 0)
+            bbox = comp.get("mask_bbox_xywh")
+            center = comp.get("center_px_yx")
+            is_selected = label == selected_label
+            color = (40, 220, 40) if is_selected else (40, 160, 255)
+            if isinstance(bbox, list) and len(bbox) >= 4:
+                x = int(bbox[0] * stride)
+                y = int(bbox[1] * stride)
+                bw = int(bbox[2] * stride)
+                bh = int(bbox[3] * stride)
+                cv2.rectangle(canvas, (x, y), (x + bw, y + bh), color, 2)
+                cv2.putText(
+                    canvas,
+                    f"L{label} p{cnt}",
+                    (max(2, x), max(14, y - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
+            if isinstance(center, list) and len(center) >= 2:
+                cy = int(float(center[0]))
+                cx = int(float(center[1]))
+                cv2.drawMarker(canvas, (cx, cy), color, markerType=cv2.MARKER_CROSS, markerSize=12, thickness=2)
+
+        sample_px = box.get("sample_px_yx") if isinstance(box.get("sample_px_yx"), list) else []
+        sample_h = box.get("sample_height_m") if isinstance(box.get("sample_height_m"), list) else []
+        if sample_px:
+            hvals = np.asarray(sample_h if len(sample_h) == len(sample_px) else [0.0] * len(sample_px), dtype=float)
+            if hvals.size:
+                hmin = float(np.min(hvals))
+                hmax = float(np.max(hvals))
+                span = max(hmax - hmin, 1e-6)
+            else:
+                hmin, span = 0.0, 1.0
+            for i, p in enumerate(sample_px):
+                if not isinstance(p, list) or len(p) < 2:
+                    continue
+                py = int(float(p[0]))
+                px = int(float(p[1]))
+                if px < 0 or py < 0 or px >= w or py >= h:
+                    continue
+                hv = float(hvals[i]) if i < len(hvals) else 0.0
+                t = max(0.0, min(1.0, (hv - hmin) / span))
+                color = (int(255 * (1.0 - t)), int(220 * t), int(255 * t))
+                cv2.circle(canvas, (px, py), 1, color, -1)
+            cv2.putText(
+                canvas,
+                f"point cloud samples: {len(sample_px)}",
+                (14, 72),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.53,
+                (200, 255, 200),
+                2,
+                cv2.LINE_AA,
+            )
+
+        plan_out: dict[str, Any] | None = None
+        if box.get("ok"):
+            fb = service.read_servo_deg(fast=True)
+            if fb.get("ok") and isinstance(fb.get("servo_deg"), list):
+                plan_out = grasp6d.plan_grasp(box, current_servo_deg=fb.get("servo_deg")[:7])
+        if plan_out and plan_out.get("ok"):
+            selected = (plan_out.get("selected") or {})
+            grasp_T = np.asarray(selected.get("T_base_grasp"), dtype=float)
+            pre_T = np.asarray(selected.get("T_base_pregrasp"), dtype=float)
+            cal = grasp6d.load_calibration()
+            fb = service.read_servo_deg(fast=True)
+            if cal.get("ok") and fb.get("ok") and isinstance(fb.get("servo_deg"), list):
+                q_now = np.radians(np.asarray(fb.get("servo_deg")[:6], dtype=float))
+                T_base_tool = grasp6d.fk_tool_transform(q_now)
+                T_base_camera = T_base_tool @ np.asarray(cal["T_tool_camera_np"], dtype=float)
+                T_camera_base = np.linalg.inv(T_base_camera)
+
+                def _proj(Tb: np.ndarray) -> tuple[int, int] | None:
+                    if Tb.shape != (4, 4):
+                        return None
+                    pc = T_camera_base @ Tb
+                    z = float(pc[2, 3])
+                    if z <= 0.05:
+                        return None
+                    u = int(round(fx * float(pc[0, 3]) / z + ppx))
+                    v = int(round(fy * float(pc[1, 3]) / z + ppy))
+                    if 0 <= u < w and 0 <= v < h:
+                        return (u, v)
+                    return None
+
+                gp = _proj(grasp_T)
+                pp = _proj(pre_T)
+                if pp is not None:
+                    cv2.drawMarker(canvas, pp, (0, 220, 255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=18, thickness=2)
+                    cv2.putText(canvas, "pre", (pp[0] + 6, pp[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
+                if gp is not None:
+                    cv2.drawMarker(canvas, gp, (0, 255, 80), markerType=cv2.MARKER_STAR, markerSize=20, thickness=2)
+                    cv2.putText(canvas, "grasp", (gp[0] + 6, gp[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 80), 1, cv2.LINE_AA)
+                if gp is not None and pp is not None:
+                    cv2.line(canvas, pp, gp, (100, 240, 255), 1, cv2.LINE_AA)
+
+        plane = box.get("plane") if isinstance(box.get("plane"), dict) else {}
+        depth_valid = float(frame.public_info().get("depth_valid_fraction") or 0.0)
+        info = (
+            f"depth_valid={depth_valid:.3f} plane_inliers={float(plane.get('inlier_fraction') or 0.0):.3f} "
+            f"pts={debug_points.get('total_depth_points',0)} above={debug_points.get('above_floor_points',0)} comps={len(components)}"
+        )
+        cv2.putText(canvas, info, (14, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+        if depth_valid < 0.12:
+            cv2.putText(canvas, "hint: depth_valid low -> illumina la scena / riduci riflessi / avvicina camera", (14, h - 36), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (70, 230, 255), 1, cv2.LINE_AA)
+
+        # Una heatmap RGB non mostra la geometria. Aggiungiamo due viste
+        # metriche della stessa point cloud nel frame camera: X-Z dall'alto e
+        # Z-Y laterale. Sono valide anche senza calibrazione hand-eye.
+        cloud = np.full((h, w, 3), (8, 27, 40), dtype=np.uint8)
+        cv2.putText(cloud, "POINT CLOUD METRICA (frame D456)", (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (235, 245, 255), 2, cv2.LINE_AA)
+        mid = h // 2
+        cv2.line(cloud, (0, mid), (w, mid), (55, 82, 96), 1)
+        cv2.putText(cloud, "TOP: X / Z", (14, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (90, 210, 255), 1, cv2.LINE_AA)
+        cv2.putText(cloud, "SIDE: Z / Y", (14, mid + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (90, 210, 255), 1, cv2.LINE_AA)
+        if len(pts) > 0:
+            plot_pts = pts
+            if len(plot_pts) > 7000:
+                plot_pts = plot_pts[np.linspace(0, len(plot_pts) - 1, 7000, dtype=int)]
+            nrm_raw = plane_dbg.get("normal")
+            nrm = np.asarray(nrm_raw, dtype=float).reshape(3) if isinstance(nrm_raw, (list, np.ndarray)) else np.asarray([0.0, 0.0, -1.0])
+            if plane_dbg.get("ok"):
+                signed_plot = plot_pts @ nrm + float(plane_dbg.get("d") or 0.0)
+                min_used = float((box.get("height_threshold_m") or {}).get("min", 0.025))
+                is_object = signed_plot > min_used
+            else:
+                is_object = np.zeros(len(plot_pts), dtype=bool)
+            x_lim = max(0.18, float(np.percentile(np.abs(plot_pts[:, 0]), 98)))
+            z_lo = max(0.10, float(np.percentile(plot_pts[:, 2], 2)))
+            z_hi = max(z_lo + 0.10, float(np.percentile(plot_pts[:, 2], 98)))
+            y_lo = float(np.percentile(plot_pts[:, 1], 2))
+            y_hi = max(y_lo + 0.08, float(np.percentile(plot_pts[:, 1], 98)))
+
+            def _sx(x: float) -> int:
+                return int(np.clip((x / (2.0 * x_lim) + 0.5) * (w - 36) + 18, 4, w - 5))
+
+            def _sz(z: float, top: int, bottom: int) -> int:
+                return int(np.clip(bottom - (z - z_lo) / (z_hi - z_lo) * (bottom - top), top, bottom))
+
+            def _sy(y: float) -> int:
+                return int(np.clip(h - 14 - (y - y_lo) / (y_hi - y_lo) * (h - mid - 48), mid + 34, h - 8))
+
+            for p, obj_pt in zip(plot_pts, is_object):
+                color = (70, 235, 115) if obj_pt else (100, 118, 128)
+                cv2.circle(cloud, (_sx(float(p[0])), _sz(float(p[2]), 58, mid - 10)), 1, color, -1)
+                side_x = int(np.clip(18 + (float(p[2]) - z_lo) / (z_hi - z_lo) * (w - 36), 4, w - 5))
+                cv2.circle(cloud, (side_x, _sy(float(p[1]))), 1, color, -1)
+
+            center = box.get("center_camera_m")
+            if isinstance(center, list) and len(center) >= 3:
+                cx, cy, cz = map(float, center[:3])
+                top_p = (_sx(cx), _sz(cz, 58, mid - 10))
+                side_p = (int(np.clip(18 + (cz - z_lo) / (z_hi - z_lo) * (w - 36), 4, w - 5)), _sy(cy))
+                cv2.drawMarker(cloud, top_p, (0, 255, 255), cv2.MARKER_STAR, 18, 2)
+                cv2.drawMarker(cloud, side_p, (0, 255, 255), cv2.MARKER_STAR, 18, 2)
+                cv2.putText(cloud, "box/grasp", (top_p[0] + 7, top_p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
+        else:
+            cv2.putText(cloud, "Nessun punto depth valido", (14, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (70, 150, 255), 2, cv2.LINE_AA)
+        canvas = np.hstack([canvas, cloud])
+
+        ok_enc, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok_enc or buf is None:
+            return None, {"ok": False, "reason": "jpeg_encode_failed", "box": _public_box6d(box), "rgbd": frame.public_info()}
+        meta = {
+            "ok": bool(box.get("ok")),
+            "reason": box.get("reason"),
+            "box": _public_box6d(box),
+            "rgbd": frame.public_info(),
+            "components_count": len(components),
+            "debug_points": debug_points,
+            "plan": plan_out,
+        }
+        return bytes(buf), meta
+
     def _save_grasp6d_run(payload: dict[str, Any]) -> None:
         import json
 
@@ -1720,6 +2254,32 @@ def create_d1_jog_app() -> Flask:
             tmp.replace(path)
         except OSError:
             pass
+
+    def _load_grasp6d_run() -> dict[str, Any]:
+        import json
+
+        path = PROJECT_ROOT / "data" / "d1_grasp6d_last.json"
+        if not path.is_file():
+            return {"ok": False, "reason": "last_run_not_found", "path": str(path)}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            return {"ok": False, "reason": "last_run_read_failed", "detail": str(exc), "path": str(path)}
+        return {"ok": True, "path": str(path), "run": payload}
+
+    def _tail_text(path: Path, *, max_chars: int = 12000) -> dict[str, Any]:
+        if not path.is_file():
+            return {"ok": False, "reason": "log_not_found", "path": str(path)}
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return {"ok": False, "reason": "log_read_failed", "detail": str(exc), "path": str(path)}
+        return {
+            "ok": True,
+            "path": str(path),
+            "tail": text[-max_chars:],
+            "size_bytes": path.stat().st_size,
+        }
 
     @app.route("/api/pick/rgbd/health", methods=["GET", "POST"])
     def pick_rgbd_health() -> Response:
@@ -1735,28 +2295,571 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/pick/metric/calibration/sample", methods=["POST"])
     def pick_metric_calibration_sample() -> Response:
+        feedback: dict[str, Any] | None = None
+
+        def _hold_current() -> dict[str, Any]:
+            nonlocal feedback
+            feedback = service.read_servo_deg(fast=False)
+            raw_pose = feedback.get("servo_deg") if isinstance(feedback, dict) else None
+            if not feedback.get("ok") or not isinstance(raw_pose, list) or len(raw_pose) < 7:
+                return {"ok": False, "reason": "arm_feedback_unavailable", "feedback": feedback}
+            return service.couple_and_hold_pose(list(raw_pose[:7]), with_power=True, force=True)
+
+        # Poka-yoke: prima congeliamo la posa corrente, poi catturiamo il
+        # target. In Release il braccio può cedere durante l'acquisizione RGB-D:
+        # sample e FK devono riferirsi alla stessa posa ferma.
+        hold = _hold_current()
+        if not hold.get("ok"):
+            grasp6d.record_calibration_event("sample_failed", reason="hold_failed", hold_ok=False)
+            return jsonify({"ok": False, "reason": "hold_before_sample_persist_failed", "hold": hold}), 502
+
         try:
-            frame = wrist_rgbd.capture_aligned(median_frames=2)
+            frame = _capture_wrist_rgbd_with_retry(median_frames=2)
+        except Exception as exc:
+            grasp6d.record_calibration_event(
+                "sample_failed", reason="wrist_rgbd_capture_failed", hold_ok=bool(hold.get("ok"))
+            )
+            return jsonify(
+                {"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc), "hold": hold}
+            ), 503
+
+        marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        if not marker.get("ok"):
+            grasp6d.record_calibration_event(
+                "sample_failed", reason=str(marker.get("reason")), hold_ok=True
+            )
+            return jsonify({**marker, "hold": hold}), 422
+        if (
+            marker.get("target_type") == "aprilgrid_36h11"
+            and marker.get("pose_method") != "tag_corners"
+            and os.environ.get("D1_GRASP6D_ALLOW_CENTER_ONLY_CALIB", "0").lower() not in {"1", "true", "yes", "on"}
+        ):
+            grasp6d.record_calibration_event(
+                "sample_failed",
+                reason="aprilgrid_corner_pose_required",
+                visible_marker_count=marker.get("visible_marker_count"),
+                reprojection_rms_px=marker.get("reprojection_rms_px"),
+                hold_ok=True,
+            )
+            return jsonify(
+                {
+                    **marker,
+                    "ok": False,
+                    "reason": "aprilgrid_corner_pose_required",
+                    "hint": "La calibrazione 6D salva solo pose AprilGrid da corner multi-tag, non fallback tag_centers.",
+                    "hold": hold,
+                }
+            ), 422
+        raw = feedback.get("servo_deg") if isinstance(feedback, dict) else None
+        import numpy as np
+
+        T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
+        samples = grasp6d.list_handeye_samples()
+        candidate = {
+            "T_base_tool": T_base_tool.tolist(),
+            "T_camera_target": marker["T_camera_target"],
+            "marker": {
+                key: marker.get(key)
+                for key in (
+                    "target_type",
+                    "visible_marker_count",
+                    "pose_method",
+                    "object_point_variant",
+                    "reprojection_rms_px",
+                    "marker_ids",
+                    "object_point_variant",
+                )
+                if key in marker
+            },
+        }
+        novelty = grasp6d.sample_pose_novelty(samples, candidate)
+        if samples and not novelty.get("useful"):
+            grasp6d.record_calibration_event(
+                "sample_failed",
+                reason="pose_too_similar",
+                visible_marker_count=marker.get("visible_marker_count"),
+                reprojection_rms_px=marker.get("reprojection_rms_px"),
+                hold_ok=True,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "pose_too_similar",
+                    "hint": "Sample non salvato: cambia di più posizione/orientamento prima di riprovare.",
+                    "novelty": novelty,
+                    "marker": marker,
+                    "hold": hold,
+                }
+            ), 422
+        if len(samples) >= 8:
+            current_quality = grasp6d.handeye_quality_report(samples)
+            candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
+            current_severity = grasp6d.residual_severity(current_quality)
+            candidate_severity = grasp6d.residual_severity(candidate_quality)
+            improves = (
+                current_severity is not None
+                and candidate_severity is not None
+                and candidate_severity <= current_severity * 0.98
+            )
+            if not improves and not candidate_quality.get("build_ready"):
+                grasp6d.record_calibration_event(
+                    "sample_failed",
+                    reason="residual_not_improving",
+                    visible_marker_count=marker.get("visible_marker_count"),
+                    reprojection_rms_px=marker.get("reprojection_rms_px"),
+                    hold_ok=True,
+                )
+                return jsonify(
+                    {
+                        "ok": False,
+                        "reason": "residual_not_improving",
+                        "hint": "Sample non salvato: dopo 8 campioni accetto solo viste che migliorano il residuo.",
+                        "current_quality": current_quality,
+                        "candidate_quality": candidate_quality,
+                        "marker": marker,
+                        "hold": hold,
+                    }
+                ), 422
+        out = grasp6d.append_handeye_sample(
+            T_base_tool,
+            np.asarray(marker["T_camera_target"], dtype=float),
+            marker=marker,
+            servo_deg=[float(x) for x in raw[:7]],
+        )
+        out["marker"] = marker
+        out["rgbd"] = frame.public_info()
+        out["hold"] = hold
+        grasp6d.record_calibration_event(
+            "sample_saved",
+            sample_count=int(out.get("sample_count") or 0),
+            target_type=marker.get("target_type"),
+            marker_id=marker.get("marker_id"),
+            visible_marker_count=marker.get("visible_marker_count"),
+            reprojection_rms_px=marker.get("reprojection_rms_px"),
+            hold_ok=True,
+        )
+        return jsonify(out)
+
+    @app.route("/api/pick/metric/calibration/probe", methods=["POST"])
+    def pick_metric_calibration_probe() -> Response:
+        """Verifica il target senza salvare sample e senza comandare il braccio."""
+        try:
+            frame = _capture_wrist_rgbd_with_retry(median_frames=2)
         except Exception as exc:
             return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc)}), 503
         marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
-        if not marker.get("ok"):
-            return jsonify(marker), 422
+        marker["rgbd"] = frame.public_info()
+        return jsonify(marker), (200 if marker.get("ok") else 422)
+
+    @app.route("/api/pick/metric/calibration/live_status", methods=["POST"])
+    def pick_metric_calibration_live_status() -> Response:
+        """Stato live: target, posa motori, novità vista e qualità provvisoria."""
         feedback = service.read_servo_deg(fast=True)
-        raw = feedback.get("servo_deg")
-        if not feedback.get("ok") or not isinstance(raw, list) or len(raw) < 6:
+        raw = feedback.get("servo_deg") if isinstance(feedback, dict) else None
+        if not feedback.get("ok") or not isinstance(raw, list) or len(raw) < 7:
             return jsonify({"ok": False, "reason": "arm_feedback_unavailable", "feedback": feedback}), 503
         import numpy as np
 
         T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
-        out = grasp6d.append_handeye_sample(T_base_tool, np.asarray(marker["T_camera_target"], dtype=float))
-        out["marker"] = marker
-        out["rgbd"] = frame.public_info()
-        return jsonify(out)
+        try:
+            frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+        except Exception as exc:
+            samples = grasp6d.list_handeye_samples()
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "wrist_rgbd_capture_failed",
+                    "detail": str(exc),
+                    "feedback": feedback,
+                    "quality": grasp6d.handeye_quality_report(samples),
+                }
+            ), 503
+        marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        samples = grasp6d.list_handeye_samples()
+        candidate = {
+            "T_base_tool": T_base_tool.tolist(),
+            "T_camera_target": marker.get("T_camera_target"),
+            "marker": {
+                key: marker.get(key)
+                for key in (
+                    "target_type",
+                    "visible_marker_count",
+                    "pose_method",
+                    "reprojection_rms_px",
+                    "marker_ids",
+                )
+                if key in marker
+            },
+        }
+        novelty = (
+            grasp6d.sample_pose_novelty(samples, candidate)
+            if marker.get("ok")
+            else {"ok": False, "reason": marker.get("reason") or "target_not_valid"}
+        )
+        current_quality = grasp6d.handeye_quality_report(samples)
+        candidate_quality = (
+            grasp6d.handeye_quality_report(samples + [candidate])
+            if marker.get("ok")
+            else current_quality
+        )
+        current_severity = grasp6d.residual_severity(current_quality)
+        candidate_severity = grasp6d.residual_severity(candidate_quality)
+        residual_improves = None
+        if current_severity is not None and candidate_severity is not None:
+            residual_improves = bool(candidate_severity <= current_severity * 0.98)
+        can_judge_residual = len(samples) >= 8 and residual_improves is not None
+        save_recommended = bool(
+            marker.get("ok")
+            and novelty.get("useful")
+            and not (
+                marker.get("target_type") == "aprilgrid_36h11"
+                and marker.get("pose_method") != "tag_corners"
+                and os.environ.get("D1_GRASP6D_ALLOW_CENTER_ONLY_CALIB", "0").lower() not in {"1", "true", "yes", "on"}
+            )
+            and (not can_judge_residual or residual_improves or candidate_quality.get("build_ready"))
+        )
+        out = {
+            "ok": bool(marker.get("ok") and novelty.get("ok")),
+            "marker": marker,
+            "novelty": novelty,
+            "quality": candidate_quality,
+            "current_quality": current_quality,
+            "residual_improves": residual_improves,
+            "current_residual_severity": current_severity,
+            "candidate_residual_severity": candidate_severity,
+            "feedback": feedback,
+            "rgbd": frame.public_info(),
+            "save_recommended": save_recommended,
+        }
+        return jsonify(out), (200 if marker.get("ok") else 422)
+
+    def _auto_calibration_offsets() -> list[list[float]]:
+        return [
+            [0, 0, 0, 0, 0, 0, 0],
+            [-4, -3, 3, -4, 0, 6, 0],
+            [4, -5, 5, -8, 7, -4, 0],
+            [6, 1, -1, 4, 10, -8, 0],
+            [1, 6, -6, 10, 4, -10, 0],
+            [-3, 7, -7, 12, -4, -8, 0],
+            [-7, 3, -3, 9, -9, 2, 0],
+            [3, -8, 8, -12, 10, 8, 0],
+            [-6, 4, -4, 10, -6, -8, 0],
+            [-10, 0, 0, 14, -10, -10, 0],
+            [-12, -5, 5, 12, -6, 10, 0],
+            [-7, -9, 9, 4, 3, 14, 0],
+            [0, -10, 10, -10, 8, 12, 0],
+            [8, -7, 7, -14, 12, 4, 0],
+            [13, -2, 2, -6, 14, -8, 0],
+            [10, 6, -6, 10, 6, -14, 0],
+            [2, 10, -10, 16, -4, -12, 0],
+            [-8, 8, -8, 18, -12, 0, 0],
+        ]
+
+    def _auto_calibration_base_pose() -> list[float]:
+        """Auto 6D parte dal preset scan sinistro, non dalla posa corrente casuale."""
+        return _scan_side_target("left")
+
+    def _auto_calibration_daemon_ready() -> dict[str, Any]:
+        daemon = service.command_daemon_status()
+        ok = bool(daemon.get("alive") and daemon.get("ok", True))
+        if daemon.get("external"):
+            ok = ok and bool(daemon.get("hold_active"))
+        heartbeat_age = daemon.get("heartbeat_age_ms")
+        if heartbeat_age is not None:
+            try:
+                ok = ok and float(heartbeat_age) < 1500.0
+            except (TypeError, ValueError):
+                ok = False
+        return {
+            "ok": ok,
+            "daemon": daemon,
+            "reason": None if ok else "hold_daemon_not_ready_for_auto_calibration",
+        }
+
+    @app.route("/api/pick/metric/calibration/auto_step", methods=["POST"])
+    def pick_metric_calibration_auto_step() -> Response:
+        """Esegue un solo step auto-calibrazione, mai un loop cieco server-side."""
+        if os.environ.get("D1_GRASP6D_AUTO_MOTION_ENABLE", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+            grasp6d.record_calibration_event(
+                "auto_motion_disabled",
+                reason="disabled_until_d1_command_flow_is_stable",
+                hold_ok=None,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "auto_motion_disabled_until_command_flow_stable",
+                    "safety": "Auto-calibrazione con movimento disabilitata: usare calibrazione assistita/manuale finche' il flusso DDS/daemon non e' stabilizzato.",
+                    "required_env": "D1_GRASP6D_AUTO_MOTION_ENABLE=1",
+                }
+            ), 409
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "AUTO_CALIBRATE_6D":
+            return jsonify({"ok": False, "reason": "explicit_auto_calibration_confirmation_required"}), 400
+        if not auto_calibration_lock.acquire(blocking=False):
+            return jsonify({"ok": False, "reason": "auto_calibration_step_already_running"}), 409
+
+        @after_this_request
+        def _release_auto_calibration_lock(resp: Response) -> Response:
+            auto_calibration_lock.release()
+            return resp
+
+        import numpy as np
+
+        daemon_ready = _auto_calibration_daemon_ready()
+        if not daemon_ready.get("ok"):
+            return jsonify({"ok": False, **daemon_ready}), 503
+
+        step = max(0, int(body.get("step") or 0))
+        max_samples = max(8, min(16, int(body.get("max_samples") or 10)))
+        requested_base = body.get("base_servo_deg")
+        base = _auto_calibration_base_pose()
+        samples = grasp6d.list_handeye_samples()
+        current_quality = grasp6d.handeye_quality_report(samples)
+        if current_quality.get("build_ready"):
+            built = grasp6d.build_handeye_calibration(samples)
+            return jsonify({"ok": True, "done": True, "reason": "already_build_ready", "build": built, "quality": current_quality})
+        if len(samples) >= max_samples:
+            built = grasp6d.build_handeye_calibration(samples)
+            return jsonify({"ok": bool(built.get("ok")), "done": True, "reason": "max_samples_reached", "build": built, "quality": current_quality}), (200 if built.get("ok") else 422)
+
+        offsets = _auto_calibration_offsets()
+        offset = offsets[step % len(offsets)]
+        target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+        max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
+        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "18"))
+        if max_delta > max_delta_allowed:
+            return jsonify({"ok": False, "reason": "auto_target_delta_too_large", "target_servo_deg": target, "base_servo_deg": base}), 400
+
+        pre_feedback = service.read_servo_deg(fast=False)
+        pre_raw = pre_feedback.get("servo_deg") if pre_feedback.get("ok") else None
+        if not isinstance(pre_raw, list) or len(pre_raw) < 7:
+            return jsonify(
+                {"ok": False, "reason": "feedback_before_move_unavailable", "feedback": pre_feedback, "daemon": daemon_ready.get("daemon")}
+            ), 503
+        pre_hold = service.couple_and_hold_pose(list(pre_raw[:7]), with_power=True, force=True, acquire_lock=False)
+        if not pre_hold.get("ok"):
+            return jsonify({"ok": False, "reason": "pre_move_hold_failed", "hold": pre_hold, "daemon": daemon_ready.get("daemon")}), 502
+        daemon_ready = _auto_calibration_daemon_ready()
+        if not daemon_ready.get("ok"):
+            return jsonify({"ok": False, **daemon_ready, "pre_hold": pre_hold}), 503
+
+        program_runner.request_stop()
+        program_runner.clear_stop_request()
+        service._halt_cartesian_stream(wait_idle=True)
+        couple = service.ensure_coupled_for_motion()
+        if not couple.get("ok"):
+            return jsonify({"ok": False, "reason": "couple_failed", "coupling": couple}), 502
+        tracking_limit = max(4.0, float(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", "10")))
+        tracking_violation_limit = max(1, int(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS", "3")))
+        move = program_runner.move_to_servo_deg_smooth(target, tracking_max_error_deg=tracking_limit)
+        if not (move.get("ok") or move.get("skipped")):
+            payload: dict[str, Any] = {"ok": False, "reason": "move_failed", "move": move, "target_servo_deg": target}
+            move_reason = str(move.get("reason") or "move_failed")
+            grasp6d.record_calibration_event(
+                "auto_watchdog_stop" if "tracking" in move_reason or "feedback_missing" in move_reason else "auto_motion_failed",
+                reason=move_reason,
+                max_tracking_error_deg=move.get("max_tracking_error_deg"),
+                tracking_limit_deg=move.get("tracking_limit_deg") or tracking_limit,
+                hold_ok=bool((move.get("safety_hold") or {}).get("ok")) if isinstance(move.get("safety_hold"), dict) else None,
+            )
+            if isinstance(move.get("safety_hold"), dict):
+                payload["safety_hold"] = move["safety_hold"]
+                payload["safety_hold_source"] = move.get("hold_source") or "move_to_servo_deg_smooth"
+            elif int(move.get("sent") or move.get("waypoints") or 0) > 0:
+                payload["safety_hold"] = service.request_emergency_hold(reason="auto_calibration_move_failed")
+            return jsonify(payload), 502
+        settle_s = max(0.2, min(2.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "0.6"))))
+        settle_deadline = time.monotonic() + settle_s
+        settle_missing = 0
+        settle_violations = 0
+        while time.monotonic() < settle_deadline:
+            time.sleep(min(0.12, max(0.0, settle_deadline - time.monotonic())))
+            guard_fb = service.read_servo_deg(fast=True)
+            guard_raw = guard_fb.get("servo_deg") if guard_fb.get("ok") else None
+            if not isinstance(guard_raw, list) or len(guard_raw) < 7:
+                settle_missing += 1
+                if settle_missing >= tracking_violation_limit:
+                    grasp6d.record_calibration_event(
+                        "auto_watchdog_stop",
+                        reason="settle_feedback_missing",
+                        tracking_limit_deg=tracking_limit,
+                        tracking_violation_limit=tracking_violation_limit,
+                        hold_ok=None,
+                    )
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "reason": "settle_feedback_missing",
+                            "move": move,
+                            "feedback": guard_fb,
+                            "tracking_missing_count": settle_missing,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": service.request_emergency_hold(reason="auto_calibration_settle_feedback_missing"),
+                        }
+                    ), 503
+                continue
+            settle_missing = 0
+            guard_errs = [round(abs(float(target[i]) - float(guard_raw[i])), 2) for i in range(7)]
+            guard_max = max(guard_errs[:6]) if guard_errs else 0.0
+            if guard_max > tracking_limit:
+                settle_violations += 1
+                if settle_violations >= tracking_violation_limit:
+                    grasp6d.record_calibration_event(
+                        "auto_watchdog_stop",
+                        reason="settle_tracking_error_too_high",
+                        max_tracking_error_deg=guard_max,
+                        tracking_limit_deg=tracking_limit,
+                        tracking_violation_limit=tracking_violation_limit,
+                        hold_ok=None,
+                    )
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "reason": "settle_tracking_error_too_high",
+                            "move": move,
+                            "target_servo_deg": target,
+                            "servo_deg": guard_raw[:7],
+                            "tracking_errors_deg": guard_errs,
+                            "max_tracking_error_deg": guard_max,
+                            "tracking_limit_deg": tracking_limit,
+                            "tracking_violation_count": settle_violations,
+                            "tracking_violation_limit": tracking_violation_limit,
+                            "safety_hold": service.request_emergency_hold(reason="auto_calibration_settle_tracking_error"),
+                        }
+                    ), 502
+            else:
+                settle_violations = 0
+        feedback = service.read_servo_deg(fast=False)
+        raw = feedback.get("servo_deg") if feedback.get("ok") else None
+        if not isinstance(raw, list) or len(raw) < 7:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "feedback_after_move_unavailable",
+                    "feedback": feedback,
+                    "move": move,
+                    "safety_hold": service.request_emergency_hold(reason="auto_calibration_feedback_missing"),
+                }
+            ), 503
+        hold = service.couple_and_hold_pose(list(raw[:7]), with_power=True, force=True, acquire_lock=False)
+        if not hold.get("ok"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "hold_after_move_failed",
+                    "hold": hold,
+                    "feedback": feedback,
+                    "move": move,
+                    "safety_hold": service.request_emergency_hold(reason="auto_calibration_hold_after_move_failed"),
+                }
+            ), 502
+        try:
+            frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+        except Exception as exc:
+            return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc), "hold": hold}), 503
+        marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        if not marker.get("ok"):
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason=marker.get("reason") or "target_not_valid",
+                visible_marker_count=marker.get("visible_marker_count"),
+                reprojection_rms_px=marker.get("reprojection_rms_px"),
+                hold_ok=True,
+            )
+            return jsonify({"ok": True, "saved": False, "reason": marker.get("reason") or "target_not_valid", "marker": marker, "move": move, "hold": hold}), 200
+        if marker.get("target_type") == "aprilgrid_36h11" and marker.get("pose_method") != "tag_corners":
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason="aprilgrid_corner_pose_required",
+                visible_marker_count=marker.get("visible_marker_count"),
+                reprojection_rms_px=marker.get("reprojection_rms_px"),
+                hold_ok=True,
+            )
+            return jsonify({"ok": True, "saved": False, "reason": "aprilgrid_corner_pose_required", "marker": marker, "move": move, "hold": hold}), 200
+
+        T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
+        candidate = {
+            "T_base_tool": T_base_tool.tolist(),
+            "T_camera_target": marker["T_camera_target"],
+            "marker": {
+                key: marker.get(key)
+                for key in ("target_type", "visible_marker_count", "pose_method", "object_point_variant", "reprojection_rms_px", "marker_ids")
+                if key in marker
+            },
+        }
+        novelty = grasp6d.sample_pose_novelty(samples, candidate)
+        if samples and not novelty.get("useful"):
+            quality = grasp6d.handeye_quality_report(samples)
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason="pose_too_similar",
+                visible_marker_count=marker.get("visible_marker_count"),
+                reprojection_rms_px=marker.get("reprojection_rms_px"),
+                hold_ok=True,
+            )
+            return jsonify({"ok": True, "saved": False, "reason": "pose_too_similar", "novelty": novelty, "quality": quality, "marker": marker, "move": move, "hold": hold}), 200
+        if len(samples) >= 8:
+            current_quality = grasp6d.handeye_quality_report(samples)
+            candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
+            current_severity = grasp6d.residual_severity(current_quality)
+            candidate_severity = grasp6d.residual_severity(candidate_quality)
+            improves = current_severity is not None and candidate_severity is not None and candidate_severity <= current_severity * 0.98
+            if not improves and not candidate_quality.get("build_ready"):
+                grasp6d.record_calibration_event(
+                    "auto_sample_skipped",
+                    reason="residual_not_improving",
+                    visible_marker_count=marker.get("visible_marker_count"),
+                    reprojection_rms_px=marker.get("reprojection_rms_px"),
+                    hold_ok=True,
+                )
+                return jsonify({"ok": True, "saved": False, "reason": "residual_not_improving", "current_quality": current_quality, "candidate_quality": candidate_quality, "marker": marker, "move": move, "hold": hold}), 200
+
+        out = grasp6d.append_handeye_sample(
+            T_base_tool,
+            np.asarray(marker["T_camera_target"], dtype=float),
+            marker=marker,
+            servo_deg=[float(x) for x in raw[:7]],
+        )
+        samples_after = grasp6d.list_handeye_samples()
+        quality = grasp6d.handeye_quality_report(samples_after)
+        built = grasp6d.build_handeye_calibration(samples_after) if quality.get("build_ready") else None
+        grasp6d.record_calibration_event(
+            "auto_sample_saved",
+            sample_count=int(out.get("sample_count") or 0),
+            target_type=marker.get("target_type"),
+            visible_marker_count=marker.get("visible_marker_count"),
+            reprojection_rms_px=marker.get("reprojection_rms_px"),
+            hold_ok=True,
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "saved": True,
+                "done": bool(built and built.get("ok")),
+                "sample": out,
+                "build": built,
+                "quality": quality,
+                "marker": marker,
+                "move": move,
+                "hold": hold,
+                "target_servo_deg": target,
+                "base_servo_deg": base,
+                "base_source": "scan_left",
+                "requested_base_ignored": isinstance(requested_base, list),
+            }
+        )
 
     @app.route("/api/pick/metric/calibration/build", methods=["POST"])
     def pick_metric_calibration_build() -> Response:
         out = grasp6d.build_handeye_calibration(grasp6d.list_handeye_samples())
+        grasp6d.record_calibration_event(
+            "build_ok" if out.get("ok") else "build_failed",
+            sample_count=int(out.get("sample_count") or len(grasp6d.list_handeye_samples())),
+            reason=out.get("reason"),
+            translation_rms_m=out.get("translation_rms_m"),
+            rotation_rms_deg=out.get("rotation_rms_deg"),
+        )
         return jsonify(out), (200 if out.get("ok") else 422)
 
     @app.route("/api/pick/metric/calibration", methods=["GET", "DELETE"])
@@ -1766,14 +2869,53 @@ def create_d1_jog_app() -> Flask:
                 grasp6d.HAND_EYE_SAMPLES_PATH.unlink(missing_ok=True)
             except OSError as exc:
                 return jsonify({"ok": False, "reason": "sample_reset_failed", "detail": str(exc)}), 500
+            grasp6d.record_calibration_event("samples_reset", calibration_kept=grasp6d.CALIBRATION_PATH.exists())
         cal = grasp6d.load_calibration()
         cal.pop("T_tool_camera_np", None)
+        samples = grasp6d.list_handeye_samples()
+        quality = grasp6d.handeye_quality_report(samples)
         return jsonify(
             {
                 "ok": True,
-                "sample_count": len(grasp6d.list_handeye_samples()),
+                "sample_count": len(samples),
+                "samples": [
+                    {"index": index + 1, "at": sample.get("at"), "marker": sample.get("marker")}
+                    for index, sample in enumerate(samples)
+                    if isinstance(sample, dict)
+                ],
                 "calibration": cal,
+                "quality": quality,
+                "history": grasp6d.calibration_history(),
+                "target": {
+                    "type": "aprilgrid_36h11",
+                    "dictionary": "DICT_APRILTAG_36h11",
+                    "grid_cols_rows": [6, 4],
+                    "marker_ids": [288, 311],
+                    "marker_size_mm": 30.0,
+                    "marker_gap_mm": 15.0,
+                    "minimum_samples": 8,
+                    "recommended_samples": 10,
+                    "fallback_target": {
+                        "type": "aruco_4x4_50",
+                        "marker_id": 0,
+                        "marker_size_mm": 60.0,
+                        "download_url": "/api/pick/metric/calibration/target.pdf",
+                    },
+                },
             }
+        )
+
+    @app.route("/api/pick/metric/calibration/target.pdf", methods=["GET"])
+    def pick_metric_calibration_target_pdf() -> Response:
+        path = PROJECT_ROOT / "output" / "pdf" / "d1_handeye_aruco_4x4_50_id0_60mm.pdf"
+        if not path.is_file():
+            return jsonify({"ok": False, "reason": "calibration_target_pdf_missing"}), 404
+        return send_file(
+            path,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name="d1_handeye_aruco_4x4_50_id0_60mm.pdf",
+            max_age=0,
         )
 
     @app.route("/api/pick/snapshot", methods=["POST"])
@@ -2174,8 +3316,27 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/pick/grasp_legacy/execute", methods=["POST"])
     def pick_grasp_legacy_execute() -> Response:
+        from go2_dashboard.d1_jog import pick_teach_model
+
+        preset = pick_preset.load_preset()
+        session = preset.get("teach_session")
+        model = preset.get("teach_model")
+        if isinstance(session, dict) and not (isinstance(model, dict) and model.get("active")):
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "guided_2d_calibration_incomplete",
+                    "quality": pick_teach_model.guided_quality_report(preset.get("teach_samples")),
+                }
+            ), 409
+        scan = _legacy_scan_and_detect()
+        if not scan.get("ok"):
+            scan["mode"] = "legacy"
+            scan["phase"] = "fresh_2d_scan"
+            return jsonify(scan), 422
         out, code = _execute_legacy_grasp_approach()
         out["mode"] = "legacy"
+        out["fresh_scan"] = scan
         return jsonify(out), code
 
     @app.route("/api/pick/grasp6d/status", methods=["GET"])
@@ -2189,14 +3350,60 @@ def create_d1_jog_app() -> Flask:
             "rgbd": wrist_rgbd.health(capture=False),
             "sample_count": len(grasp6d.list_handeye_samples()),
             "calibration": cal,
+            "tuning": grasp6d.tuning_info(),
         }
         return jsonify(out)
+
+    @app.route("/api/pick/grasp6d/tuning", methods=["GET", "POST"])
+    def pick_grasp6d_tuning() -> Response:
+        if request.method == "GET":
+            return jsonify(grasp6d.tuning_info())
+        body = request.get_json(silent=True) or {}
+        if body.get("reset"):
+            return jsonify(grasp6d.update_tuning(reset=True))
+        current = dict(grasp6d.tuning_info()["values"])
+        action = str(body.get("action") or "")
+        steps = {
+            "lower_height": ("min_box_height_m", -0.003),
+            "lower_cluster": ("min_cluster_points", -5.0),
+            "lower_dimension": ("min_box_dim_m", -0.003),
+        }
+        if action not in steps:
+            return jsonify({"ok": False, "reason": "invalid_tuning_action", "allowed": sorted(steps)}), 400
+        key, delta = steps[action]
+        current[key] = float(current[key]) + delta
+        return jsonify(grasp6d.update_tuning({key: current[key]}))
 
     @app.route("/api/pick/grasp6d/preview", methods=["POST"])
     def pick_grasp6d_preview() -> Response:
         out = _capture_grasp6d_plan()
         _save_grasp6d_run({"mode": "preview_api", "at": time.time(), **out})
         return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/cluster_probe", methods=["POST"])
+    def pick_grasp6d_cluster_probe() -> Response:
+        body = request.get_json(silent=True) or {}
+        frames = max(3, min(12, int(body.get("frames") or 5)))
+        interval_s = max(0.0, min(1.0, float(body.get("interval_s") or 0.18)))
+        out = _probe_grasp6d_cluster(frames=frames, interval_s=interval_s)
+        return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/debug", methods=["GET"])
+    def pick_grasp6d_debug() -> Response:
+        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=request.args.get("capture", "1") not in {"0", "false", "no"})
+        return jsonify(meta), (200 if meta.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/debug.jpg", methods=["GET"])
+    def pick_grasp6d_debug_jpg() -> Response:
+        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=request.args.get("capture", "1") not in {"0", "false", "no"})
+        if out_jpg is None:
+            return jsonify(meta), 422
+        return Response(out_jpg, mimetype="image/jpeg")
+
+    @app.route("/api/pick/grasp6d/last_run", methods=["GET"])
+    def pick_grasp6d_last_run() -> Response:
+        out = _load_grasp6d_run()
+        return jsonify(out), (200 if out.get("ok") else 404)
 
     @app.route("/api/pick/grasp6d/pregrasp", methods=["POST"])
     def pick_grasp6d_pregrasp() -> Response:
@@ -2257,6 +3464,14 @@ def create_d1_jog_app() -> Flask:
         close_j6 = pick_preset.gripper_close_j6_deg(scan_sd)
         resp, code = _pick_gripper_move(close_j6, action="gripper_close")
         return resp, code
+
+    @app.route("/api/logs/d1_command_daemon", methods=["GET"])
+    def d1_command_daemon_log() -> Response:
+        path = PROJECT_ROOT / "logs" / "d1_command_daemon.log"
+        out = _tail_text(path)
+        out["daemon_status"] = service.command_daemon_status()
+        out["runtime_safety"] = service.runtime_safety_status()
+        return jsonify(out), (200 if out.get("ok") else 404)
 
     @app.route("/api/presets/scan", methods=["GET"])
     def preset_scan_info() -> Response:

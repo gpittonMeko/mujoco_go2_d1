@@ -18,7 +18,9 @@ from go2_dashboard.d1_jog import orbbec_capture
 
 
 _capture_lock = threading.RLock()
+_capture_active = threading.Event()
 _last_status: dict[str, Any] = {"ok": None, "reason": "not_probed"}
+_last_frame: "WristRgbdFrame | None" = None
 
 
 @dataclass
@@ -83,10 +85,10 @@ def _stream_dimensions() -> tuple[int, int, int]:
 
 def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3) -> WristRgbdFrame:
     """Cattura RGB e depth allineata; la pipeline viene sempre chiusa."""
-    global _last_status
+    global _last_status, _last_frame
     with _capture_lock:
-        orbbec_capture.prepare_camera_for_snapshot()
         try:
+            orbbec_capture.prepare_camera_for_snapshot()
             import pyrealsense2 as rs
         except Exception as exc:
             _last_status = {"ok": False, "reason": "pyrealsense2_unavailable", "detail": str(exc)}
@@ -106,6 +108,7 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
         cfg.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
         pipe = rs.pipeline()
         profile = None
+        _capture_active.set()
         try:
             profile = pipe.start(cfg)
             align = rs.align(rs.stream.color)
@@ -172,6 +175,7 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
                 timestamp_s=time.time(),
             )
             _last_status = out.public_info()
+            _last_frame = out
             return out
         except Exception as exc:
             _last_status = {
@@ -187,6 +191,7 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
                     pipe.stop()
                 except Exception:
                     pass
+            _capture_active.clear()
 
 
 def health(*, capture: bool = False) -> dict[str, Any]:
@@ -196,3 +201,23 @@ def health(*, capture: bool = False) -> dict[str, Any]:
         except Exception:
             return dict(_last_status)
     return dict(_last_status)
+
+
+def last_frame() -> WristRgbdFrame | None:
+    """Restituisce l'ultima RGB-D allineata senza riaprire la D456."""
+    with _capture_lock:
+        return _last_frame
+
+
+def capture_active() -> bool:
+    """True mentre librealsense possiede la D456 del polso."""
+    return _capture_active.is_set()
+
+
+def try_acquire_camera() -> bool:
+    """Lock condiviso con la preview UVC; non blocca i thread HTTP."""
+    return _capture_lock.acquire(blocking=False)
+
+
+def release_camera() -> None:
+    _capture_lock.release()

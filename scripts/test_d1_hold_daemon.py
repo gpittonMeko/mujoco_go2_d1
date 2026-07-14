@@ -112,6 +112,10 @@ class D1HoldDaemonIntegrationTests(unittest.TestCase):
             self.assertEqual(second.get("daemon_pid"), first_pid)
             self.assertGreater(int(second.get("heartbeat_count", 0)), first_count)
             self.assertTrue(second.get("hold_active"), second)
+            self.assertEqual(second.get("hold_target_servo_deg"), [float(i) for i in range(7)])
+            events = second.get("recent_events")
+            self.assertIsInstance(events, list)
+            self.assertTrue(any(row.get("source") == "heartbeat" for row in events), events)
 
     def test_daemon_restart_same_boot_restores_power_couple_and_pose(self) -> None:
         self._start()

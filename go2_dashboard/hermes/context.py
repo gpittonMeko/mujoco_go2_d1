@@ -1,4 +1,4 @@
-"""Contesto live della dashboard integrata 5056; la vecchia 5052 è opzionale."""
+"""Contesto live della dashboard integrata 5056."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 
 
 def operator_base() -> str:
-    return (os.environ.get("HERMES_OPERATOR_URL") or "http://127.0.0.1:5052").strip().rstrip("/")
+    return (os.environ.get("HERMES_OPERATOR_URL") or d1_jog_base()).strip().rstrip("/")
 
 
 def d1_jog_base() -> str:
@@ -27,7 +27,7 @@ def operator_required() -> bool:
 
 
 def operator_reachable_quick(*, timeout_s: float = 2.5) -> bool:
-    """True se la dashboard operator :5052 risponde (opzionale per Hermes)."""
+    """True se il backend contesto configurato risponde."""
     data = _fetch_json("/api/health", timeout_s=timeout_s)
     return bool(data.get("ok"))
 
@@ -60,7 +60,7 @@ def _fetch_from(base: str, path: str, *, timeout_s: float = 8.0) -> dict[str, An
 
 
 def _fetch_json(path: str, *, timeout_s: float = 8.0) -> dict[str, Any]:
-    """Compatibilità per le sole funzioni legacy che interrogano la 5052."""
+    """Compatibilità per funzioni che usano il backend contesto configurato."""
     return _fetch_from(operator_base(), path, timeout_s=timeout_s)
 
 
