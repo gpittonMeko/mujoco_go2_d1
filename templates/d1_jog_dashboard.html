@@ -160,7 +160,28 @@
     .auto-step-pill.skip { border-color:rgba(255,205,91,.45); background:rgba(167,111,20,.24); color:#ffe0a0; }
     .auto-step-pill.error { border-color:rgba(255,121,137,.45); background:rgba(172,48,61,.25); color:#ffb3bc; }
     .auto-step-pill.running { border-color:rgba(95,210,255,.55); background:rgba(31,125,173,.28); color:#a8eaff; }
+    .auto-step-pill.soft { border-color:rgba(180,200,220,.4); background:rgba(80,100,120,.22); color:#d7e8f4; }
     .auto-step-pill b { display:block; margin-bottom:3px; color:inherit; }
+    .auto-live-panel { margin-top:12px; padding:14px 16px; border-radius:18px; border:1px solid rgba(8,127,208,.35); background:linear-gradient(145deg,rgba(12,57,83,.94),rgba(18,90,122,.88)); color:#e8fbff; box-shadow:0 12px 28px rgba(8,70,110,.22); }
+    .auto-live-panel.running { border-color:rgba(80,210,255,.65); box-shadow:0 0 0 2px rgba(80,210,255,.25), 0 12px 28px rgba(8,70,110,.28); }
+    .auto-live-panel.done { border-color:rgba(91,243,154,.55); }
+    .auto-live-panel.error { border-color:rgba(255,121,137,.55); }
+    .auto-live-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+    .auto-live-head strong { font-size:16px; color:#fff; }
+    .auto-live-phase { display:inline-block; margin-top:4px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; background:rgba(255,255,255,.12); }
+    .auto-live-grid { display:grid; grid-template-columns:repeat(4,minmax(110px,1fr)); gap:8px; margin-top:12px; }
+    .auto-live-kpi { padding:8px 10px; border-radius:12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
+    .auto-live-kpi small { display:block; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:rgba(223,248,255,.7); font-weight:800; }
+    .auto-live-kpi b { display:block; margin-top:4px; font-size:15px; color:#fff; overflow-wrap:anywhere; }
+    .auto-live-bar { margin-top:10px; }
+    .auto-live-bar label { display:flex; justify-content:space-between; font-size:12px; color:rgba(223,248,255,.85); margin-bottom:4px; }
+    .auto-live-bar .track { height:10px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
+    .auto-live-bar .fill { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#34b8ff,#21d4a5); transition:width .35s ease; }
+    .auto-live-bar .fill.warn { background:linear-gradient(90deg,#ffb86b,#ff7b86); }
+    .auto-live-bar .fill.good { background:linear-gradient(90deg,#21d4a5,#6ef2a7); }
+    .auto-live-msg { margin-top:10px; font-size:13px; line-height:1.4; color:#dff8ff; }
+    .auto-live-hist { margin-top:10px; max-height:140px; overflow:auto; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; color:rgba(223,248,255,.88); }
+    @media (max-width:900px) { .auto-live-grid { grid-template-columns:repeat(2,minmax(120px,1fr)); } }
     button:disabled { opacity:.45; cursor:not-allowed; transform:none; }
     .mode-grid { display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:8px; margin-top:10px; }
     .mode-kpi { padding:10px 12px; border-radius:12px; background:rgba(220,247,255,.66); border:1px solid rgba(25,130,175,.16); }
@@ -272,6 +293,34 @@
               <button id="btn6dAutoCalibTop" class="warn" type="button">AUTO CALIBRAZIONE 6D</button>
               <a class="button-link" href="/api/pick/metric/calibration/target.pdf" target="_blank" rel="noopener">PDF target ArUco fallback</a>
             </div>
+          </div>
+          <div id="autoLivePanel" class="auto-live-panel" aria-live="polite">
+            <div class="auto-live-head">
+              <div>
+                <strong id="autoLiveTitle">Avanzamento AUTO hand-eye</strong>
+                <div><span id="autoLivePhase" class="auto-live-phase">idle</span></div>
+              </div>
+              <div style="text-align:right;font-size:12px;color:rgba(223,248,255,.75)">
+                <div id="autoLiveUpdated">aggiornamento: —</div>
+                <div id="autoLiveSource">fonte: server</div>
+              </div>
+            </div>
+            <div class="auto-live-grid">
+              <div class="auto-live-kpi"><small>Step</small><b id="autoLiveStep">—</b></div>
+              <div class="auto-live-kpi"><small>Sample</small><b id="autoLiveSamples">—</b></div>
+              <div class="auto-live-kpi"><small>Tag / reproj</small><b id="autoLiveTags">—</b></div>
+              <div class="auto-live-kpi"><small>cal_ok</small><b id="autoLiveCalOk">NO</b></div>
+            </div>
+            <div class="auto-live-bar">
+              <label><span>Progresso qualita'</span><span id="autoLiveProgressLbl">0%</span></label>
+              <div class="track"><span id="autoLiveProgressFill" class="fill" style="width:0%"></span></div>
+            </div>
+            <div class="auto-live-bar">
+              <label><span>Residuo vs soglia (2.5cm / 6°)</span><span id="autoLiveResidualLbl">—</span></label>
+              <div class="track"><span id="autoLiveResidualFill" class="fill warn" style="width:0%"></span></div>
+            </div>
+            <p class="auto-live-msg" id="autoLiveMsg">Apri questa pagina e lancia AUTO: qui vedi fase (muovo / settle / cattura / skip / salvato) anche se lo step parte da script.</p>
+            <div class="auto-live-hist" id="autoLiveHist">Nessun evento AUTO ancora.</div>
           </div>
           <div class="workflow-grid five" id="calibPhaseFlow" style="margin-top:12px">
             <div class="workflow-step blocked" id="calibPhase1"><b>1. Reset</b><span>inizia pulito</span></div>
@@ -1348,6 +1397,87 @@
       el.innerHTML = '<div>' + summary + '</div><div class="auto-trace">' + pills + '</div>';
     }
 
+    function renderAutoLiveProgress(d) {
+      const panel = q('autoLivePanel');
+      if (!panel || !d) return;
+      const running = !!(d.running || d.lock_busy || autoCalibRunning);
+      const phase = String(d.phase || 'idle');
+      const done = phase === 'done' || !!d.cal_ok || !!(d.build_ready && d.cal_ok);
+      panel.classList.toggle('running', running && !done);
+      panel.classList.toggle('done', !!d.cal_ok || phase === 'done');
+      panel.classList.toggle('error', phase === 'error');
+      if (q('autoLivePhase')) q('autoLivePhase').textContent = phase;
+      if (q('autoLiveTitle')) {
+        q('autoLiveTitle').textContent = d.cal_ok
+          ? 'AUTO completata · cal_ok'
+          : (running ? 'AUTO in corso…' : 'Avanzamento AUTO hand-eye');
+      }
+      const step = d.step == null ? '—' : ((Number(d.step) + 1) + ' / ' + (d.max_steps || 48));
+      if (q('autoLiveStep')) q('autoLiveStep').textContent = step;
+      if (q('autoLiveSamples')) q('autoLiveSamples').textContent = String(d.sample_count == null ? '—' : d.sample_count);
+      const tags = d.tags == null ? '—' : (d.tags + ' tag');
+      const reproj = d.reproj_px == null ? '' : (' · ' + Number(d.reproj_px).toFixed(2) + ' px');
+      if (q('autoLiveTags')) q('autoLiveTags').textContent = tags + reproj;
+      if (q('autoLiveCalOk')) q('autoLiveCalOk').textContent = d.cal_ok ? 'SI' : 'NO';
+      const prog = Math.max(0, Math.min(100, Number(d.progress_percent || 0)));
+      if (q('autoLiveProgressLbl')) q('autoLiveProgressLbl').textContent = prog + '%';
+      if (q('autoLiveProgressFill')) {
+        q('autoLiveProgressFill').style.width = prog + '%';
+        q('autoLiveProgressFill').className = 'fill' + (prog >= 95 ? ' good' : '');
+      }
+      const tmax = Number(d.max_residual_m || 0.025);
+      const rmax = Number(d.max_residual_deg || 6);
+      const tm = d.residual_m == null ? null : Number(d.residual_m);
+      const rd = d.residual_deg == null ? null : Number(d.residual_deg);
+      if (q('autoLiveResidualLbl')) {
+        q('autoLiveResidualLbl').textContent = (tm == null || rd == null)
+          ? 'in attesa solve'
+          : ((tm * 100).toFixed(1) + ' cm / ' + rd.toFixed(1) + '°  (lim ' + (tmax * 100).toFixed(1) + ' / ' + rmax.toFixed(1) + ')');
+      }
+      if (q('autoLiveResidualFill')) {
+        const ratio = (tm == null || rd == null) ? 0 : Math.min(1.5, Math.max(tm / tmax, rd / rmax));
+        const pct = Math.max(4, Math.min(100, ratio * 100 / 1.5));
+        q('autoLiveResidualFill').style.width = pct + '%';
+        const ok = tm != null && rd != null && tm <= tmax && rd <= rmax;
+        q('autoLiveResidualFill').className = 'fill ' + (ok ? 'good' : 'warn');
+      }
+      if (q('autoLiveMsg')) {
+        q('autoLiveMsg').textContent = d.message || d.reason || 'In attesa di uno step AUTO…';
+      }
+      if (q('autoLiveUpdated')) {
+        const age = d.updated_at ? Math.max(0, Date.now() / 1000 - Number(d.updated_at)) : null;
+        q('autoLiveUpdated').textContent = age == null ? 'aggiornamento: —' : ('aggiornato ' + age.toFixed(0) + 's fa');
+      }
+      if (q('autoLiveSource')) {
+        q('autoLiveSource').textContent = d.lock_busy ? 'fonte: server (step attivo)' : 'fonte: server';
+      }
+      const hist = Array.isArray(d.history) ? d.history.slice().reverse() : [];
+      if (q('autoLiveHist')) {
+        q('autoLiveHist').textContent = hist.length
+          ? hist.slice(0, 18).map(function (row) {
+              const res = (row.residual_m == null) ? '' : (' · ' + (Number(row.residual_m) * 100).toFixed(1) + 'cm/' + Number(row.residual_deg || 0).toFixed(1) + '°');
+              const tagsTxt = row.tags == null ? '' : (' · ' + row.tags + 'tag');
+              return '[' + (row.at || '?') + '] ' + (row.phase || '?') + ' s' + ((row.step == null ? '?' : (Number(row.step) + 1))) + ' n=' + (row.sample_count == null ? '?' : row.sample_count) + tagsTxt + res + ' · ' + (row.message || row.reason || '');
+            }).join('\n')
+          : 'Nessun evento AUTO ancora.';
+      }
+      if (q('autoCalibState') && !autoCalibRunning && d.message) {
+        q('autoCalibState').textContent = d.message;
+      }
+      if (d.progress_percent != null) setKpi('calibProgress', Number(d.progress_percent || 0) + '% · ' + (d.sample_count || 0) + ' / 8');
+      if (tm != null && rd != null) setKpi('calibResidualState', (tm * 100).toFixed(1) + ' cm / ' + rd.toFixed(1) + '°');
+      if (d.message) setKpi('calibLastAction', d.message);
+    }
+
+    async function pollAutoCalibrationProgress() {
+      try {
+        const d = await api('/api/pick/metric/calibration/auto_progress', 'GET');
+        renderAutoLiveProgress(d);
+      } catch (e) {
+        if (q('autoLiveMsg')) q('autoLiveMsg').textContent = 'Poll progresso fallito: ' + String(e);
+      }
+    }
+
     function renderCalibrationDebugGraph(quality) {
       const el = q('calibDebugGraph');
       if (!el) return;
@@ -1932,6 +2062,13 @@
       if (document.hidden) return;
       refreshRgbStatus();
     }, 12000);
+    setInterval(function () {
+      if (document.hidden) return;
+      const calibPanel = q('panelCalibMode');
+      if (calibPanel && !calibPanel.classList.contains('hide')) pollAutoCalibrationProgress();
+      else if (autoCalibRunning) pollAutoCalibrationProgress();
+    }, 1000);
+    pollAutoCalibrationProgress();
 
     bindClick('btnDepthStart', startDepthMonitor);
     bindClick('btnDepthStop', stopDepthMonitor);

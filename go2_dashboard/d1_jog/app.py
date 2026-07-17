@@ -181,6 +181,69 @@ def create_d1_jog_app() -> Flask:
     wrist_last_at = 0.0
     front_snapshot_lock = threading.Lock()
     auto_calibration_lock = threading.Lock()
+    auto_calibration_progress_lock = threading.Lock()
+    auto_calibration_progress: dict[str, Any] = {
+        "ok": True,
+        "running": False,
+        "phase": "idle",
+        "step": None,
+        "max_steps": 48,
+        "sample_count": 0,
+        "saved": None,
+        "reason": None,
+        "message": "AUTO non avviata",
+        "tags": None,
+        "reproj_px": None,
+        "residual_m": None,
+        "residual_deg": None,
+        "max_residual_m": 0.025,
+        "max_residual_deg": 6.0,
+        "build_ready": False,
+        "cal_ok": False,
+        "progress_percent": 0,
+        "next_action": None,
+        "offset_meta": None,
+        "updated_at": None,
+        "history": [],
+    }
+
+    def _set_auto_progress(**fields: Any) -> None:
+        with auto_calibration_progress_lock:
+            auto_calibration_progress.update(fields)
+            auto_calibration_progress["updated_at"] = time.time()
+            hist = list(auto_calibration_progress.get("history") or [])
+            phase = str(auto_calibration_progress.get("phase") or "")
+            if phase and phase not in {"idle"}:
+                hist.append(
+                    {
+                        "at": time.strftime("%H:%M:%S"),
+                        "phase": phase,
+                        "step": auto_calibration_progress.get("step"),
+                        "sample_count": auto_calibration_progress.get("sample_count"),
+                        "reason": auto_calibration_progress.get("reason"),
+                        "message": auto_calibration_progress.get("message"),
+                        "residual_m": auto_calibration_progress.get("residual_m"),
+                        "residual_deg": auto_calibration_progress.get("residual_deg"),
+                        "tags": auto_calibration_progress.get("tags"),
+                        "saved": auto_calibration_progress.get("saved"),
+                    }
+                )
+                auto_calibration_progress["history"] = hist[-40:]
+
+    def _auto_progress_from_quality(quality: dict[str, Any] | None) -> dict[str, Any]:
+        q = quality if isinstance(quality, dict) else {}
+        res = q.get("residual") if isinstance(q.get("residual"), dict) else {}
+        return {
+            "sample_count": int(q.get("sample_count") or len(grasp6d.list_handeye_samples())),
+            "progress_percent": int(q.get("progress_percent") or 0),
+            "build_ready": bool(q.get("build_ready")),
+            "next_action": q.get("next_action"),
+            "residual_m": res.get("translation_rms_m"),
+            "residual_deg": res.get("rotation_rms_deg"),
+            "max_residual_m": q.get("max_translation_rms_m") or 0.025,
+            "max_residual_deg": q.get("max_rotation_rms_deg") or 6.0,
+        }
+
     camera_diag: dict[str, dict[str, Any]] = {
         "wrist": {"index": None, "chroma": None, "rgb_like": False},
         "front": {"index": None, "chroma": None, "rgb_like": False},
@@ -2636,6 +2699,19 @@ def create_d1_jog_app() -> Flask:
             "reason": None if ok else "hold_daemon_not_ready_for_auto_calibration",
         }
 
+    @app.route("/api/pick/metric/calibration/auto_progress", methods=["GET"])
+    def pick_metric_calibration_auto_progress() -> Response:
+        """Stato live AUTO (anche se lo step e' partito da script/agente, non solo UI)."""
+        with auto_calibration_progress_lock:
+            snap = dict(auto_calibration_progress)
+            snap["history"] = list(auto_calibration_progress.get("history") or [])
+        snap["lock_busy"] = bool(auto_calibration_lock.locked())
+        cal = grasp6d.load_calibration()
+        snap["cal_ok"] = bool(cal.get("ok"))
+        if snap.get("sample_count") is None:
+            snap["sample_count"] = len(grasp6d.list_handeye_samples())
+        return jsonify(snap)
+
     @app.route("/api/pick/metric/calibration/auto_step", methods=["POST"])
     def pick_metric_calibration_auto_step() -> Response:
         """Esegue un solo step auto-calibrazione, mai un loop cieco server-side."""
@@ -2657,17 +2733,39 @@ def create_d1_jog_app() -> Flask:
         if body.get("confirm") != "AUTO_CALIBRATE_6D":
             return jsonify({"ok": False, "reason": "explicit_auto_calibration_confirmation_required"}), 400
         if not auto_calibration_lock.acquire(blocking=False):
+            _set_auto_progress(
+                running=True,
+                phase="busy",
+                message="Step AUTO gia' in corso (attendi)",
+                reason="auto_calibration_step_already_running",
+            )
             return jsonify({"ok": False, "reason": "auto_calibration_step_already_running"}), 409
 
         @after_this_request
         def _release_auto_calibration_lock(resp: Response) -> Response:
-            auto_calibration_lock.release()
+            try:
+                with auto_calibration_progress_lock:
+                    still_running = bool(auto_calibration_progress.get("phase") in {
+                        "moving", "settling", "capturing", "evaluating", "pruning", "starting",
+                    })
+                    if still_running:
+                        auto_calibration_progress["running"] = False
+                        if auto_calibration_progress.get("phase") not in {"done", "error", "saved", "skipped"}:
+                            auto_calibration_progress["phase"] = "idle_wait"
+            finally:
+                auto_calibration_lock.release()
             return resp
 
         import numpy as np
 
         daemon_ready = _auto_calibration_daemon_ready()
         if not daemon_ready.get("ok"):
+            _set_auto_progress(
+                running=False,
+                phase="error",
+                reason=daemon_ready.get("reason") or "hold_daemon_not_ready",
+                message="HOLD/daemon non pronto",
+            )
             return jsonify({"ok": False, **daemon_ready}), 503
 
         step = max(0, int(body.get("step") or 0))
@@ -2677,8 +2775,30 @@ def create_d1_jog_app() -> Flask:
         samples = grasp6d.list_handeye_samples()
         min_n = grasp6d.calib_min_samples()
         current_quality = grasp6d.handeye_quality_report(samples)
+        _set_auto_progress(
+            running=True,
+            phase="starting",
+            step=step,
+            max_steps=48,
+            message=f"Step {step + 1}: avvio",
+            reason=None,
+            saved=None,
+            tags=None,
+            reproj_px=None,
+            offset_meta=None,
+            **_auto_progress_from_quality(current_quality),
+        )
         if current_quality.get("build_ready"):
             built = grasp6d.build_handeye_calibration(samples)
+            _set_auto_progress(
+                running=False,
+                phase="done",
+                reason="already_build_ready",
+                message="Calibrazione gia' pronta (cal_ok)",
+                cal_ok=bool(built.get("ok")),
+                saved=False,
+                **_auto_progress_from_quality(current_quality),
+            )
             return jsonify({"ok": True, "done": True, "reason": "already_build_ready", "build": built, "quality": current_quality})
         # Residual alto / pieno: prune automatico e continua (non chiudere come fallimento).
         pre_prune = None
@@ -2689,12 +2809,25 @@ def create_d1_jog_app() -> Flask:
             "sessione_incoerente_reset",
         }
         if residual_stuck and len(samples) >= min_n:
+            _set_auto_progress(
+                phase="pruning",
+                message=f"Step {step + 1}: prune outlier (residuo alto)",
+                **_auto_progress_from_quality(current_quality),
+            )
             pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=4, force_drop=1)
             samples = grasp6d.list_handeye_samples()
             current_quality = grasp6d.handeye_quality_report(samples)
             if current_quality.get("build_ready") or (pre_prune.get("build") or {}).get("ok"):
                 built = grasp6d.build_handeye_calibration(samples)
                 if built.get("ok"):
+                    _set_auto_progress(
+                        running=False,
+                        phase="done",
+                        reason="build_ok_after_auto_prune",
+                        message="cal_ok dopo prune automatico",
+                        cal_ok=True,
+                        **_auto_progress_from_quality(current_quality),
+                    )
                     return jsonify(
                         {
                             "ok": True,
@@ -2741,6 +2874,12 @@ def create_d1_jog_app() -> Flask:
             samples=samples,
             step=step,
             residual_stuck=residual_stuck,
+        )
+        _set_auto_progress(
+            phase="planning",
+            message=f"Step {step + 1}: scelgo posa #{offset_meta.get('offset_index')} (score {offset_meta.get('offset_score')})",
+            offset_meta=offset_meta,
+            **_auto_progress_from_quality(current_quality),
         )
         target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
@@ -2801,6 +2940,11 @@ def create_d1_jog_app() -> Flask:
         move: dict[str, Any] = {"ok": False, "reason": "auto_move_not_started"}
         try:
             try:
+                _set_auto_progress(
+                    phase="moving",
+                    message=f"Step {step + 1}: muovo braccio verso posa calibrazione",
+                    offset_meta=offset_meta,
+                )
                 move = program_runner.move_to_servo_deg_smooth(
                     target,
                     tracking_max_error_deg=tracking_limit,
@@ -2846,6 +2990,11 @@ def create_d1_jog_app() -> Flask:
                 }
             ), 502
         settle_s = max(0.4, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "2.0"))))
+        _set_auto_progress(
+            phase="settling",
+            message=f"Step {step + 1}: settle {settle_s:.1f}s (braccio fermo)",
+            offset_meta=offset_meta,
+        )
         settle_deadline = time.monotonic() + settle_s
         settle_missing = 0
         settle_violations = 0
@@ -2941,26 +3090,56 @@ def create_d1_jog_app() -> Flask:
             ), 502
         rest_s = max(0.0, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "1.2"))))
         if rest_s > 0:
+            _set_auto_progress(
+                phase="resting",
+                message=f"Step {step + 1}: rest {rest_s:.1f}s prima dello scatto",
+            )
             time.sleep(rest_s)
         median_frames = max(1, min(5, int(os.environ.get("D1_GRASP6D_AUTO_MEDIAN_FRAMES", "3"))))
+        _set_auto_progress(
+            phase="capturing",
+            message=f"Step {step + 1}: catturo RGBD (median {median_frames}) + AprilGrid",
+        )
         try:
             frame = _capture_wrist_rgbd_with_retry(median_frames=median_frames)
         except Exception as exc:
+            _set_auto_progress(
+                running=False,
+                phase="error",
+                reason="wrist_rgbd_capture_failed",
+                message="Cattura polso fallita",
+            )
             return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc), "hold": hold}), 503
         marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        _set_auto_progress(
+            phase="evaluating",
+            message=f"Step {step + 1}: valuto sample (tag/novita'/residuo)",
+            tags=marker.get("visible_marker_count"),
+            reproj_px=marker.get("reprojection_rms_px"),
+        )
         if not marker.get("ok"):
+            skip_reason = marker.get("reason") or "target_not_valid"
             grasp6d.record_calibration_event(
                 "auto_sample_skipped",
-                reason=marker.get("reason") or "target_not_valid",
+                reason=skip_reason,
                 visible_marker_count=marker.get("visible_marker_count"),
                 reprojection_rms_px=marker.get("reprojection_rms_px"),
                 hold_ok=True,
+            )
+            _set_auto_progress(
+                running=False,
+                phase="skipped",
+                saved=False,
+                reason=skip_reason,
+                message=f"Step {step + 1}: skip · {skip_reason}",
+                tags=marker.get("visible_marker_count"),
+                reproj_px=marker.get("reprojection_rms_px"),
             )
             return jsonify(
                 {
                     "ok": True,
                     "saved": False,
-                    "reason": marker.get("reason") or "target_not_valid",
+                    "reason": skip_reason,
                     "marker": marker,
                     "move": move,
                     "hold": hold,
@@ -2978,6 +3157,15 @@ def create_d1_jog_app() -> Flask:
                 visible_marker_count=visible_tags,
                 min_visible_tags=min_tags,
                 hold_ok=True,
+            )
+            _set_auto_progress(
+                running=False,
+                phase="skipped",
+                saved=False,
+                reason="too_few_visible_tags",
+                message=f"Step {step + 1}: skip · solo {visible_tags}/{min_tags} tag",
+                tags=visible_tags,
+                reproj_px=marker.get("reprojection_rms_px"),
             )
             return jsonify(
                 {
@@ -3002,6 +3190,15 @@ def create_d1_jog_app() -> Flask:
                 visible_marker_count=visible_tags,
                 reprojection_rms_px=reproj,
                 hold_ok=True,
+            )
+            _set_auto_progress(
+                running=False,
+                phase="skipped",
+                saved=False,
+                reason="reprojection_too_high",
+                message=f"Step {step + 1}: skip · reproj {float(reproj):.2f}px > {max_reproj:.2f}",
+                tags=visible_tags,
+                reproj_px=reproj,
             )
             return jsonify(
                 {
@@ -3075,6 +3272,16 @@ def create_d1_jog_app() -> Flask:
                 reprojection_rms_px=marker.get("reprojection_rms_px"),
                 hold_ok=True,
             )
+            _set_auto_progress(
+                running=False,
+                phase="skipped",
+                saved=False,
+                reason="pose_too_similar",
+                message=f"Step {step + 1}: skip · posa troppo simile",
+                tags=marker.get("visible_marker_count"),
+                reproj_px=marker.get("reprojection_rms_px"),
+                **_auto_progress_from_quality(current_quality),
+            )
             return jsonify(
                 {
                     "ok": True,
@@ -3125,6 +3332,16 @@ def create_d1_jog_app() -> Flask:
                     reprojection_rms_px=marker.get("reprojection_rms_px"),
                     hold_ok=True,
                 )
+                _set_auto_progress(
+                    running=False,
+                    phase="skipped",
+                    saved=False,
+                    reason="residual_not_improving",
+                    message=f"Step {step + 1}: skip · non migliora residuo",
+                    tags=marker.get("visible_marker_count"),
+                    reproj_px=marker.get("reprojection_rms_px"),
+                    **_auto_progress_from_quality(candidate_quality),
+                )
                 return jsonify(
                     {
                         "ok": True,
@@ -3172,6 +3389,22 @@ def create_d1_jog_app() -> Flask:
             hold_ok=True,
         )
         done = bool(built and built.get("ok"))
+        _set_auto_progress(
+            running=False,
+            phase="done" if done else "saved",
+            saved=True,
+            reason="cal_ok" if done else "sample_saved",
+            message=(
+                f"Step {step + 1}: cal_ok! sample={out.get('sample_count')}"
+                if done
+                else f"Step {step + 1}: sample salvato ({out.get('sample_count')})"
+            ),
+            cal_ok=done,
+            tags=marker.get("visible_marker_count"),
+            reproj_px=marker.get("reprojection_rms_px"),
+            offset_meta=offset_meta,
+            **_auto_progress_from_quality(quality),
+        )
         return jsonify(
             {
                 "ok": True,
