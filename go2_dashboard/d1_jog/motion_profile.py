@@ -1,4 +1,13 @@
-"""Profilo movimento «tipo zero» — funcode 2 mode 1 + passi piccoli e ritmo basso."""
+"""Profilo movimento D1: mode 1 solo per traiettoria, mode 0 per hold statico.
+
+Doc Unitree (D1 Arm services):
+  mode 0 = small smoothing of 10Hz data
+  mode 1 = large smoothing of trajectory use
+
+Anti-pattern (Caltech SURF + lab): stream continuo mode1 a 20–100Hz fa
+surriscaldare i servo e dopo 1–pochi minuti il braccio smette di rispondere
+mentre il software crede ancora che HOLD sia attivo.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +15,23 @@ import os
 
 
 def smooth_mode() -> int:
-    """mode 1 = smoothing traiettoria (doc Unitree); come movimento zero interno."""
+    """mode 1 = smoothing traiettoria (doc Unitree); solo per waypoint/jog in moto."""
     return int(os.environ.get("D1_JOG_STREAM_MODE", os.environ.get("D1_JOG_MODE", "1")))
 
 
+def hold_mode() -> int:
+    """mode 0 = hold / keepalive a ~10Hz (doc Unitree). Non usare mode 1 per HOLD."""
+    return int(os.environ.get("D1_HOLD_MODE", "0"))
+
+
+def hold_heartbeat_ms() -> int:
+    """Periodo heartbeat hold: default 100ms (=10Hz ciclo ufficiale D1)."""
+    return max(80, min(500, int(os.environ.get("D1_HOLD_HEARTBEAT_MS", "100"))))
+
+
 def stream_hz() -> float:
-    return max(8.0, min(25.0, float(os.environ.get("D1_JOG_STREAM_HZ", "12"))))
+    # Cap soft a 12Hz: sopra il ciclo ufficiale 10Hz aumenta flood DDS/servo.
+    return max(8.0, min(12.0, float(os.environ.get("D1_JOG_STREAM_HZ", "10"))))
 
 
 def stream_delay_ms() -> int:

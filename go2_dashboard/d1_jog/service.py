@@ -882,14 +882,18 @@ def couple_and_hold_pose(
         if not ok:
             return {"ok": False, "reason": busy, "action": "couple_and_hold_pose"}
     try:
+        from go2_dashboard.d1_jog import motion_profile
+
         sd = clamp_servo_deg(servo_deg)
         seq = int(time.time()) % 100000
+        hold_m = motion_profile.hold_mode()
         messages: list[dict[str, Any]] = []
         if with_power:
             messages.append({"seq": seq, "address": 1, "funcode": 6, "data": {"power": 1}})
-        messages.append(_pose_message(sd, seq=seq + len(messages)))
+        # Pose hold in mode0: evita di “congelare” un target mode1 da traiettoria.
+        messages.append(_pose_message(sd, mode=hold_m, seq=seq + len(messages)))
         messages.append({"seq": seq + len(messages), "address": 1, "funcode": 5, "data": {"mode": 1}})
-        messages.append(_pose_message(sd, seq=seq + len(messages)))
+        messages.append(_pose_message(sd, mode=hold_m, seq=seq + len(messages)))
         out = publish_messages_stream(messages)
         if out.get("ok") or out.get("skipped"):
             _arm_coupled = True
@@ -1037,11 +1041,12 @@ def hold_current_pose(
 
 
 def _stream_pose_hold(servo_deg: list[float], *, repeats: int = 1) -> dict[str, Any]:
-    """Mantiene posa con soli funcode 2 sul daemon — niente burst funcode 5."""
+    """Mantiene posa con soli funcode 2 mode0 sul daemon — niente burst funcode 5."""
     from go2_dashboard.d1_jog import motion_profile
 
     cur = clamp_servo_deg(servo_deg)
-    m = motion_profile.smooth_mode()
+    # HOLD statico = mode 0 (ciclo 10Hz). mode 1 solo per traiettorie in moto.
+    m = motion_profile.hold_mode()
     delay_ms = motion_profile.stream_delay_ms()
     if not ensure_command_daemon(delay_ms):
         return {"ok": False, "reason": "daemon_start_failed", "action": "stream_pose_hold"}
@@ -1080,8 +1085,10 @@ def _hold_current_pose_impl(
         cur = fb["servo_deg"]
     else:
         cur = clamp_servo_deg(servo_deg)
+    from go2_dashboard.d1_jog import motion_profile
+
     seq = int(time.time()) % 100000
-    m = int(os.environ.get("D1_JOG_MODE", "0"))
+    m = motion_profile.hold_mode()
     msgs: list[dict[str, Any]] = [{"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}}]
     for i in range(rpt):
         angles: dict[str, Any] = {"mode": m}

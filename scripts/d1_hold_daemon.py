@@ -4,9 +4,15 @@
 The dashboard is only a Unix-socket client. Restarting Flask therefore cannot
 close the DDS writer or interrupt the funcode-2 hold heartbeat.
 
-CRITICAL: a dedicated writer thread owns stdin. Client publish never sleeps
-while holding the write path, so heartbeat cannot be starved by long motion
-batches (root cause of arm "cedimento" during auto-calibration).
+CRITICAL — two failure modes we must avoid together:
+1) Writer lock starvation: client publish never sleeps on the write path
+   (dedicated writer thread + queue).
+2) D1 command flood: Unitree documents mode0 @ ~10Hz for static data and
+   mode1 for trajectories. Continuous mode1 at 20–100Hz (Caltech SURF + lab)
+   overheats servos until the arm stops responding while hold_active stays true.
+
+Heartbeat therefore rewrites poses as mode0, defaults to ~100ms, and is
+suppressed while the client is already streaming funcode-2 motion.
 """
 
 from __future__ import annotations
@@ -47,11 +53,14 @@ class HoldController:
         heartbeat_ms: int,
         state_path: str,
         fake_log: str | None = None,
+        hold_mode: int = 0,
     ) -> None:
         self.command_bin = command_bin
         self.domain = int(domain)
         self.command_delay_ms = int(command_delay_ms)
-        self.heartbeat_s = max(0.02, int(heartbeat_ms) / 1000.0)
+        # Floor 80ms: below ~10Hz we flood the D1 controller (doc + field reports).
+        self.heartbeat_s = max(0.08, int(heartbeat_ms) / 1000.0)
+        self.hold_mode = 0 if int(hold_mode) == 0 else 1
         self.state_path = Path(state_path)
         self.fake_log = Path(fake_log) if fake_log else None
         self.fake_publisher_alive = False
@@ -63,6 +72,7 @@ class HoldController:
         self.last_pose: dict[str, Any] | None = None
         self.last_publish_mono = 0.0
         self.last_heartbeat_mono = 0.0
+        self.last_client_pose_mono = 0.0
         self.heartbeat_count = 0
         self.event_seq = 0
         self.recent_events: deque[dict[str, Any]] = deque(maxlen=80)
@@ -231,7 +241,9 @@ class HoldController:
             restore.append({"seq": seq, "address": 1, "funcode": 6, "data": {"power": 1}})
             seq += 1
         restore.append({"seq": seq, "address": 1, "funcode": 5, "data": {"mode": 1}})
-        restore.append(dict(self.last_pose))
+        hb = self._pose_for_heartbeat_locked()
+        if hb is not None:
+            restore.append(hb)
         return all(self._raw_write_locked(msg, source="restore") for msg in restore)
 
     def _ensure_publisher_locked(self) -> bool:
@@ -252,13 +264,38 @@ class HoldController:
                 self.last_pose = None
         elif fc == 2:
             self.last_pose = msg
+            self.last_client_pose_mono = time.monotonic()
+
+    def _pose_for_heartbeat_locked(self) -> dict[str, Any] | None:
+        """Replay last angles as hold_mode (default 0), never trajectory mode1."""
+        if self.last_pose is None:
+            return None
+        msg = dict(self.last_pose)
+        data = dict(msg.get("data") or {}) if isinstance(msg.get("data"), dict) else {}
+        data["mode"] = int(self.hold_mode)
+        msg["data"] = data
+        return msg
+
+    def _client_motion_recent_locked(self) -> bool:
+        """True while client is already streaming poses — skip duplicate heartbeat."""
+        if self.last_client_pose_mono <= 0:
+            return False
+        grace = max(self.heartbeat_s * 1.5, 0.15)
+        return (time.monotonic() - self.last_client_pose_mono) < grace
 
     def _emit_heartbeat_locked(self) -> None:
         if not self.desired_coupled or self.last_pose is None:
             return
+        if self._client_motion_recent_locked():
+            # Motion stream is the sole publisher; still mark freshness.
+            self.last_heartbeat_mono = time.monotonic()
+            return
         if not self._ensure_publisher_locked():
             return
-        if self._raw_write_locked(dict(self.last_pose), source="heartbeat"):
+        hb = self._pose_for_heartbeat_locked()
+        if hb is None:
+            return
+        if self._raw_write_locked(hb, source="heartbeat"):
             self.last_heartbeat_mono = time.monotonic()
             self.heartbeat_count += 1
 
@@ -301,10 +338,9 @@ class HoldController:
                         if self.desired_coupled and self.last_pose is not None:
                             self.last_heartbeat_mono = time.monotonic()
                 done_event.set()
-                # Keep heartbeat deadline honest even under heavy publish load.
+                # Do NOT emit an extra heartbeat mid-batch: that doubles DDS flood
+                # during trajectories. Only push the deadline forward.
                 if time.monotonic() >= next_hb:
-                    with self.lock:
-                        self._emit_heartbeat_locked()
                     next_hb = time.monotonic() + self.heartbeat_s
                 continue
             if kind == "save_state":
@@ -380,6 +416,8 @@ class HoldController:
             "heartbeat_age_ms": heartbeat_age_ms,
             "heartbeat_count": self.heartbeat_count,
             "heartbeat_period_ms": round(self.heartbeat_s * 1000.0, 1),
+            "hold_mode": int(self.hold_mode),
+            "client_motion_recent": self._client_motion_recent_locked(),
             "uptime_s": round(now - self.started_mono, 3),
             "last_error": self.last_error,
             "last_error_at": self.last_error_at,
@@ -433,7 +471,18 @@ def main() -> int:
     parser.add_argument("--command-bin", default=os.environ.get("D1_SDK_COMMAND_BIN", "bin/d1_sdk_command"))
     parser.add_argument("--domain", type=int, default=int(os.environ.get("GO2_DDS_DOMAIN", "0")))
     parser.add_argument("--command-delay-ms", type=int, default=int(os.environ.get("D1_JOG_DAEMON_DELAY_MS", "0")))
-    parser.add_argument("--heartbeat-ms", type=int, default=int(os.environ.get("D1_HOLD_HEARTBEAT_MS", "50")))
+    parser.add_argument(
+        "--heartbeat-ms",
+        type=int,
+        default=int(os.environ.get("D1_HOLD_HEARTBEAT_MS", "100")),
+        help="Hold keepalive period (ms). Unitree D1 cycle is ~10Hz; default 100.",
+    )
+    parser.add_argument(
+        "--hold-mode",
+        type=int,
+        default=int(os.environ.get("D1_HOLD_MODE", "0")),
+        help="funcode-2 mode for heartbeat (0=10Hz hold, 1=trajectory). Default 0.",
+    )
     parser.add_argument("--fake-log", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -466,6 +515,7 @@ def main() -> int:
         heartbeat_ms=args.heartbeat_ms,
         state_path=args.state,
         fake_log=args.fake_log,
+        hold_mode=args.hold_mode,
     )
     server = (HoldTcpServer if tcp_endpoint else HoldUnixServer)(server_address, HoldRequestHandler)
     server.controller = controller  # type: ignore[attr-defined]

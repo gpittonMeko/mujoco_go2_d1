@@ -9,9 +9,13 @@ export D1_JOG_ENABLE_REAL_ARM=1
 export GO2_ENABLE_REAL_ARM=1
 export D1_JOG_PORT=5056
 export D1_JOG_BIND=0.0.0.0
-# mode 1 = smoothing traiettoria (come movimento zero interno al controller)
+# mode 1 = smoothing TRAIETTORIA (solo jog/waypoint in moto).
+# mode 0 = HOLD / dati a ~10Hz (doc Unitree D1 Arm services).
+# NON usare mode1 per heartbeat hold: flood continuo → servo caldi → braccio
+# smette di rispondere (report Caltech SURF 2025 + lab).
 export D1_JOG_MODE=1
 export D1_JOG_STREAM_MODE=1
+export D1_HOLD_MODE="${D1_HOLD_MODE:-0}"
 export D1_JOG_DAEMON_DELAY_MS="${D1_JOG_DAEMON_DELAY_MS:-0}"
 export D1_JOG_CMD_DELAY_MS="${D1_JOG_CMD_DELAY_MS:-0}"
 export D1_JOG_FEEDBACK_S=3
@@ -48,7 +52,8 @@ export D1_CART_INTERPOLATED="${D1_CART_INTERPOLATED:-1}"
 # Jog continuo cartesiano (stile UR teach pendant)
 export D1_JOG_MAX_SPEED_MM_S="${D1_JOG_MAX_SPEED_MM_S:-22}"
 export D1_JOG_MIN_SPEED_MM_S="${D1_JOG_MIN_SPEED_MM_S:-0}"
-export D1_JOG_STREAM_HZ="${D1_JOG_STREAM_HZ:-20}"
+# Stream jog <= ciclo ufficiale ~10Hz (cap soft anche in motion_profile).
+export D1_JOG_STREAM_HZ="${D1_JOG_STREAM_HZ:-10}"
 export D1_JOG_STREAM_DELAY_MS="${D1_JOG_STREAM_DELAY_MS:-8}"
 export D1_JOG_TICK_MAX_MM="${D1_JOG_TICK_MAX_MM:-2.5}"
 export D1_CART_MAX_DQ_RAD="${D1_CART_MAX_DQ_RAD:-0.035}"
@@ -75,8 +80,9 @@ export D1_PROG_WAIT_TIMEOUT_S="${D1_PROG_WAIT_TIMEOUT_S:-30}"
 export D1_PROG_MAX_POLLS="${D1_PROG_MAX_POLLS:-12}"
 export D1_PROG_MOVE_DEG_PER_S="${D1_PROG_MOVE_DEG_PER_S:-12}"
 export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
-# AUTO-calibrazione 6D: ON dopo fix writer-thread hold daemon (heartbeat non starve).
-export D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-1}"
+# AUTO-calibrazione 6D: OFF finche' hold mode0@10Hz non e' verificato a freddo
+# con braccio sostenuto (flood mode1 era un sospetto forte di cedimento).
+export D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-0}"
 export D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG="${D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG:-12}"
 export D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS="${D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS:-2}"
 export D1_GRASP6D_AUTO_SETTLE_S="${D1_GRASP6D_AUTO_SETTLE_S:-1.0}"
@@ -87,13 +93,14 @@ export D1_GRASP6D_AUTO_MOVE_DEG_PER_S="${D1_GRASP6D_AUTO_MOVE_DEG_PER_S:-6}"
 export D1_GRASP6D_AUTO_MAX_START_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_START_DELTA_DEG:-40}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
-# Unico owner DDS del braccio: daemon esterno con heartbeat funcode 2.
+# Unico owner DDS del braccio: daemon esterno con heartbeat funcode 2 mode0.
 # Flask è solo client e può riavviarsi senza interrompere l'hold.
 export D1_HOLD_DAEMON_EXTERNAL=1
 export D1_HOLD_SOCKET="${D1_HOLD_SOCKET:-/tmp/go2_d1_hold.sock}"
-# Heartbeat hold piu' stretto: riduce la finestra in cui il braccio puo' cedere
-# se Flask viene riavviato. Richiede restart del SOLO hold daemon a freddo.
-export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-50}"
+# Keepalive hold = ciclo ufficiale D1 ~10Hz. 50ms (20Hz) era troppo aggressivo
+# e, con mode1, duplicava lo stream di motion → flood servo.
+# Richiede reload hold daemon a freddo (braccio sostenuto) per applicare.
+export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-100}"
 export D1_ZERO_TRANSIT_J1_DEG="${D1_ZERO_TRANSIT_J1_DEG:--90}"
 export D1_ZERO_TRANSIT_J2_DEG="${D1_ZERO_TRANSIT_J2_DEG:-90}"
 export GO2_THERMAL_PROTECT="${GO2_THERMAL_PROTECT:-1}"

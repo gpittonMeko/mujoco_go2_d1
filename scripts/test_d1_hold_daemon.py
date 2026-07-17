@@ -52,7 +52,9 @@ class D1HoldDaemonIntegrationTests(unittest.TestCase):
                 "--lock",
                 str(self.lock),
                 "--heartbeat-ms",
-                "40",
+                "80",
+                "--hold-mode",
+                "0",
                 "--fake-log",
                 str(self.log),
             ],
@@ -180,7 +182,7 @@ class D1HoldDaemonIntegrationTests(unittest.TestCase):
         self.assertEqual(result.get("reason"), "couple_requires_pose")
 
     def test_heartbeat_not_starved_by_delayed_publish_batch(self) -> None:
-        """Regression: sleep under lock starved heartbeat → arm cedimento."""
+        """Regression: sleep under lock starved freshness → arm cedimento."""
         self._start()
         pose = self._pose(40)
         with patch.dict(os.environ, self.env, clear=False):
@@ -193,23 +195,38 @@ class D1HoldDaemonIntegrationTests(unittest.TestCase):
                     ]
                 ).get("ok")
             )
-            time.sleep(0.12)
+            time.sleep(0.2)
             before = d1_hold_client.status()
             self.assertTrue(before.get("hold_active"), before)
-            count0 = int(before.get("heartbeat_count", 0))
             batch = []
             for i in range(8):
                 p = self._pose(50 + i)
                 p["data"] = dict(p["data"])
                 p["data"]["angle0"] = float(i)
                 batch.append(p)
-            # delay_ms between messages used to block the lock; heartbeat must rise.
+            # During motion, heartbeat DDS is suppressed (no flood) but freshness stays.
             published = d1_hold_client.publish(batch, delay_ms=40)
             self.assertTrue(published.get("ok"), published)
-            after = d1_hold_client.status()
-            self.assertTrue(after.get("hold_active"), after)
-            self.assertGreater(int(after.get("heartbeat_count", 0)), count0)
-            self.assertLessEqual(float(after.get("heartbeat_age_ms") or 9999), 250.0)
+            mid = d1_hold_client.status()
+            self.assertTrue(mid.get("hold_active"), mid)
+            mid_age = mid.get("heartbeat_age_ms")
+            self.assertIsNotNone(mid_age, mid)
+            self.assertLessEqual(float(mid_age), 250.0)
+            # After idle, mode0 heartbeat resumes and count increases.
+            count_mid = int(mid.get("heartbeat_count", 0))
+            time.sleep(0.35)
+            idle = d1_hold_client.status()
+            self.assertTrue(idle.get("hold_active"), idle)
+            self.assertGreater(int(idle.get("heartbeat_count", 0)), count_mid)
+            self.assertEqual(int(idle.get("hold_mode", -1)), 0)
+            rows = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+            hb_modes = [
+                int((row.get("message") or {}).get("data", {}).get("mode", -1))
+                for row in rows
+                if row.get("source") == "heartbeat"
+            ]
+            self.assertTrue(hb_modes, rows)
+            self.assertTrue(all(m == 0 for m in hb_modes), hb_modes)
 
 
 if __name__ == "__main__":
