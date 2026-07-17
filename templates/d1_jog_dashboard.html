@@ -1749,8 +1749,8 @@
         if (q('btn6dAutoCalibTop')) q('btn6dAutoCalibTop').disabled = true;
         if (q('autoCalibState')) {
           q('autoCalibState').textContent = existingSamples > 0
-            ? ('Auto: riprendo da sample ' + (existingSamples + 1) + '…')
-            : 'Auto: azzero sessione e parto…';
+            ? ('Auto: riprendo da sample ' + (existingSamples + 1) + ' partendo dal preset scan SX...')
+            : 'Auto: azzero sessione e parto dal preset scan SX...';
         }
         if (existingSamples === 0) {
           const reset = await api('/api/pick/metric/calibration', 'DELETE', {}, 70000);
