@@ -101,8 +101,24 @@ def _transform(R: np.ndarray, t: Iterable[float]) -> np.ndarray:
     return T
 
 
+def _safe_inv4(T: np.ndarray) -> np.ndarray | None:
+    arr = np.asarray(T, dtype=float)
+    if arr.shape != (4, 4) or not np.all(np.isfinite(arr)):
+        return None
+    try:
+        inv = np.linalg.inv(arr)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(inv)):
+        return None
+    return inv
+
+
 def _project_rotation(R: np.ndarray) -> np.ndarray:
-    u, _, vt = np.linalg.svd(np.asarray(R, dtype=float).reshape(3, 3))
+    try:
+        u, _, vt = np.linalg.svd(np.asarray(R, dtype=float).reshape(3, 3))
+    except np.linalg.LinAlgError:
+        return np.eye(3, dtype=float)
     out = u @ vt
     if np.linalg.det(out) < 0:
         u[:, -1] *= -1
@@ -651,7 +667,26 @@ def calib_min_samples() -> int:
 
 
 def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Calcola hand-eye senza salvare su disco."""
+    """Calcola hand-eye senza salvare su disco. Non deve mai alzare LinAlgError."""
+    try:
+        return _solve_handeye_calibration_impl(samples)
+    except np.linalg.LinAlgError as exc:
+        return {
+            "ok": False,
+            "reason": "handeye_linalg_error",
+            "detail": str(exc),
+            "sample_count": len(samples),
+        }
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "reason": "handeye_solve_value_error",
+            "detail": str(exc),
+            "sample_count": len(samples),
+        }
+
+
+def _solve_handeye_calibration_impl(samples: list[dict[str, Any]]) -> dict[str, Any]:
     min_n = calib_min_samples()
     if len(samples) < min_n:
         return {
@@ -669,6 +704,8 @@ def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
         Tc = np.asarray(sample.get("T_camera_target"), dtype=float)
         if Tg.shape != (4, 4) or Tc.shape != (4, 4):
             return {"ok": False, "reason": "invalid_sample_transform"}
+        if _safe_inv4(Tg) is None or _safe_inv4(Tc) is None:
+            return {"ok": False, "reason": "singular_sample_transform", "sample_count": len(samples)}
         Tg_rows.append(Tg)
         Tc_rows.append(Tc)
 
@@ -682,11 +719,24 @@ def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
         ("andreff", cv2.CALIB_HAND_EYE_ANDREFF),
         ("daniilidis", cv2.CALIB_HAND_EYE_DANIILIDIS),
     ]
+    Tg_inv: list[np.ndarray] = []
+    Tc_inv: list[np.ndarray] = []
+    for Tg, Tc in zip(Tg_rows, Tc_rows):
+        g_inv = _safe_inv4(Tg)
+        c_inv = _safe_inv4(Tc)
+        if g_inv is None or c_inv is None:
+            return {
+                "ok": False,
+                "reason": "singular_sample_transform",
+                "sample_count": len(samples),
+            }
+        Tg_inv.append(g_inv)
+        Tc_inv.append(c_inv)
     transform_variants = [
         ("base_tool__camera_target", Tg_rows, Tc_rows),
-        ("tool_base__camera_target", [np.linalg.inv(T) for T in Tg_rows], Tc_rows),
-        ("base_tool__target_camera", Tg_rows, [np.linalg.inv(T) for T in Tc_rows]),
-        ("tool_base__target_camera", [np.linalg.inv(T) for T in Tg_rows], [np.linalg.inv(T) for T in Tc_rows]),
+        ("tool_base__camera_target", Tg_inv, Tc_rows),
+        ("base_tool__target_camera", Tg_rows, Tc_inv),
+        ("tool_base__target_camera", Tg_inv, Tc_inv),
     ]
 
     def residual_for_x(T_tool_camera: np.ndarray) -> dict[str, Any]:
@@ -729,7 +779,13 @@ def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             X = _transform(R_x, np.asarray(t_x).reshape(3))
             for inverted in (False, True):
-                X_eval = np.linalg.inv(X) if inverted else X
+                if inverted:
+                    X_eval = _safe_inv4(X)
+                    if X_eval is None:
+                        solver_errors.append(f"{variant_name}/{method_name}/inv=True: singular_X")
+                        continue
+                else:
+                    X_eval = X
                 try:
                     res = residual_for_x(X_eval)
                 except (ValueError, np.linalg.LinAlgError) as exc:
@@ -841,7 +897,12 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     for sample in samples:
         Tg = np.asarray(sample.get("T_base_tool"), dtype=float)
         Tc = np.asarray(sample.get("T_camera_target"), dtype=float)
-        if Tg.shape == (4, 4) and Tc.shape == (4, 4):
+        if (
+            Tg.shape == (4, 4)
+            and Tc.shape == (4, 4)
+            and _safe_inv4(Tg) is not None
+            and _safe_inv4(Tc) is not None
+        ):
             valid_samples.append(sample)
     translations = []
     rotations = []
