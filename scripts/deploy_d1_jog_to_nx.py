@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Deploy dashboard D1 integrata sulla Jetson, porta 5056.
 
-Non modifica nx_dashboard_env.sh, nx_start_dashboard.sh né riavvia nx_dashboard_supervise.
+SICUREZZA BRACCIO: di default copia SOLO i file (nessun restart).
+Un restart Flask/hold puo' far cedere il braccio: va fatto solo a freddo,
+con braccio sostenuto, e flag espliciti.
 
-Uso (PC sulla LAN Unitree):
+Uso files-only (sicuro):
   python scripts/deploy_d1_jog_to_nx.py
 
-Env: GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD (come deploy_dashboard_to_nx.py).
+Uso con restart (PERICOLOSO — sostieni il braccio):
+  set GO2_D1_JOG_RESTART=1
+  set GO2_D1_CONFIRM_ARM_SUPPORTED=1
+  python scripts/deploy_d1_jog_to_nx.py
+
+Env: GO2_NX_HOST, GO2_NX_USER, GO2_NX_PASSWORD.
 
 URL: http://192.168.123.18:5056/
 """
@@ -181,9 +188,120 @@ exit $EC
     return code
 
 
+def _remote_reload_hold_daemon(ssh: paramiko.SSHClient) -> None:
+    """Riavvia SOLO il hold daemon con restore stato (writer-thread fix).
+
+    Sequenza: freeze pose -> stop daemon -> start -> assert hold_active.
+    """
+    print("[d1-jog deploy] Reload HOLD daemon (writer-thread fix) …")
+    script = f"""set -e
+cd {REMOTE_BASE}
+# Freeze sulla posa corrente prima del reload.
+python3 - <<'PY'
+import json, time, urllib.request
+from go2_dashboard.d1_hold_client import publish, status
+try:
+    req=urllib.request.Request(
+        'http://127.0.0.1:5056/api/joints/hold_now',
+        data=b'{{"reason":"pre_hold_daemon_reload"}}',
+        method='POST',
+        headers={{'Content-Type':'application/json'}},
+    )
+    json.load(urllib.request.urlopen(req, timeout=20))
+except Exception as e:
+    print('HOLD_API_SKIP', e)
+h=status()
+pose=h.get('hold_target_servo_deg')
+if isinstance(pose, list) and len(pose)>=7:
+    s=int(time.time()*1000)%100000
+    data={{'mode':1}}
+    for i,v in enumerate(pose[:7]): data[f'angle{{i}}']=float(v)
+    publish([
+      {{'seq':s,'address':1,'funcode':6,'data':{{'power':1}}}},
+      {{'seq':s+1,'address':1,'funcode':5,'data':{{'mode':1}}}},
+      {{'seq':s+2,'address':1,'funcode':2,'data':data}},
+    ], delay_ms=5)
+print('PRE_RELOAD_HOLD', status().get('hold_active'), status().get('heartbeat_age_ms'))
+PY
+# Stop solo il daemon (state.json resta per restore same-boot).
+pkill -f '[n]x_d1_hold_supervise.sh' 2>/dev/null || true
+pkill -f '[d]1_hold_daemon.py' 2>/dev/null || true
+sleep 0.35
+rm -f /tmp/go2_d1_hold.sock /tmp/go2_d1_hold.lock
+bash scripts/nx_start_d1_hold_daemon.sh
+python3 - <<'PY'
+import time
+from go2_dashboard.d1_hold_client import status
+deadline=time.time()+4.0
+last={{}}
+while time.time()<deadline:
+    last=status()
+    if last.get('ok') and last.get('hold_active') and last.get('publisher_alive'):
+        print('HOLD_DAEMON_RELOAD_OK', last.get('publisher_pid'), last.get('heartbeat_period_ms'), last.get('writer_queue_depth'))
+        raise SystemExit(0)
+    time.sleep(0.05)
+print('HOLD_DAEMON_RELOAD_FAIL', last)
+raise SystemExit(2)
+PY
+"""
+    _, stdout, stderr = ssh.exec_command(script, timeout=60)
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode(errors="replace")
+    err = stderr.read().decode(errors="replace")
+    if out.strip():
+        print(out.strip())
+    if err.strip():
+        print("hold reload stderr:", err.strip())
+    if code != 0:
+        raise SystemExit("REFUSE_DEPLOY_HOLD_DAEMON_RELOAD_FAILED")
+
+
 def _remote_start_jog(ssh: paramiko.SSHClient, host: str) -> None:
-    print("[d1-jog deploy] Avvio dashboard integrata 5056 …")
-    _, stdout, stderr = ssh.exec_command(f"bash {REMOTE_BASE}/scripts/nx_start_d1_jog.sh", timeout=60)
+    """Riavvio Flask hold-safe. Richiede conferma esplicita: rischia cedimento braccio."""
+    print("[d1-jog deploy] HOLD-SAFE restart 5056 (no uvc reload, freeze pose prima del pkill) …")
+    script = f"""set -e
+cd {REMOTE_BASE}
+# Freeze posa misurata sul keeper PRIMA di toccare Flask.
+python3 - <<'PY'
+import json, urllib.request
+from go2_dashboard.d1_hold_client import publish, status
+import time
+d={{}}
+try:
+    req=urllib.request.Request(
+        'http://127.0.0.1:5056/api/joints/hold_now',
+        data=b'{{"reason":"deploy_pre_restart"}}',
+        method='POST',
+        headers={{'Content-Type':'application/json'}},
+    )
+    d=json.load(urllib.request.urlopen(req, timeout=20))
+except Exception:
+    d={{}}
+h=status()
+pose=None
+if isinstance((d or {{}}).get('feedback'), dict):
+    pose=(d.get('feedback') or {{}}).get('servo_deg')
+if not (isinstance(pose, list) and len(pose)>=7):
+    try:
+        fb=json.load(urllib.request.urlopen('http://127.0.0.1:5056/api/joints/feedback', timeout=10))
+        pose=fb.get('servo_deg')
+    except Exception:
+        pose=h.get('hold_target_servo_deg')
+if isinstance(pose, list) and len(pose)>=7:
+    s=int(time.time()*1000)%100000
+    data={{'mode':1}}
+    for i,v in enumerate(pose[:7]): data[f'angle{{i}}']=float(v)
+    publish([
+      {{'seq':s,'address':1,'funcode':6,'data':{{'power':1}}}},
+      {{'seq':s+1,'address':1,'funcode':5,'data':{{'mode':1}}}},
+      {{'seq':s+2,'address':1,'funcode':2,'data':data}},
+    ], delay_ms=10)
+print('PRE_RESTART_HOLD', status().get('hold_active'), status().get('heartbeat_age_ms'))
+PY
+export D1_ORBBEC_RELOAD_UVC=0
+bash scripts/nx_start_d1_jog.sh
+"""
+    _, stdout, stderr = ssh.exec_command(script, timeout=90)
     code = stdout.channel.recv_exit_status()
     print(stdout.read().decode(errors="replace"))
     err = stderr.read().decode(errors="replace")
@@ -196,9 +314,28 @@ def _remote_start_jog(ssh: paramiko.SSHClient, host: str) -> None:
 
 
 def _remote_prepare_external_hold(ssh: paramiko.SSHClient) -> None:
-    """Migra una sola volta dal writer Flask al keeper senza finestra di coppia."""
+    """Assicura il keeper esterno. MAI uccidere un hold già attivo.
+
+    Bug storico: se Flask/health non rispondeva, il deploy faceva pkill del
+    daemon hold e il braccio cadeva. Ora: se il socket hold e' vivo, non toccare.
+    """
     script = f"""set -e
 cd {REMOTE_BASE}
+# 1) Verifica DIRETTA del keeper (non dipendere da Flask).
+HOLD_OK=$(python3 - <<'PY'
+from go2_dashboard.d1_hold_client import status
+try:
+    h=status()
+    print('1' if h.get('ok') and h.get('hold_active') and h.get('publisher_alive') else '0')
+except Exception:
+    print('0')
+PY
+)
+if [ "$HOLD_OK" = "1" ]; then
+  echo EXTERNAL_HOLD_ALREADY_ACTIVE
+  exit 0
+fi
+# 2) Flask health: se dice external+hold, non toccare comunque.
 LEGACY=$(python3 - <<'PY'
 import json, urllib.request
 try:
@@ -213,6 +350,12 @@ if [ "$LEGACY" = "0" ]; then
   echo EXTERNAL_HOLD_ALREADY_ACTIVE
   exit 0
 fi
+# 3) Solo se NON c'e' hold attivo: avvia keeper. Mai pkill di un daemon vivo.
+if pgrep -f '[d]1_hold_daemon.py' >/dev/null 2>&1; then
+  echo EXTERNAL_HOLD_PROCESS_ALIVE_REFUSE_KILL
+  echo "REFUSE: hold daemon process exists but status not ok — non uccido il processo (rischio caduta)." >&2
+  exit 2
+fi
 POSE=$(python3 - <<'PY'
 import json, urllib.request
 d=json.load(urllib.request.urlopen('http://127.0.0.1:5056/api/joints/feedback', timeout=10))
@@ -221,9 +364,6 @@ assert isinstance(p,list) and len(p)>=7, d
 print(','.join(str(float(x)) for x in p[:7]))
 PY
 )
-pkill -f '[n]x_d1_hold_supervise.sh' 2>/dev/null || true
-pkill -f '[d]1_hold_daemon.py' 2>/dev/null || true
-rm -f /tmp/go2_d1_hold.sock
 bash scripts/nx_start_d1_hold_daemon.sh
 POSE="$POSE" python3 - <<'PY'
 import os, time
@@ -425,17 +565,51 @@ def main() -> None:
     sftp.close()
 
     skip_sdk = os.environ.get("D1_JOG_SKIP_SDK_BUILD", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # Default: SOLO copia file. Il restart Flask/hold fa cadere il braccio in lab.
+    restart = os.environ.get("GO2_D1_JOG_RESTART", "0").strip().lower() in {"1", "true", "yes", "on"}
+    confirm_arm = os.environ.get("GO2_D1_CONFIRM_ARM_SUPPORTED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     build_code = 0 if skip_sdk else _remote_build_d1_sdk(ssh)
     if skip_sdk:
         print("[d1-jog deploy] SKIP SDK build — usa binari esistenti")
     if build_code != 0:
-        print("[d1-jog deploy] Avvio comunque Flask (health segnalerà bin mancanti)")
-    print("[d1-jog deploy] Install cron @reboot per 5056 â€¦")
+        print("[d1-jog deploy] WARN build SDK fallito — file comunque copiati")
+
+    if not restart:
+        print("[d1-jog deploy] FILES-ONLY: nessun restart Flask/hold (sicurezza braccio).")
+        print("[d1-jog deploy] Per riavviare: braccio SOSTENUTO +")
+        print("  set GO2_D1_JOG_RESTART=1")
+        print("  set GO2_D1_CONFIRM_ARM_SUPPORTED=1")
+        print("  python scripts/deploy_d1_jog_to_nx.py")
+        ssh.close()
+        return
+
+    if not confirm_arm:
+        ssh.close()
+        raise SystemExit(
+            "REFUSE_RESTART_WITHOUT_ARM_SUPPORT_CONFIRM: "
+            "imposta GO2_D1_CONFIRM_ARM_SUPPORTED=1 solo se stai sostenendo il braccio."
+        )
+
+    print("[d1-jog deploy] ATTENZIONE: restart richiesto — sostieni il braccio.")
+    print("[d1-jog deploy] Install cron @reboot per 5056 …")
     print("[d1-jog deploy] Remove legacy 5052 autostart ...")
     _remote_prepare_external_hold(ssh)
+    reload_hold = os.environ.get("GO2_D1_RELOAD_HOLD_DAEMON", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if reload_hold:
+        _remote_reload_hold_daemon(ssh)
     _remote_remove_legacy_5052_autostart(ssh)
     _remote_install_d1_crontab(ssh)
-    print("[d1-jog deploy] Optional systemd --user unit per 5056 â€¦")
+    print("[d1-jog deploy] Optional systemd --user unit per 5056 …")
     _remote_install_d1_systemd_user_optional(ssh)
     _remote_install_realsense_udev(ssh)
     _remote_start_jog(ssh, host)

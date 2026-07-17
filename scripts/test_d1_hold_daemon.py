@@ -179,6 +179,38 @@ class D1HoldDaemonIntegrationTests(unittest.TestCase):
         self.assertFalse(result.get("ok"), result)
         self.assertEqual(result.get("reason"), "couple_requires_pose")
 
+    def test_heartbeat_not_starved_by_delayed_publish_batch(self) -> None:
+        """Regression: sleep under lock starved heartbeat → arm cedimento."""
+        self._start()
+        pose = self._pose(40)
+        with patch.dict(os.environ, self.env, clear=False):
+            self.assertTrue(
+                d1_hold_client.publish(
+                    [
+                        {"seq": 41, "address": 1, "funcode": 6, "data": {"power": 1}},
+                        {"seq": 42, "address": 1, "funcode": 5, "data": {"mode": 1}},
+                        pose,
+                    ]
+                ).get("ok")
+            )
+            time.sleep(0.12)
+            before = d1_hold_client.status()
+            self.assertTrue(before.get("hold_active"), before)
+            count0 = int(before.get("heartbeat_count", 0))
+            batch = []
+            for i in range(8):
+                p = self._pose(50 + i)
+                p["data"] = dict(p["data"])
+                p["data"]["angle0"] = float(i)
+                batch.append(p)
+            # delay_ms between messages used to block the lock; heartbeat must rise.
+            published = d1_hold_client.publish(batch, delay_ms=40)
+            self.assertTrue(published.get("ok"), published)
+            after = d1_hold_client.status()
+            self.assertTrue(after.get("hold_active"), after)
+            self.assertGreater(int(after.get("heartbeat_count", 0)), count0)
+            self.assertLessEqual(float(after.get("heartbeat_age_ms") or 9999), 250.0)
+
 
 if __name__ == "__main__":
     unittest.main()

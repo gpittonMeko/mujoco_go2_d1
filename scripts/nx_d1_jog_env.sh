@@ -75,16 +75,25 @@ export D1_PROG_WAIT_TIMEOUT_S="${D1_PROG_WAIT_TIMEOUT_S:-30}"
 export D1_PROG_MAX_POLLS="${D1_PROG_MAX_POLLS:-12}"
 export D1_PROG_MOVE_DEG_PER_S="${D1_PROG_MOVE_DEG_PER_S:-12}"
 export D1_PROG_POLL_GAP_S="${D1_PROG_POLL_GAP_S:-0.15}"
-# Auto-calibrazione 6D con movimento sospesa: il canale DDS hold/trajectory
-# deve essere separato prima di riabilitarla in laboratorio.
-export D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-0}"
+# AUTO-calibrazione 6D: ON dopo fix writer-thread hold daemon (heartbeat non starve).
+export D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-1}"
+export D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG="${D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG:-12}"
+export D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS="${D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS:-2}"
+export D1_GRASP6D_AUTO_SETTLE_S="${D1_GRASP6D_AUTO_SETTLE_S:-1.0}"
+export D1_GRASP6D_AUTO_MOVE_DEG_PER_S="${D1_GRASP6D_AUTO_MOVE_DEG_PER_S:-6}"
+# Se la posa attuale e' piu' lontana di questa soglia dalla base scan SX, AUTO rifiuta
+# (mai fold/safe-transit automatico: e' il percorso che ha causato il cedimento).
+# Tolleranza per partire da una posa gia' vicina a scan SX (non fold).
+export D1_GRASP6D_AUTO_MAX_START_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_START_DELTA_DEG:-40}"
 export D1_JOG_ALWAYS_COUPLED=1
 export D1_JOG_AUTO_ENABLE=1
 # Unico owner DDS del braccio: daemon esterno con heartbeat funcode 2.
 # Flask è solo client e può riavviarsi senza interrompere l'hold.
 export D1_HOLD_DAEMON_EXTERNAL=1
 export D1_HOLD_SOCKET="${D1_HOLD_SOCKET:-/tmp/go2_d1_hold.sock}"
-export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-100}"
+# Heartbeat hold piu' stretto: riduce la finestra in cui il braccio puo' cedere
+# se Flask viene riavviato. Richiede restart del SOLO hold daemon a freddo.
+export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-50}"
 export D1_ZERO_TRANSIT_J1_DEG="${D1_ZERO_TRANSIT_J1_DEG:--90}"
 export D1_ZERO_TRANSIT_J2_DEG="${D1_ZERO_TRANSIT_J2_DEG:-90}"
 export GO2_THERMAL_PROTECT="${GO2_THERMAL_PROTECT:-1}"

@@ -369,26 +369,24 @@ def move_to_servo_deg_smooth(
                 errs = _joint_errors(cur_guard, sd)
                 max_err = max(errs[:6]) if errs else 0.0
                 if max_err > float(tracking_max_error_deg):
-                    tracking_violations += 1
-                    if tracking_violations >= tracking_violation_limit:
-                        hold = service.request_emergency_hold(reason="program_tracking_error")
-                        return {
-                            "ok": False,
-                            "reason": "tracking_error_too_high",
-                            "action": "move_to_point",
-                            "waypoints": sent,
-                            "target_servo_deg": target,
-                            "last_waypoint_servo_deg": sd,
-                            "servo_deg": cur_guard,
-                            "tracking_errors_deg": errs,
-                            "max_tracking_error_deg": round(max_err, 2),
-                            "tracking_limit_deg": float(tracking_max_error_deg),
-                            "tracking_violation_count": tracking_violations,
-                            "tracking_violation_limit": tracking_violation_limit,
-                            "safety_hold": hold,
-                        }
-                else:
-                    tracking_violations = 0
+                    # Freeze IMMEDIATO sulla posa misurata: non continuare a
+                    # comandare un target avanti al braccio (causa tipica di cedimento).
+                    hold = service.request_emergency_hold(reason="program_tracking_error")
+                    return {
+                        "ok": False,
+                        "reason": "tracking_error_too_high",
+                        "action": "move_to_point",
+                        "waypoints": sent,
+                        "target_servo_deg": target,
+                        "last_waypoint_servo_deg": sd,
+                        "servo_deg": cur_guard,
+                        "tracking_errors_deg": errs,
+                        "max_tracking_error_deg": round(max_err, 2),
+                        "tracking_limit_deg": float(tracking_max_error_deg),
+                        "tracking_violation_count": 1,
+                        "tracking_violation_limit": tracking_violation_limit,
+                        "safety_hold": hold,
+                    }
             if _stop_requested:
                 return {
                     "ok": False,
@@ -474,7 +472,14 @@ def move_to_servo_deg_smooth(
                 "target_servo_deg": target,
                 **_hold_measured_pose_for_abort("program_stopped_after_settle"),
             }
-        service.hold_pose_stream(servo_deg=target)
+        # Mai lasciare il target software avanti rispetto al braccio senza hold
+        # sulla posa misurata: e' la causa tipica di "braccio ceduto".
+        measured = service.read_servo_deg(fast=True)
+        measured_sd = measured.get("servo_deg") if measured.get("ok") else None
+        if isinstance(measured_sd, list) and len(measured_sd) >= 7:
+            service.hold_pose_stream(servo_deg=list(measured_sd[:7]))
+        else:
+            service.hold_pose_stream(servo_deg=target)
         wait = wait_until_at_target(target, stop_check=stop_check)
         if not wait.get("ok"):
             return {
@@ -484,6 +489,7 @@ def move_to_servo_deg_smooth(
                 "waypoints": sent,
                 "target_servo_deg": target,
                 "wait_at_target": wait,
+                **_hold_measured_pose_for_abort("program_wait_at_target_failed"),
             }
         hold = service.hold_pose_stream(servo_deg=target)
         pose_sd = wait.get("servo_deg") or target

@@ -113,12 +113,26 @@
     .workflow-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     .workflow-head strong { color:#075681; }
     .workflow-head span { color:var(--muted); font-size:12px; }
-    .workflow-grid { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; }
-    .workflow-step { padding:10px; border-radius:14px; background:rgba(255,255,255,.58); border:1px solid rgba(21,106,151,.18); color:#52788e; }
+    .workflow-grid { display:grid; grid-template-columns:repeat(5,minmax(110px,1fr)); gap:8px; }
+    .workflow-grid.five { grid-template-columns:repeat(5,minmax(110px,1fr)); }
+    .workflow-step { padding:10px; border-radius:14px; background:rgba(255,255,255,.58); border:1px solid rgba(21,106,151,.18); color:#52788e; transition:box-shadow .2s ease, transform .2s ease; }
     .workflow-step b { display:block; margin-bottom:3px; color:#315f75; font-size:12px; }
     .workflow-step.ready { background:rgba(199,248,219,.78); border-color:rgba(19,140,85,.28); }
     .workflow-step.ready b { color:#087446; }
     .workflow-step.blocked { background:rgba(255,232,202,.78); border-color:rgba(214,133,38,.3); }
+    .workflow-step.current { box-shadow:0 0 0 2px rgba(8,127,208,.55), 0 8px 20px rgba(8,127,208,.18); transform:translateY(-1px); background:rgba(210,240,255,.92); }
+    .workflow-step.current b { color:#075681; }
+    .mode-switch { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 12px; }
+    .mode-switch button { flex:1; min-width:140px; }
+    .mode-switch button.active-mode { outline:2px solid rgba(8,127,208,.45); box-shadow:0 0 0 3px rgba(8,127,208,.12); }
+    .step-panel { margin-top:12px; padding:14px; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(25,130,175,.16); }
+    .step-panel h3 { margin:0 0 8px; font-size:14px; color:#0a527b; letter-spacing:.04em; text-transform:none; }
+    .step-panel .now-do { margin:0 0 10px; padding:10px 12px; border-radius:12px; background:rgba(8,127,208,.10); color:#0a527b; font-size:13px; line-height:1.4; }
+    .step-panel.locked { opacity:.55; }
+    .control-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }
+    .control-pill { font:11px/1.2 Consolas,monospace; padding:7px 10px; border-radius:999px; background:rgba(255,255,255,.7); border:1px solid rgba(21,106,151,.18); color:#0a527b; }
+    .control-pill.good { color:#087446; background:rgba(199,248,219,.78); }
+    .control-pill.bad { color:#a52d3c; background:rgba(255,220,220,.78); }
     .camera-state { display:inline-block; margin-top:7px; padding:4px 8px; border-radius:999px; background:rgba(8,127,208,.1); color:#315f75; font-size:11px; font-weight:700; }
     .threshold-row { align-items:center; padding-top:8px; border-top:1px solid rgba(25,130,175,.16); }
     .pointcloud-preview { max-height:520px; }
@@ -128,7 +142,8 @@
     .ops-section summary { cursor:pointer; color:#0a527b; font-weight:800; }
     .ops-body { padding-top:10px; }
     .calib-steps { display:grid; grid-template-columns:repeat(2,minmax(260px,1fr)); gap:10px; margin-top:12px; }
-    .calib-step { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:12px; border-radius:14px; background:rgba(220,247,255,.64); border:1px solid rgba(25,130,175,.18); }
+    .calib-step { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:12px; border-radius:14px; background:rgba(220,247,255,.64); border:1px solid rgba(25,130,175,.18); transition:box-shadow .2s ease, border-color .2s ease; }
+    .calib-step.current { border-color:rgba(8,127,208,.55); box-shadow:0 0 0 2px rgba(8,127,208,.28), 0 10px 24px rgba(8,127,208,.14); background:rgba(210,240,255,.92); }
     .calib-step strong { color:#0a527b; }
     .calib-step span { color:var(--muted); font-size:12px; line-height:1.4; }
     .calib-guide { margin-top:10px; padding:14px; border-radius:16px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(214,244,255,.82)); border:1px solid rgba(25,130,175,.2); }
@@ -213,102 +228,52 @@
         <div class="card camera-card"><div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div><img id="wristStream" class="stream" alt="Wrist stream" /><div class="sub" id="wristCameraMeta">Detection e depth della presa.</div><span class="camera-state" id="wristCameraState">Connessione…</span></div>
         <div class="card camera-card"><div class="camera-head"><h3>Camera frontale · D435i</h3><span class="rgb-badge" id="frontRgbBadge">RGB ONLY</span></div><img id="frontStream" class="stream" alt="Front stream" /><div class="sub" id="frontCameraMeta">Vista ambiente, non usata dalla presa.</div><span class="camera-state" id="frontCameraState">Connessione…</span></div>
       </div></div>
-      <div class="card teach-section" data-teach-section="grasp2d"><h2 class="section-title">2. Presa 2D e teaching</h2>
-        <div class="row"><button id="btnLeftScan">Vai a sinistra e fai scan 2D</button><button id="btnRightScan">Vai a destra e fai scan 2D</button><button id="btnLegacyExecute" class="warn">Scansione fresca + presa 2D</button></div>
-        <details class="calibration-details" open>
-          <summary>Procedura guidata calibrazione presa 2D</summary>
-          <div class="calib-steps">
-            <div class="calib-step"><strong>1 · Inizia sessione</strong><span>Azzera i campioni Teach precedenti. Durante la sessione non usare “presa 2D” finché il nuovo modello non è valido.</span><button id="btnTeachReset" class="neutral">Inizia nuova calibrazione 2D</button></div>
-            <div class="calib-step"><strong>2 · Posiziona scatola e scansiona</strong><span id="teachNextScenario">Scenario 1: scatola centrata e diritta.</span><button id="btnTeachScanScenario">Scansiona scenario 2D</button><span id="teachScanState">Scansione fresca richiesta.</span></div>
-            <div class="calib-step"><strong>3 · Insegna la presa</strong><span>Senza spostare la scatola: Release, sostieni il braccio e portalo nella posa finale corretta.</span><div class="row"><button id="btnTeachRelease" class="danger">A. Release per insegnare</button><button id="btnTeachCapture" class="warn">B. Memorizza presa + HOLD</button></div><span>Il salvataggio viene rifiutato se la detection è assente o vecchia; HOLD viene comunque riattivato.</span></div>
-            <div class="calib-step"><strong>4 · Completa gli 8 scenari</strong><span>Centro, sinistra, destra, alto, basso, ruotata ±30° e angolo. Solo allora il modello può essere calcolato.</span><button id="btnTeachBuild" class="neutral" disabled>Calcola calibrazione 2D</button></div>
-          </div>
-          <div class="mode-grid"><div class="mode-kpi"><small>Copertura guidata</small><strong id="teachCoverage">0 / 8</strong></div><div class="mode-kpi"><small>Modello 2D</small><strong id="legacyModel">—</strong></div><div class="mode-kpi"><small>Ultima azione</small><strong id="teachLastAction">—</strong></div></div>
-          <div class="calib-history"><strong>Storico calibrazione 2D</strong><div id="teachHistory">Nessun evento registrato.</div></div>
-          <span id="teachSampleCount" class="hide">0</span><span id="legacyTarget" class="hide">—</span>
-        </details>
-        <div id="scanResult" class="scan-result"><img id="scanPreview" class="scan-preview hide" alt="Overlay detection scansione" /><div class="scan-metrics"><div class="scan-metric"><small>Oggetto</small><strong id="scanObject">—</strong></div><div class="scan-metric"><small>Confidenza</small><strong id="scanConfidence">—</strong></div><div class="scan-metric"><small>Centro immagine</small><strong id="scanCenter">—</strong></div><div class="scan-metric"><small>Orientamento</small><strong id="scanOrientation">—</strong></div><div class="scan-metric"><small>Distanza stimata</small><strong id="scanDistance">—</strong></div><div class="scan-metric"><small>Errore posa scan</small><strong id="scanMoveError">—</strong></div><div class="scan-metric"><small>Target presa giunti</small><strong id="scanGraspJoints">—</strong></div><div class="scan-metric"><small>TCP presa stimato</small><strong id="scanTcp">—</strong></div><pre id="scanLog" class="scan-log">Nessuna scansione.</pre></div></div>
+
+      <div class="card teach-section" data-teach-section="control">
+        <h2 class="section-title">2. Controllo braccio</h2>
+        <div class="sub">Prima di calibrare o prendere: accendi la coppia e verifica HOLD. In Release sostieni sempre il braccio a mano.</div>
+        <div class="control-bar">
+          <span id="ctrlCoupledPill" class="control-pill">coupled: —</span>
+          <span id="fixedHoldState" class="control-pill">hold: verifica…</span>
+          <span id="ctrlDaemonPill" class="control-pill">daemon: —</span>
+          <span id="ctrlAutoMotionPill" class="control-pill">auto 6D: —</span>
+        </div>
+        <div class="row">
+          <button id="btnArmCouple" class="warn" type="button">Attiva controllo (couple + HOLD)</button>
+          <button id="btnHoldNowCtrl" class="hold-fixed" type="button">HOLD ORA</button>
+          <button id="btnArmReleaseCtrl" class="danger" type="button">Release (sostengo io)</button>
+          <button id="btnCtrlRefresh" class="neutral" type="button">Aggiorna stato</button>
+        </div>
       </div>
-      <div class="card teach-section" data-teach-section="grasp6d"><h2 class="section-title">3. Presa 6D RGB-D</h2>
-        <div class="sub">Vista metrica live nel frame D456: RGB a sinistra, point cloud top/side a destra. Funziona anche mentre sposti il braccio in Release.</div>
+
+      <div class="card teach-section" data-teach-section="grasp6d">
+        <h2 class="section-title">3. Flusso 6D · calibrazione e presa</h2>
+        <div class="sub">Target preferito: AprilGrid 36h11 (6×4, ID 288–311). Fallback: ArUco 4×4 ID0 60 mm. L’oggetto 6D si stima dalla depth, non dal marker sulla scatola.</div>
+        <div class="mode-switch">
+          <button id="btnModeCalib" class="warn active-mode" type="button">A · Calibra hand-eye</button>
+          <button id="btnModePick" class="neutral" type="button">B · Prendi oggetto</button>
+        </div>
         <div class="workflow-card">
-          <div class="workflow-head"><strong>Percorso presa 6D</strong><span id="workflowHint">Verifica automatica dei prerequisiti</span></div>
+          <div class="workflow-head"><strong>Prerequisiti presa 6D</strong><span id="workflowHint">Verifica automatica</span></div>
           <div class="workflow-grid">
             <div class="workflow-step blocked" id="flowCamera"><b>1. Camere</b><span>In verifica</span></div>
-            <div class="workflow-step blocked" id="flowCalibration"><b>2. Hand-eye</b><span>Richiesta per il grasp</span></div>
-            <div class="workflow-step blocked" id="flowDetection"><b>3. Oggetto 3D</b><span>Esegui il debug</span></div>
-            <div class="workflow-step blocked" id="flowExecute"><b>4. Presa</b><span>Bloccata finché non è sicura</span></div>
+            <div class="workflow-step blocked" id="flowControl"><b>2. Controllo</b><span>Couple/HOLD</span></div>
+            <div class="workflow-step blocked" id="flowCalibration"><b>3. Hand-eye</b><span>Richiesta</span></div>
+            <div class="workflow-step blocked" id="flowDetection"><b>4. Oggetto 3D</b><span>Riconosci</span></div>
+            <div class="workflow-step blocked" id="flowExecute"><b>5. Presa</b><span>Bloccata</span></div>
           </div>
         </div>
-        <details class="ops-section" open>
-          <summary>Operazioni rapide</summary>
-          <div class="ops-body">
-            <div class="row"><span id="fixedHoldState" class="safety-state">hold: verifica…</span><button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button><button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button></div>
-            <div class="sl" aria-label="Slider giunti D1">
-              <strong>Slider giunti D1</strong>
-              <div class="sub">Prima carica la posa attuale. Gli slider non muovono nulla finché non premi “Invia posa slider”.</div>
-              <label>J0 base
-                <input id="poseJ0" type="range" min="-135" max="135" step="0.1" value="0" />
-                <span id="poseJ0Val">0.0</span>
-              </label>
-              <label>J1 spalla
-                <input id="poseJ1" type="range" min="-95" max="95" step="0.1" value="0" />
-                <span id="poseJ1Val">0.0</span>
-              </label>
-              <label>J2 gomito
-                <input id="poseJ2" type="range" min="-95" max="95" step="0.1" value="0" />
-                <span id="poseJ2Val">0.0</span>
-              </label>
-              <label>J3 polso roll
-                <input id="poseJ3" type="range" min="-135" max="135" step="0.1" value="0" />
-                <span id="poseJ3Val">0.0</span>
-              </label>
-              <label>J4 polso pitch
-                <input id="poseJ4" type="range" min="-95" max="95" step="0.1" value="0" />
-                <span id="poseJ4Val">0.0</span>
-              </label>
-              <label>J5 polso yaw
-                <input id="poseJ5" type="range" min="-135" max="135" step="0.1" value="0" />
-                <span id="poseJ5Val">0.0</span>
-              </label>
-              <label>J6 pinza
-                <input id="poseJ6" type="range" min="0" max="90" step="0.1" value="5" />
-                <span id="poseJ6Val">5.0</span>
-              </label>
-              <div class="row"><button id="btnReadPoseSliders" class="neutral" type="button">Carica posa attuale</button><button id="btnSendPoseSliders" class="warn" type="button">Invia posa slider</button></div>
-            </div>
-            <div class="row"><button id="btnGoLeftPose" class="neutral">Vai in posizione presa sinistra</button><button id="btnGoRightPose" class="neutral">Vai in posizione presa destra</button><button id="btnLeft6dDebug">Prova presa a sinistra + debug</button><button id="btnRight6dDebug">Prova presa a destra + debug</button></div>
-            <div class="row"><button id="btnDepthStart">Avvia scan 3D live</button><button id="btnDepthStop" class="neutral">Ferma live</button><button id="btnReleaseMonitor" class="danger">Release + 3D live</button><button id="btn6dPreview" class="neutral">Riconosci oggetto e prese</button><button id="btn6dClusterProbe" class="neutral">Verifica stabilità cluster</button><button id="btn6dDebugGraphic" class="neutral">Debug grafico presa 6D</button><button id="btn6dPregrasp" class="warn">Prova pregrasp</button><button id="btn6dExecute" class="danger">Grasp 6D</button></div>
-          </div>
-        </details>
-        <div class="mode-grid"><div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div><div class="mode-kpi"><small>Centro camera XYZ</small><strong id="grasp6dCenter">—</strong></div><div class="mode-kpi"><small>Dimensioni XYZ</small><strong id="grasp6dDimensions">—</strong></div><div class="mode-kpi"><small>Punti cluster</small><strong id="grasp6dPointCount">—</strong></div><div class="mode-kpi"><small>Depth valida</small><strong id="grasp6dDepthValid">—</strong></div><div class="mode-kpi"><small>Stabilità cluster</small><strong id="grasp6dClusterStability">—</strong></div><div class="mode-kpi"><small>Hand-eye</small><strong id="grasp6dCalib">—</strong></div></div>
-        <details class="ops-section" open>
-          <summary>Debug grafico e stato live</summary>
-          <div class="ops-body">
-            <div class="row threshold-row"><span class="sub">Se il cluster non viene rilevato:</span><button id="btnLowerHeight" class="neutral">↓ soglia altezza</button><button id="btnLowerCluster" class="neutral">↓ punti cluster</button><button id="btnLowerDimension" class="neutral">↓ dimensione minima</button><button id="btnResetThresholds" class="neutral">Reset soglie</button></div>
-            <div class="rt-panel"><div class="rt-row"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div><div class="rt-json" id="rtFeedback">Monitor non avviato.</div><img id="rtDepthPreview" class="rt-preview pointcloud-preview" src="/api/pick/grasp6d/debug.jpg?capture=0&t=0" alt="RGB e point cloud metrica realtime" /></div>
-          </div>
-        </details>
-        <details class="ops-section">
-          <summary>Log e diagnostica funcode / hold</summary>
-          <div class="ops-body">
-            <div class="row"><button id="btnRefresh6dLogs" class="neutral">Aggiorna log</button></div>
-            <div class="log-grid">
-              <div class="log-block"><h4>Runtime hold / daemon</h4><pre id="holdRuntimeLog" class="log-pre">Attendo diagnostica runtime…</pre></div>
-              <div class="log-block"><h4>Ultimo run grasp 6D</h4><pre id="graspLastRunLog" class="log-pre">Nessun run salvato.</pre></div>
-              <div class="log-block"><h4>Command daemon log</h4><pre id="commandDaemonLog" class="log-pre">Log non caricato.</pre></div>
-              <div class="log-block"><h4>Errori sintetici</h4><pre id="graspErrorLog" class="log-pre">Nessun errore ancora.</pre></div>
-            </div>
-          </div>
-        </details>
-        <details class="calibration-details" open>
-          <summary>Procedura guidata calibrazione hand-eye 6D</summary>
+
+        <div id="panelCalibMode">
           <div id="calibGuide" class="calib-guide">
-            <strong id="calibGuideTitle">FLUSSO REALE: segui solo questi passi</strong>
-            <p id="calibGuideBody">Togli il cuboide, lascia AprilGrid ferma, premi 1, poi 2. Dopo: 3 Release, muovi a mano. Prima di 8 sample il live valuta solo vista nuova; da 8 in poi deve anche migliorare il residuo. Salva con 4 solo quando lo dice la guida.</p>
-            <div class="row" style="margin-top:10px"><button id="btn6dAutoCalibTop" class="warn" type="button" disabled>AUTO CALIBRAZIONE 6D SOSPESA</button><span>Movimento automatico sospeso: usa guida live + movimento manuale finché il flusso DDS/daemon non è stabilizzato.</span></div>
+            <strong id="calibGuideTitle">Passo attuale: attiva il controllo, poi calibra</strong>
+            <p id="calibGuideBody">1) Attiva controllo. 2) Togli il cuboide dall’AprilGrid. 3) Reset sessione. 4) Guida live. Poi: Release → muovi → salva solo quando la guida lo dice. Oppure usa AUTO (il braccio si muove da solo).</p>
+            <div class="row" style="margin-top:10px">
+              <button id="btn6dAutoCalibTop" class="warn" type="button">AUTO CALIBRAZIONE 6D</button>
+              <a class="button-link" href="/api/pick/metric/calibration/target.pdf" target="_blank" rel="noopener">PDF target ArUco fallback</a>
+            </div>
           </div>
-          <div class="workflow-grid" id="calibPhaseFlow">
+          <div class="workflow-grid five" id="calibPhaseFlow" style="margin-top:12px">
             <div class="workflow-step blocked" id="calibPhase1"><b>1. Reset</b><span>inizia pulito</span></div>
             <div class="workflow-step blocked" id="calibPhase2"><b>2. Live</b><span>spento</span></div>
             <div class="workflow-step blocked" id="calibPhase3"><b>3. Muovi</b><span>attendi live</span></div>
@@ -316,25 +281,111 @@
             <div class="workflow-step blocked" id="calibPhase5"><b>5. Calcola</b><span>non pronto</span></div>
           </div>
           <div class="calib-steps">
-            <div class="calib-step"><strong>1 · Inizia sessione pulita</strong><span>Prima cosa: togli il cuboide da AprilGrid e azzera i sample vecchi. La griglia deve restare ferma fino alla fine.</span><button id="btn6dCalibReset" class="neutral">1. Inizia nuova calibrazione 6D</button></div>
-            <div class="calib-step"><strong>2 · Accendi la guida live</strong><span>Questo è il controllo principale. Ti dice se AprilGrid è vista, se la posa è nuova e se puoi salvare.</span><div class="row"><button id="btn6dCalibLive" class="neutral" type="button">2. Avvia guida live</button><button id="btn6dCalibLiveStop" class="neutral" type="button">Stop guida live</button></div></div>
-            <div class="calib-step"><strong>Auto · calibrazione sospesa</strong><span>Il movimento automatico è disabilitato: il flusso DDS/daemon va separato prima di usarlo in sicurezza.</span><div class="row"><button id="btn6dAutoCalib" class="warn" type="button" disabled>Auto sospesa</button><button id="btn6dAutoCalibStop" class="neutral" type="button">Stop auto</button></div><span id="autoCalibState">Auto movimento disabilitato: usa live + movimento manuale.</span></div>
-            <div class="calib-step"><strong>3 · Muovi a mano</strong><span id="calibNextPose">Premi Release solo se stai sostenendo fisicamente il braccio. Poi muovi piano seguendo la guida live.</span><button id="btn6dCalibRelease" class="danger">3. Release: lo sostengo io</button></div>
-            <div class="calib-step"><strong>4 · Salva solo se la guida lo consiglia</strong><span>Prima di 8 sample cerca viste nuove; dopo 8 salva solo se il residuo previsto non peggiora o migliora.</span><button id="btn6dSample" class="warn" disabled>4. Salva sample + HOLD</button><span id="calibSaveGate">Bloccato finché il live non raccomanda il salvataggio.</span></div>
-            <div class="calib-step"><strong>5 · Calcola solo quando si abilita</strong><span>Il pulsante resta disabilitato finché progresso reale, diversità pose e residuo provvisorio non sono plausibili.</span><button id="btn6dBuild" class="neutral" disabled>5. Calcola hand-eye 6D</button></div>
-            <div class="calib-step"><strong>Controllo opzionale</strong><span>Usalo solo se il live non vede la griglia o vuoi controllare la camera senza salvare sample.</span><button id="btn6dCalibProbe" class="neutral">Verifica AprilGrid senza salvare</button><span id="calibProbeHint">Non fa parte del ciclo normale: serve solo diagnosi.</span></div>
+            <div class="calib-step" id="calibStepCard1"><strong>1 · Sessione pulita</strong><span>Togli il cuboide. AprilGrid ferma e ben illuminata. Azzera i sample vecchi.</span><button id="btn6dCalibReset" class="neutral">1. Nuova calibrazione 6D</button></div>
+            <div class="calib-step" id="calibStepCard2"><strong>2 · Guida live</strong><span>Ti dice se la griglia è vista, se la posa è nuova e se puoi salvare.</span><div class="row"><button id="btn6dCalibLive" class="neutral" type="button">2. Avvia guida live</button><button id="btn6dCalibLiveStop" class="neutral" type="button">Stop live</button></div></div>
+            <div class="calib-step" id="calibStepCardAuto"><strong>Auto · braccio si muove</strong><span>HOLD daemon writer-thread: heartbeat non si spegne durante i waypoint. Area libera, mano su HOLD.</span><div class="row"><button id="btn6dAutoCalib" class="warn" type="button">Avvia AUTO</button><button id="btn6dAutoCalibStop" class="neutral" type="button">Stop auto</button></div><span id="autoCalibState">Auto pronta se daemon OK.</span></div>
+            <div class="calib-step" id="calibStepCard3"><strong>3 · Muovi a mano</strong><span id="calibNextPose">Release solo se sostieni il braccio. Segui i suggerimenti di posa.</span><button id="btn6dCalibRelease" class="danger">3. Release: lo sostengo io</button></div>
+            <div class="calib-step" id="calibStepCard4"><strong>4 · Salva sample</strong><span>Prima di 8: viste nuove. Dopo 8: solo se migliora il residuo.</span><button id="btn6dSample" class="warn" disabled>4. Salva sample + HOLD</button><span id="calibSaveGate">Bloccato finché il live non raccomanda il salvataggio.</span></div>
+            <div class="calib-step" id="calibStepCard5"><strong>5 · Calcola hand-eye</strong><span>Si abilita con ≥8 sample, diversità e residuo sotto soglia.</span><button id="btn6dBuild" class="neutral" disabled>5. Calcola hand-eye 6D</button><button id="btn6dCalibProbe" class="neutral">Verifica AprilGrid (diagnosi)</button><span id="calibProbeHint">Opzionale: non salva sample.</span></div>
           </div>
           <div class="mode-grid">
-            <div class="mode-kpi"><small>Progresso reale</small><strong id="calibProgress">0% · 0 / 8</strong></div>
+            <div class="mode-kpi"><small>Progresso</small><strong id="calibProgress">0% · 0 / 8</strong></div>
             <div class="mode-kpi"><small>Ultima azione</small><strong id="calibLastAction">—</strong></div>
-            <div class="mode-kpi"><small>Risultato salvato</small><strong id="calibSavedState">—</strong></div>
+            <div class="mode-kpi"><small>Hand-eye salvata</small><strong id="calibSavedState">—</strong></div>
             <div class="mode-kpi"><small>Target visibile</small><strong id="calibTargetState">non verificato</strong></div>
             <div class="mode-kpi"><small>Vista live</small><strong id="calibLiveState">non avviata</strong></div>
-            <div class="mode-kpi"><small>Residuo provvisorio</small><strong id="calibResidualState">—</strong></div>
+            <div class="mode-kpi"><small>Residuo</small><strong id="calibResidualState">—</strong></div>
           </div>
-          <div class="calib-history"><strong>Debug grafico calibrazione</strong><div id="calibDebugGraph">Serve almeno un refresh stato calibrazione.</div></div>
-          <div class="calib-history"><strong>Debug grafico auto-calibrazione</strong><div id="autoCalibDebugGraph">Auto non avviata: qui vedrai step, tag, sample salvati/skippati e residuo.</div></div>
-          <div class="calib-history"><strong>Storico calibrazione</strong><div id="calibHistory">Nessun evento registrato.</div></div>
+          <details class="ops-section">
+            <summary>Debug grafico calibrazione</summary>
+            <div class="ops-body">
+              <div class="calib-history"><strong>Sample / residuo</strong><div id="calibDebugGraph">Serve almeno un refresh stato calibrazione.</div></div>
+              <div class="calib-history"><strong>Traccia AUTO</strong><div id="autoCalibDebugGraph">Auto non avviata.</div></div>
+              <div class="calib-history"><strong>Storico</strong><div id="calibHistory">Nessun evento registrato.</div></div>
+            </div>
+          </details>
+        </div>
+
+        <div id="panelPickMode" class="hide">
+          <div class="step-panel" id="pickPanelDetect">
+            <h3>B1 · Riconosci oggetto (depth)</h3>
+            <p class="now-do" id="pickNowDo">Con hand-eye valida: rimetti il cuboide, poi riconosci e verifica stabilità prima del pregrasp.</p>
+            <div class="row">
+              <button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button>
+              <button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button>
+              <button id="btnDepthStart" type="button">Avvia scan 3D live</button>
+              <button id="btnDepthStop" class="neutral" type="button">Ferma live</button>
+              <button id="btnReleaseMonitor" class="danger" type="button">Release + 3D live</button>
+              <button id="btn6dPreview" class="neutral" type="button">Riconosci oggetto</button>
+              <button id="btn6dClusterProbe" class="neutral" type="button">Verifica stabilità cluster</button>
+              <button id="btn6dDebugGraphic" class="neutral" type="button">Debug grafico</button>
+            </div>
+            <div class="row">
+              <button id="btnGoLeftPose" class="neutral" type="button">Posa scan sinistra</button>
+              <button id="btnGoRightPose" class="neutral" type="button">Posa scan destra</button>
+              <button id="btnLeft6dDebug" type="button">Sinistra + debug</button>
+              <button id="btnRight6dDebug" type="button">Destra + debug</button>
+            </div>
+          </div>
+          <div class="step-panel" id="pickPanelExecute">
+            <h3>B2 · Pregrasp e grasp</h3>
+            <div class="row">
+              <button id="btn6dPregrasp" class="warn" type="button" disabled>Prova pregrasp</button>
+              <button id="btn6dExecute" class="danger" type="button" disabled>Grasp 6D completo</button>
+            </div>
+          </div>
+          <div class="mode-grid">
+            <div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div>
+            <div class="mode-kpi"><small>Centro camera XYZ</small><strong id="grasp6dCenter">—</strong></div>
+            <div class="mode-kpi"><small>Dimensioni XYZ</small><strong id="grasp6dDimensions">—</strong></div>
+            <div class="mode-kpi"><small>Punti cluster</small><strong id="grasp6dPointCount">—</strong></div>
+            <div class="mode-kpi"><small>Depth valida</small><strong id="grasp6dDepthValid">—</strong></div>
+            <div class="mode-kpi"><small>Stabilità cluster</small><strong id="grasp6dClusterStability">—</strong></div>
+            <div class="mode-kpi"><small>Hand-eye</small><strong id="grasp6dCalib">—</strong></div>
+          </div>
+          <details class="ops-section">
+            <summary>Slider giunti · debug live · log</summary>
+            <div class="ops-body">
+              <div class="sl" aria-label="Slider giunti D1">
+                <strong>Slider giunti D1</strong>
+                <div class="sub">Carica la posa attuale. Gli slider non muovono nulla finché non premi “Invia posa slider”.</div>
+                <label>J0 base<input id="poseJ0" type="range" min="-135" max="135" step="0.1" value="0" /><span id="poseJ0Val">0.0</span></label>
+                <label>J1 spalla<input id="poseJ1" type="range" min="-95" max="95" step="0.1" value="0" /><span id="poseJ1Val">0.0</span></label>
+                <label>J2 gomito<input id="poseJ2" type="range" min="-95" max="95" step="0.1" value="0" /><span id="poseJ2Val">0.0</span></label>
+                <label>J3 polso roll<input id="poseJ3" type="range" min="-135" max="135" step="0.1" value="0" /><span id="poseJ3Val">0.0</span></label>
+                <label>J4 polso pitch<input id="poseJ4" type="range" min="-95" max="95" step="0.1" value="0" /><span id="poseJ4Val">0.0</span></label>
+                <label>J5 polso yaw<input id="poseJ5" type="range" min="-135" max="135" step="0.1" value="0" /><span id="poseJ5Val">0.0</span></label>
+                <label>J6 pinza<input id="poseJ6" type="range" min="0" max="90" step="0.1" value="5" /><span id="poseJ6Val">5.0</span></label>
+                <div class="row"><button id="btnReadPoseSliders" class="neutral" type="button">Carica posa attuale</button><button id="btnSendPoseSliders" class="warn" type="button">Invia posa slider</button></div>
+              </div>
+              <div class="row threshold-row"><span class="sub">Se il cluster non viene rilevato:</span><button id="btnLowerHeight" class="neutral">↓ soglia altezza</button><button id="btnLowerCluster" class="neutral">↓ punti cluster</button><button id="btnLowerDimension" class="neutral">↓ dimensione minima</button><button id="btnResetThresholds" class="neutral">Reset soglie</button></div>
+              <div class="rt-panel"><div class="rt-row"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div><div class="rt-json" id="rtFeedback">Monitor non avviato.</div><img id="rtDepthPreview" class="rt-preview pointcloud-preview" src="/api/pick/grasp6d/debug.jpg?capture=0&t=0" alt="RGB e point cloud metrica realtime" /></div>
+              <div class="row"><button id="btnRefresh6dLogs" class="neutral">Aggiorna log</button></div>
+              <div class="log-grid">
+                <div class="log-block"><h4>Runtime hold / daemon</h4><pre id="holdRuntimeLog" class="log-pre">Attendo diagnostica runtime…</pre></div>
+                <div class="log-block"><h4>Ultimo run grasp 6D</h4><pre id="graspLastRunLog" class="log-pre">Nessun run salvato.</pre></div>
+                <div class="log-block"><h4>Command daemon log</h4><pre id="commandDaemonLog" class="log-pre">Log non caricato.</pre></div>
+                <div class="log-block"><h4>Errori sintetici</h4><pre id="graspErrorLog" class="log-pre">Nessun errore ancora.</pre></div>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="card teach-section" data-teach-section="grasp2d">
+        <details class="calibration-details">
+          <summary>4 · Presa 2D legacy (opzionale)</summary>
+          <div class="row" style="margin-top:10px"><button id="btnLeftScan">Scan 2D sinistra</button><button id="btnRightScan">Scan 2D destra</button><button id="btnLegacyExecute" class="warn">Scansione fresca + presa 2D</button></div>
+          <div class="calib-steps">
+            <div class="calib-step"><strong>1 · Inizia sessione</strong><span>Azzera i campioni Teach precedenti.</span><button id="btnTeachReset" class="neutral">Nuova calibrazione 2D</button></div>
+            <div class="calib-step"><strong>2 · Scansiona scenario</strong><span id="teachNextScenario">Scenario 1: scatola centrata e diritta.</span><button id="btnTeachScanScenario">Scansiona scenario 2D</button><span id="teachScanState">Scansione fresca richiesta.</span></div>
+            <div class="calib-step"><strong>3 · Insegna la presa</strong><span>Release, porta il braccio nella posa finale, memorizza.</span><div class="row"><button id="btnTeachRelease" class="danger">A. Release</button><button id="btnTeachCapture" class="warn">B. Memorizza + HOLD</button></div></div>
+            <div class="calib-step"><strong>4 · Calcola modello</strong><span>Serve copertura degli 8 scenari.</span><button id="btnTeachBuild" class="neutral" disabled>Calcola calibrazione 2D</button></div>
+          </div>
+          <div class="mode-grid"><div class="mode-kpi"><small>Copertura guidata</small><strong id="teachCoverage">0 / 8</strong></div><div class="mode-kpi"><small>Modello 2D</small><strong id="legacyModel">—</strong></div><div class="mode-kpi"><small>Ultima azione</small><strong id="teachLastAction">—</strong></div></div>
+          <div class="calib-history"><strong>Storico 2D</strong><div id="teachHistory">Nessun evento registrato.</div></div>
+          <span id="teachSampleCount" class="hide">0</span><span id="legacyTarget" class="hide">—</span>
+          <div id="scanResult" class="scan-result"><img id="scanPreview" class="scan-preview hide" alt="Overlay detection scansione" /><div class="scan-metrics"><div class="scan-metric"><small>Oggetto</small><strong id="scanObject">—</strong></div><div class="scan-metric"><small>Confidenza</small><strong id="scanConfidence">—</strong></div><div class="scan-metric"><small>Centro immagine</small><strong id="scanCenter">—</strong></div><div class="scan-metric"><small>Orientamento</small><strong id="scanOrientation">—</strong></div><div class="scan-metric"><small>Distanza stimata</small><strong id="scanDistance">—</strong></div><div class="scan-metric"><small>Errore posa scan</small><strong id="scanMoveError">—</strong></div><div class="scan-metric"><small>Target presa giunti</small><strong id="scanGraspJoints">—</strong></div><div class="scan-metric"><small>TCP presa stimato</small><strong id="scanTcp">—</strong></div><pre id="scanLog" class="scan-log">Nessuna scansione.</pre></div></div>
         </details>
       </div>
     </section>
@@ -433,6 +484,9 @@
     let frontCameraOnline = false;
     let grasp6dCalibrationOk = false;
     let grasp6dDetectionOk = false;
+    let armControlOk = false;
+    let autoMotionEnabled = false;
+    let uiMode = 'calib';
     let pendingTeachVision = null;
     let pendingTeachScenario = null;
     async function api(path, method, body, timeoutMs) {
@@ -514,24 +568,104 @@
       }
     }
 
+    function setUiMode(mode) {
+      uiMode = mode === 'pick' ? 'pick' : 'calib';
+      const calibPanel = q('panelCalibMode');
+      const pickPanel = q('panelPickMode');
+      if (calibPanel) calibPanel.classList.toggle('hide', uiMode !== 'calib');
+      if (pickPanel) pickPanel.classList.toggle('hide', uiMode !== 'pick');
+      const btnCalib = q('btnModeCalib');
+      const btnPick = q('btnModePick');
+      if (btnCalib) btnCalib.classList.toggle('active-mode', uiMode === 'calib');
+      if (btnPick) btnPick.classList.toggle('active-mode', uiMode === 'pick');
+      if (uiMode === 'pick' && !grasp6dCalibrationOk) {
+        setStatus('Hand-eye mancante: prima completa la calibrazione (modo A)', false);
+      }
+    }
+
+    function setAutoMotionUi(enabled) {
+      autoMotionEnabled = !!enabled;
+      const pill = q('ctrlAutoMotionPill');
+      if (pill) {
+        pill.textContent = 'auto 6D: ' + (autoMotionEnabled ? 'ON' : 'OFF');
+        pill.classList.toggle('good', autoMotionEnabled);
+        pill.classList.toggle('bad', !autoMotionEnabled);
+      }
+      ['btn6dAutoCalib', 'btn6dAutoCalibTop'].forEach(function (id) {
+        const el = q(id);
+        if (!el) return;
+        el.disabled = !autoMotionEnabled || autoCalibRunning;
+        el.textContent = id === 'btn6dAutoCalibTop'
+          ? (autoMotionEnabled ? 'AUTO CALIBRAZIONE 6D' : 'AUTO 6D DISABILITATA')
+          : (autoMotionEnabled ? 'Avvia AUTO' : 'Auto disabilitata');
+      });
+      const st = q('autoCalibState');
+      if (st && !autoCalibRunning) {
+        st.textContent = autoMotionEnabled
+          ? 'Auto attiva: conferma e area libera prima di avviare.'
+          : 'Auto disabilitata sul server (D1_GRASP6D_AUTO_MOTION_ENABLE).';
+      }
+    }
+
+    function updateControlPills(payload) {
+      const daemon = (payload && payload.command_daemon) || (payload && payload.hold) || (payload && payload.daemon) || {};
+      const coupled = !!(payload && (payload.arm_coupled || daemon.desired_coupled || daemon.arm_coupled));
+      const hold = daemon.hold_active != null ? !!daemon.hold_active : !!(payload && payload.ok && coupled);
+      const daemonOk = daemon.ok != null ? !!daemon.ok : (daemon.heartbeat_age_ms != null ? Number(daemon.heartbeat_age_ms) < 1500 : false);
+      armControlOk = coupled && (hold || daemonOk);
+      const cPill = q('ctrlCoupledPill');
+      if (cPill) {
+        cPill.textContent = 'coupled: ' + (coupled ? 'SI' : 'NO');
+        cPill.classList.toggle('good', coupled);
+        cPill.classList.toggle('bad', !coupled);
+      }
+      const dPill = q('ctrlDaemonPill');
+      if (dPill) {
+        const age = daemon.heartbeat_age_ms != null ? (' · hb ' + daemon.heartbeat_age_ms + 'ms') : '';
+        dPill.textContent = 'daemon: ' + (daemonOk ? 'OK' : 'check') + age;
+        dPill.classList.toggle('good', daemonOk);
+        dPill.classList.toggle('bad', !daemonOk);
+      }
+      updateFixedHoldState(payload || { ok: hold, hold: daemon });
+      update6dWorkflow();
+    }
+
     function update6dWorkflow() {
       const camerasOk = wristCameraOnline && frontCameraOnline;
-      const setStep = function (id, ready, text) {
+      const setStep = function (id, ready, text, current) {
         const el = q(id);
-        el.classList.toggle('ready', ready);
+        if (!el) return;
+        el.classList.toggle('ready', !!ready);
         el.classList.toggle('blocked', !ready);
-        el.querySelector('span').textContent = text;
+        el.classList.toggle('current', !!current);
+        const span = el.querySelector('span');
+        if (span) span.textContent = text;
       };
-      setStep('flowCamera', camerasOk, camerasOk ? 'Polso e frontale online' : 'Attendo entrambi gli stream');
-      setStep('flowCalibration', grasp6dCalibrationOk, grasp6dCalibrationOk ? 'Calibrazione valida' : 'Obbligatoria per muovere il braccio');
-      setStep('flowDetection', grasp6dDetectionOk, grasp6dDetectionOk ? 'Cluster 3D valido' : 'Esegui debug o riconoscimento');
+      setStep('flowCamera', camerasOk, camerasOk ? 'Polso e frontale online' : 'Attendo entrambi gli stream', !camerasOk);
+      setStep('flowControl', armControlOk, armControlOk ? 'Couple/HOLD pronti' : 'Premi Attiva controllo', camerasOk && !armControlOk);
+      setStep('flowCalibration', grasp6dCalibrationOk, grasp6dCalibrationOk ? 'Calibrazione valida' : 'Obbligatoria per la presa', camerasOk && armControlOk && !grasp6dCalibrationOk);
+      setStep('flowDetection', grasp6dDetectionOk, grasp6dDetectionOk ? 'Cluster 3D valido' : 'Riconosci oggetto', grasp6dCalibrationOk && !grasp6dDetectionOk);
       const executable = wristCameraOnline && grasp6dCalibrationOk && grasp6dDetectionOk;
-      setStep('flowExecute', executable, executable ? 'Pregrasp e grasp abilitati' : 'Comandi di presa bloccati');
-      q('btn6dPregrasp').disabled = !grasp6dCalibrationOk;
-      q('btn6dExecute').disabled = !grasp6dCalibrationOk;
-      q('workflowHint').textContent = grasp6dCalibrationOk
-        ? 'Calibrazione OK: verifica il cluster prima della presa'
-        : 'Prima calibra hand-eye; debug camera e point cloud restano disponibili';
+      setStep('flowExecute', executable, executable ? 'Pregrasp e grasp abilitati' : 'Comandi bloccati', grasp6dCalibrationOk && grasp6dDetectionOk && !executable);
+      const pre = q('btn6dPregrasp');
+      const ex = q('btn6dExecute');
+      if (pre) pre.disabled = !grasp6dCalibrationOk;
+      if (ex) ex.disabled = !grasp6dCalibrationOk;
+      q('workflowHint').textContent = !camerasOk
+        ? 'Attendi gli stream RGB'
+        : !armControlOk
+          ? 'Attiva il controllo braccio (couple + HOLD)'
+          : grasp6dCalibrationOk
+            ? 'Calibrazione OK: passa a B · Prendi oggetto'
+            : 'Completa A · Calibra hand-eye prima della presa';
+      const pickDo = q('pickNowDo');
+      if (pickDo) {
+        pickDo.textContent = !grasp6dCalibrationOk
+          ? 'Hand-eye assente: torna a modo A e completa i 5 passi (o AUTO).'
+          : grasp6dDetectionOk
+            ? 'Cluster stabile: puoi fare pregrasp, poi grasp con conferma.'
+            : 'Rimetti il cuboide, premi Riconosci oggetto, poi Verifica stabilità cluster.';
+      }
     }
 
     function bindSnapshot(imgId, baseUrl, label, periodMs) {
@@ -742,8 +876,33 @@
       const d = await api('/api/joints/hold_now', 'POST', { reason: 'fixed_ui' }, 70000);
       setStatus(d.ok ? 'HOLD immediato attivo' : (d.reason || 'hold_now fallito'), !!d.ok);
       setDiag('HOLD ORA', d);
-      updateFixedHoldState(d);
+      updateControlPills(d && d.command_daemon ? { ok: d.ok, hold: d.command_daemon, arm_coupled: true } : d);
       return d;
+    }
+
+    async function activateArmControl() {
+      setStatus('Attivo couple + HOLD...', null);
+      setBusy(true, 'Controllo braccio');
+      try {
+        const couple = await api('/api/arm/couple', 'POST', { with_power: true, force: true }, 70000);
+        const hold = await api('/api/joints/hold_now', 'POST', { reason: 'activate_control_ui' }, 70000);
+        const ok = !!(couple.ok || couple.skipped) && !!hold.ok;
+        setStatus(ok ? 'Controllo attivo: couple + HOLD' : ('Controllo incompleto: ' + ((hold.reason || couple.reason) || 'errore')), ok);
+        setDiag('Attiva controllo', { couple: couple, hold: hold });
+        updateControlPills({
+          ok: ok,
+          arm_coupled: !!(couple.ok || couple.skipped || couple.arm_coupled),
+          hold: hold.command_daemon || hold.hold || hold,
+          command_daemon: hold.command_daemon || couple.command_daemon,
+        });
+        return ok;
+      } catch (e) {
+        setStatus(String(e), false);
+        return false;
+      } finally {
+        setBusy(false);
+        await refreshFixedSafetyState();
+      }
     }
 
     function updateFixedHoldState(payload) {
@@ -753,15 +912,25 @@
       const hold = daemon.hold_active != null ? daemon.hold_active : (payload && payload.ok);
       const age = daemon.heartbeat_age_ms != null ? (' · hb ' + daemon.heartbeat_age_ms + 'ms') : '';
       el.textContent = 'hold: ' + (hold ? 'ATTIVO' : 'NON OK') + age;
+      el.classList.toggle('good', !!hold);
       el.classList.toggle('bad', !hold);
     }
 
     async function refreshFixedSafetyState() {
       try {
         const d = await api('/api/health', 'GET', null, 10000);
-        updateFixedHoldState(d && d.command_daemon ? { ok: d.ok, hold: d.command_daemon } : d);
+        const arm = await api('/api/arm/status', 'GET', null, 8000).catch(function () { return {}; });
+        updateControlPills({
+          ok: !!(d && d.ok),
+          arm_coupled: !!(arm && arm.arm_coupled),
+          command_daemon: d && d.command_daemon,
+          hold: d && d.command_daemon,
+        });
       } catch (e) {
-        q('fixedHoldState').textContent = 'hold: errore';
+        const el = q('fixedHoldState');
+        if (el) el.textContent = 'hold: errore';
+        armControlOk = false;
+        update6dWorkflow();
       }
     }
 
@@ -1095,6 +1264,29 @@
       setCalibPhase('calibPhase3', calibrationFocusActive, calibrationFocusActive ? 'muovi a mano' : 'attendi live');
       setCalibPhase('calibPhase4', calibrationSaveAllowed, calibrationSaveAllowed ? 'salva ora' : 'bloccato');
       setCalibPhase('calibPhase5', calibrationBuildReady, calibrationBuildReady ? 'calcola ora' : 'non pronto');
+      let currentPhase = 'calibPhase1';
+      if (!calibrationSessionStarted) currentPhase = 'calibPhase1';
+      else if (!calibrationFocusActive && !autoCalibRunning) currentPhase = 'calibPhase2';
+      else if (calibrationBuildReady) currentPhase = 'calibPhase5';
+      else if (calibrationSaveAllowed) currentPhase = 'calibPhase4';
+      else currentPhase = 'calibPhase3';
+      ['calibPhase1', 'calibPhase2', 'calibPhase3', 'calibPhase4', 'calibPhase5'].forEach(function (id) {
+        const el = q(id);
+        if (el) el.classList.toggle('current', id === currentPhase);
+      });
+      const cardMap = {
+        calibPhase1: 'calibStepCard1',
+        calibPhase2: 'calibStepCard2',
+        calibPhase3: 'calibStepCard3',
+        calibPhase4: 'calibStepCard4',
+        calibPhase5: 'calibStepCard5',
+      };
+      Object.keys(cardMap).forEach(function (phase) {
+        const card = q(cardMap[phase]);
+        if (card) card.classList.toggle('current', phase === currentPhase && !autoCalibRunning);
+      });
+      const autoCard = q('calibStepCardAuto');
+      if (autoCard) autoCard.classList.toggle('current', !!autoCalibRunning);
       const sampleBtn = q('btn6dSample');
       if (sampleBtn) sampleBtn.disabled = !calibrationSaveAllowed;
       const saveGate = q('calibSaveGate');
@@ -1330,12 +1522,18 @@
 
     async function startAutoCalibration() {
       const status = await api('/api/pick/metric/calibration', 'GET', null, 30000);
+      if (typeof status.auto_motion_enabled === 'boolean') setAutoMotionUi(status.auto_motion_enabled);
+      if (!autoMotionEnabled) {
+        setCalibGuide('bad', 'Auto disabilitata', 'Sul server manca D1_GRASP6D_AUTO_MOTION_ENABLE=1. Usa la procedura manuale 1→5.');
+        return;
+      }
       const existingSamples = Number((status && status.sample_count) || 0);
       const message = existingSamples > 0
-        ? ('Riprendere AUTO calibrazione 6D dai ' + existingSamples + ' sample già salvati? Non resetto la sessione. Area libera, AprilGrid ferma, mano pronta su HOLD.')
-        : 'Avviare AUTO calibrazione 6D? Il braccio si muoverà in piccole pose. Area libera, AprilGrid ferma, mano pronta su HOLD.';
+        ? ('Riprendere AUTO calibrazione 6D dai ' + existingSamples + ' sample già salvati? Il braccio si muove. Area libera, AprilGrid ferma, mano su HOLD.')
+        : 'Avviare AUTO calibrazione 6D? Il braccio si muove in piccole pose. Area libera, AprilGrid ferma, mano su HOLD.';
       const accepted = window.confirm(message);
       if (!accepted) return;
+      await activateArmControl();
       autoCalibRunning = true;
       autoCalibStep = existingSamples;
       autoCalibTrace = [];
@@ -1350,6 +1548,7 @@
       setCalibrationFocus(true);
       stopDepthMonitor();
       stopRealtimeMonitor();
+      setAutoMotionUi(autoMotionEnabled);
       q('btn6dAutoCalib').disabled = true;
       q('btn6dAutoCalibTop').disabled = true;
       q('autoCalibState').textContent = existingSamples > 0
@@ -1360,8 +1559,7 @@
         if (!reset.ok) {
           q('autoCalibState').textContent = 'Auto: reset fallito';
           autoCalibRunning = false;
-          q('btn6dAutoCalib').disabled = false;
-          q('btn6dAutoCalibTop').disabled = false;
+          setAutoMotionUi(autoMotionEnabled);
           return;
         }
       }
@@ -1372,11 +1570,11 @@
 
     function stopAutoCalibration() {
       autoCalibRunning = false;
-      q('btn6dAutoCalib').disabled = false;
-      q('btn6dAutoCalibTop').disabled = false;
+      setAutoMotionUi(autoMotionEnabled);
       q('autoCalibState').textContent = 'Auto fermata.';
       renderAutoCalibrationDebug();
       setCalibrationFocus(false);
+      updateCalibrationPokaYoke();
       setStatus('Auto calibrazione fermata', true);
     }
 
@@ -1408,8 +1606,7 @@
           }
           renderAutoCalibrationDebug();
           autoCalibRunning = false;
-          q('btn6dAutoCalib').disabled = false;
-          q('btn6dAutoCalibTop').disabled = false;
+          setAutoMotionUi(autoMotionEnabled);
           q('autoCalibState').textContent = 'Auto bloccata: ' + (d.reason || 'server_non_ok');
           setCalibGuide('bad', 'Auto calibrazione bloccata', 'Il server ha rifiutato lo step: ' + (d.reason || 'server_non_ok') + '. Controlla daemon/HOLD e diagnostica.');
           return;
@@ -1429,9 +1626,9 @@
         setKpi('calibLastAction', msg);
         if (d.done || (d.build && d.build.ok)) {
           autoCalibRunning = false;
-          q('btn6dAutoCalib').disabled = false;
-          q('btn6dAutoCalibTop').disabled = false;
-          setCalibGuide('good', 'Auto calibrazione completata', 'Calibrazione valida salvata. Ora puoi passare a riconoscimento cuboide/pregrasp.');
+          setAutoMotionUi(autoMotionEnabled);
+          setCalibGuide('good', 'Auto calibrazione completata', 'Calibrazione valida salvata. Passa a B · Prendi oggetto.');
+          setUiMode('pick');
           return;
         }
       } catch (e) {
@@ -1443,8 +1640,7 @@
         renderAutoCalibrationDebug();
         q('autoCalibState').textContent = 'Auto errore: ' + String(e);
         autoCalibRunning = false;
-        q('btn6dAutoCalib').disabled = false;
-        q('btn6dAutoCalibTop').disabled = false;
+        setAutoMotionUi(autoMotionEnabled);
         setCalibGuide('bad', 'Auto calibrazione interrotta', String(e));
         return;
       }
@@ -1458,23 +1654,35 @@
         const count = Number(d.sample_count || 0);
         calibrationSessionStarted = calibrationSessionStarted || count > 0 || calibrationFocusActive;
         applyCalibrationQuality(d.quality);
-        q('calibNextPose').textContent = calibrationPoseHints[Math.min(count, calibrationPoseHints.length - 1)];
+        if (q('calibNextPose')) q('calibNextPose').textContent = calibrationPoseHints[Math.min(count, calibrationPoseHints.length - 1)];
         const cal = d.calibration || {};
         grasp6dCalibrationOk = !!cal.ok;
+        if (typeof d.auto_motion_enabled === 'boolean') setAutoMotionUi(d.auto_motion_enabled);
+        if (d.control && typeof d.control.arm_coupled === 'boolean') {
+          const cPill = q('ctrlCoupledPill');
+          if (cPill) {
+            cPill.textContent = 'coupled: ' + (d.control.arm_coupled ? 'SI' : 'NO');
+            cPill.classList.toggle('good', !!d.control.arm_coupled);
+            cPill.classList.toggle('bad', !d.control.arm_coupled);
+          }
+        }
         update6dWorkflow();
+        updateCalibrationPokaYoke();
         if (!(d.quality && d.quality.sample_count >= 8)) updateCalibGuideFromCount(count, grasp6dCalibrationOk);
         setKpi('calibSavedState', cal.ok ? 'VALIDA · ' + (cal.sample_count || count) + ' sample' : 'non presente');
         const history = Array.isArray(d.history) ? d.history.slice().reverse().slice(0, 20) : [];
-        q('calibHistory').textContent = history.length ? history.map(function (row) {
-          const parts = [String(row.at || ''), String(row.event || '')];
-          if (row.sample_count != null) parts.push('sample ' + row.sample_count);
-          if (row.visible_marker_count != null) parts.push(row.visible_marker_count + ' tag');
-          if (row.reprojection_rms_px != null) parts.push('RMS img ' + Number(row.reprojection_rms_px).toFixed(2) + ' px');
-          if (row.translation_rms_m != null) parts.push('RMS xyz ' + (Number(row.translation_rms_m) * 100).toFixed(1) + ' cm');
-          if (row.rotation_rms_deg != null) parts.push('RMS rot ' + Number(row.rotation_rms_deg).toFixed(1) + '°');
-          if (row.reason) parts.push(String(row.reason));
-          return parts.join(' · ');
-        }).join('\n') : 'Nessun evento registrato.';
+        if (q('calibHistory')) {
+          q('calibHistory').textContent = history.length ? history.map(function (row) {
+            const parts = [String(row.at || ''), String(row.event || '')];
+            if (row.sample_count != null) parts.push('sample ' + row.sample_count);
+            if (row.visible_marker_count != null) parts.push(row.visible_marker_count + ' tag');
+            if (row.reprojection_rms_px != null) parts.push('RMS img ' + Number(row.reprojection_rms_px).toFixed(2) + ' px');
+            if (row.translation_rms_m != null) parts.push('RMS xyz ' + (Number(row.translation_rms_m) * 100).toFixed(1) + ' cm');
+            if (row.rotation_rms_deg != null) parts.push('RMS rot ' + Number(row.rotation_rms_deg).toFixed(1) + '°');
+            if (row.reason) parts.push(String(row.reason));
+            return parts.join(' · ');
+          }).join('\n') : 'Nessun evento registrato.';
+        }
       } catch (e) {
         setKpi('calibLastAction', 'errore stato');
       }
@@ -1679,6 +1887,16 @@
     q('tabMotorBtn').onclick = () => selectTab('Motor');
     q('tabHermesBtn').onclick = () => selectTab('Hermes');
     bindClick('btnHoldNowFixed', holdNow);
+    bindClick('btnHoldNowCtrl', holdNow);
+    bindClick('btnArmCouple', activateArmControl);
+    bindClick('btnArmReleaseCtrl', async () => {
+      const ok = await releaseArm();
+      if (ok) setStatus('Release attivo: sostieni il braccio', true);
+      await refreshFixedSafetyState();
+    });
+    bindClick('btnCtrlRefresh', refreshFixedSafetyState);
+    bindClick('btnModeCalib', () => setUiMode('calib'));
+    bindClick('btnModePick', () => setUiMode('pick'));
     bindClick('btnFixedRefresh6d', run6dDebug);
     bindClick('btnFixedStartDepth', startDepthMonitor);
     bindClick('btnReadPoseSliders', readPoseToSliders);
@@ -1848,7 +2066,8 @@
         : ('calcolo fallito · ' + ((d && d.reason) || 'controlla pose'));
       setKpi('calibLastAction', buildLabel);
       if (d && d.ok) {
-        setCalibGuide('good', 'Calibrazione 6D valida', 'Ora rimetti il cuboide e premi “Riconosci oggetto e prese”. Poi fai prima il pregrasp.');
+        setCalibGuide('good', 'Calibrazione 6D valida', 'Ora passa a B · Prendi oggetto: rimetti il cuboide, riconosci, verifica cluster, poi pregrasp.');
+        setUiMode('pick');
       } else {
         setCalibGuide('bad', 'Calibrazione fallita: non usare la presa', 'Rifai una sessione pulita: 1, 2, poi salva con 4 solo quando il live indica vista nuova o miglioramento residuo. Errore: ' + ((d && d.reason) || 'sconosciuto'));
       }
@@ -1908,6 +2127,9 @@
       });
       await refreshThermal();
     });
+    setUiMode('calib');
+    setAutoMotionUi(false);
+    refreshFixedSafetyState();
     refreshGrasp6dStatus(false);
     refreshHandeyeCalibration();
     refresh6dLogs();

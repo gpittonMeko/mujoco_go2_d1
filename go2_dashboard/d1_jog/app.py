@@ -2650,25 +2650,65 @@ def create_d1_jog_app() -> Flask:
         couple = service.ensure_coupled_for_motion()
         if not couple.get("ok"):
             return jsonify({"ok": False, "reason": "couple_failed", "coupling": couple}), 502
-        tracking_limit = max(4.0, float(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", "10")))
-        tracking_violation_limit = max(1, int(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS", "3")))
-        move = program_runner.move_to_servo_deg_smooth(target, tracking_max_error_deg=tracking_limit)
-        if not (move.get("ok") or move.get("skipped")):
-            payload: dict[str, Any] = {"ok": False, "reason": "move_failed", "move": move, "target_servo_deg": target}
-            move_reason = str(move.get("reason") or "move_failed")
+        tracking_limit = max(4.0, float(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", "12")))
+        tracking_violation_limit = max(1, int(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS", "2")))
+        # Mai fold/safe-transit. Se siamo lontani da scan SX, usa la posa corrente
+        # come base (offset piccoli) invece di un salto pericoloso.
+        start_delta = max(abs(float(base[i]) - float(pre_raw[i])) for i in range(6))
+        max_start_delta = float(os.environ.get("D1_GRASP6D_AUTO_MAX_START_DELTA_DEG", "40"))
+        base_source = "scan_left"
+        if start_delta > max_start_delta:
+            base = service.clamp_servo_deg(list(pre_raw[:7]))
+            target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+            base_source = "current_pose"
             grasp6d.record_calibration_event(
-                "auto_watchdog_stop" if "tracking" in move_reason or "feedback_missing" in move_reason else "auto_motion_failed",
-                reason=move_reason,
-                max_tracking_error_deg=move.get("max_tracking_error_deg"),
-                tracking_limit_deg=move.get("tracking_limit_deg") or tracking_limit,
-                hold_ok=bool((move.get("safety_hold") or {}).get("ok")) if isinstance(move.get("safety_hold"), dict) else None,
+                "auto_base_current_pose",
+                reason="start_far_from_scan_left_using_current",
+                hold_ok=True,
             )
-            if isinstance(move.get("safety_hold"), dict):
-                payload["safety_hold"] = move["safety_hold"]
-                payload["safety_hold_source"] = move.get("hold_source") or "move_to_servo_deg_smooth"
-            elif int(move.get("sent") or move.get("waypoints") or 0) > 0:
+        prev_move_speed = os.environ.get("D1_PROG_MOVE_DEG_PER_S")
+        auto_move_speed = os.environ.get("D1_GRASP6D_AUTO_MOVE_DEG_PER_S", "6").strip()
+        if auto_move_speed:
+            os.environ["D1_PROG_MOVE_DEG_PER_S"] = auto_move_speed
+        move: dict[str, Any] = {"ok": False, "reason": "auto_move_not_started"}
+        try:
+            try:
+                move = program_runner.move_to_servo_deg_smooth(target, tracking_max_error_deg=tracking_limit)
+            finally:
+                if prev_move_speed is None:
+                    os.environ.pop("D1_PROG_MOVE_DEG_PER_S", None)
+                else:
+                    os.environ["D1_PROG_MOVE_DEG_PER_S"] = prev_move_speed
+            if not (move.get("ok") or move.get("skipped")):
+                payload: dict[str, Any] = {"ok": False, "reason": "move_failed", "move": move, "target_servo_deg": target}
+                move_reason = str(move.get("reason") or "move_failed")
+                grasp6d.record_calibration_event(
+                    "auto_watchdog_stop" if "tracking" in move_reason or "feedback_missing" in move_reason else "auto_motion_failed",
+                    reason=move_reason,
+                    max_tracking_error_deg=move.get("max_tracking_error_deg"),
+                    tracking_limit_deg=move.get("tracking_limit_deg") or tracking_limit,
+                    hold_ok=bool((move.get("safety_hold") or {}).get("ok")) if isinstance(move.get("safety_hold"), dict) else None,
+                )
+                # Sempre freeze sulla posa MISURATA, anche se il move ha gia' tentato un hold.
                 payload["safety_hold"] = service.request_emergency_hold(reason="auto_calibration_move_failed")
-            return jsonify(payload), 502
+                payload["safety_hold_source"] = "auto_step_finally_measured"
+                return jsonify(payload), 502
+        except Exception as exc:
+            safety_hold = service.request_emergency_hold(reason="auto_calibration_exception")
+            grasp6d.record_calibration_event(
+                "auto_motion_failed",
+                reason=f"exception:{type(exc).__name__}",
+                hold_ok=bool(safety_hold.get("ok")),
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "auto_calibration_exception",
+                    "error": repr(exc),
+                    "safety_hold": safety_hold,
+                    "target_servo_deg": target,
+                }
+            ), 502
         settle_s = max(0.2, min(2.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "0.6"))))
         settle_deadline = time.monotonic() + settle_s
         settle_missing = 0
@@ -2901,6 +2941,13 @@ def create_d1_jog_app() -> Flask:
                         "marker_size_mm": 60.0,
                         "download_url": "/api/pick/metric/calibration/target.pdf",
                     },
+                },
+                "auto_motion_enabled": os.environ.get("D1_GRASP6D_AUTO_MOTION_ENABLE", "0")
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "on"},
+                "control": {
+                    "arm_coupled": bool(service.arm_coupled()),
                 },
             }
         )
@@ -3598,7 +3645,11 @@ def create_d1_jog_app() -> Flask:
     if daemon_started and auto_enable and service.binaries_status().get("real_arm"):
         feedback = service.read_servo_deg(fast=True)
         if feedback.get("ok") and feedback.get("servo_deg"):
-            atomic_hold = service.couple_and_hold_pose(feedback["servo_deg"], force=True)
+            # Sempre with_power: un restart Flask senza power refresh e' una causa
+            # tipica di braccio che "cede" per un istante all'avvio.
+            atomic_hold = service.couple_and_hold_pose(
+                feedback["servo_deg"], with_power=True, force=True
+            )
             startup_arm_stabilization.update(
                 {
                     "ok": bool(atomic_hold.get("ok") or atomic_hold.get("skipped")),
