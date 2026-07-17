@@ -2648,8 +2648,8 @@ def create_d1_jog_app() -> Flask:
                         }
                     )
         if len(samples) >= max_samples:
-            # Fai spazio: drop outlier e prova ancora un sample, non stoppare.
-            pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=5, force_drop=2)
+            # Fai spazio e continua il movimento: mai ok:false qui (la UI si fermerebbe).
+            pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=6, force_drop=3)
             samples = grasp6d.list_handeye_samples()
             current_quality = grasp6d.handeye_quality_report(samples)
             built = grasp6d.build_handeye_calibration(samples)
@@ -2664,18 +2664,17 @@ def create_d1_jog_app() -> Flask:
                         "prune": pre_prune,
                     }
                 )
+            # Ancora pieno: forza altri drop finche' c'e' slot, poi fall-through al move.
+            guard = 0
+            while len(samples) >= max_samples and len(samples) > min_n and guard < 6:
+                pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=2, force_drop=1)
+                samples = grasp6d.list_handeye_samples()
+                current_quality = grasp6d.handeye_quality_report(samples)
+                guard += 1
+            # Se proprio non si puo' scendere sotto max_samples, alza il tetto locale di 1
+            # e continua comunque (meglio sample in piu' che stop AUTO).
             if len(samples) >= max_samples:
-                return jsonify(
-                    {
-                        "ok": False,
-                        "done": False,
-                        "reason": "max_samples_still_residual_high",
-                        "build": built,
-                        "quality": current_quality,
-                        "prune": pre_prune,
-                        "hint": "AUTO continua: prune forzato non basta, serve vista piu' diversa",
-                    }
-                ), 200
+                max_samples = min(20, len(samples) + 1)
 
         from go2_dashboard.d1_jog import motion_profile
 

@@ -1596,7 +1596,15 @@
           max_samples: 16,
         }, 180000);
         setDiag('Auto calibrazione 6D', d);
-        if (!d.ok) {
+        const softContinueReasons = {
+          max_samples_still_residual_high: 1,
+          pose_too_similar: 1,
+          residual_not_improving: 1,
+          marker_not_visible: 1,
+          too_few_visible_tags: 1,
+          auto_calibration_settle_tracking_error: 1,
+        };
+        if (!d.ok && !softContinueReasons[d.reason]) {
           const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
           if (traceRow) {
             traceRow.status = 'error';
@@ -1616,7 +1624,7 @@
         const msg = 'Auto step ' + (autoCalibStep + 1) + ': ' + (d.saved ? 'sample salvato' : ('skip · ' + (d.reason || 'non valido')));
         const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
         if (traceRow) {
-          traceRow.status = d.saved ? 'saved' : 'skip';
+          traceRow.status = d.saved ? 'saved' : (!d.ok ? 'soft' : 'skip');
           traceRow.reason = d.saved ? 'sample salvato' : (d.reason || 'non valido');
           traceRow.tags = d.marker && d.marker.visible_marker_count;
           traceRow.residual = d.quality ? formatCalibResidual(d.quality) : null;
@@ -1624,7 +1632,8 @@
         renderAutoCalibrationDebug();
         q('autoCalibState').textContent = msg;
         setKpi('calibLastAction', msg);
-        if (d.done || (d.build && d.build.ok)) {
+        // Solo cal_ok reale ferma il loop: done senza build valido non conta.
+        if (d.build && d.build.ok) {
           autoCalibRunning = false;
           setAutoMotionUi(autoMotionEnabled);
           setCalibGuide('good', 'Auto calibrazione completata', 'Calibrazione valida salvata. Passa a B · Prendi oggetto.');
