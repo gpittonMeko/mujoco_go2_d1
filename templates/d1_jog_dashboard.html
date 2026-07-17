@@ -392,8 +392,23 @@
             <div class="mode-kpi"><small>Stabilità cluster</small><strong id="grasp6dClusterStability">—</strong></div>
             <div class="mode-kpi"><small>Hand-eye</small><strong id="grasp6dCalib">—</strong></div>
           </div>
+          <div class="auto-live-panel" id="pickDebugPanel" style="margin-top:12px">
+            <div class="auto-live-head">
+              <div>
+                <strong>Debug visivo 6D · cluster e punti di presa</strong>
+                <div class="sub" style="color:rgba(223,248,255,.8);margin-top:4px">Verde stella = grasp · ciano X = pregrasp · viola = punti sopra pavimento · box colorati = cluster</div>
+              </div>
+              <div class="row">
+                <button id="btnPickDebugRefresh" class="neutral" type="button">Aggiorna debug</button>
+                <button id="btnPickDebugLive" class="warn" type="button">Live debug ON</button>
+              </div>
+            </div>
+            <img id="rtDepthPreview" class="rt-preview pointcloud-preview" style="max-height:560px;margin-top:10px;width:100%" src="/api/pick/grasp6d/debug.jpg?capture=0&t=0" alt="RGB + depth + grasp/pregrasp" />
+            <div class="rt-row" style="margin-top:8px"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div>
+            <div class="rt-json" id="rtFeedback" style="margin-top:8px">Premi «Riconosci oggetto» o «Aggiorna debug» per vedere box 6D e punti grasp/pregrasp.</div>
+          </div>
           <details class="ops-section">
-            <summary>Slider giunti · debug live · log</summary>
+            <summary>Slider giunti · soglie · log</summary>
             <div class="ops-body">
               <div class="sl" aria-label="Slider giunti D1">
                 <strong>Slider giunti D1</strong>
@@ -408,7 +423,6 @@
                 <div class="row"><button id="btnReadPoseSliders" class="neutral" type="button">Carica posa attuale</button><button id="btnSendPoseSliders" class="warn" type="button">Invia posa slider</button></div>
               </div>
               <div class="row threshold-row"><span class="sub">Se il cluster non viene rilevato:</span><button id="btnLowerHeight" class="neutral">↓ soglia altezza</button><button id="btnLowerCluster" class="neutral">↓ punti cluster</button><button id="btnLowerDimension" class="neutral">↓ dimensione minima</button><button id="btnResetThresholds" class="neutral">Reset soglie</button></div>
-              <div class="rt-panel"><div class="rt-row"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div><div class="rt-json" id="rtFeedback">Monitor non avviato.</div><img id="rtDepthPreview" class="rt-preview pointcloud-preview" src="/api/pick/grasp6d/debug.jpg?capture=0&t=0" alt="RGB e point cloud metrica realtime" /></div>
               <div class="row"><button id="btnRefresh6dLogs" class="neutral">Aggiorna log</button></div>
               <div class="log-grid">
                 <div class="log-block"><h4>Runtime hold / daemon</h4><pre id="holdRuntimeLog" class="log-pre">Attendo diagnostica runtime…</pre></div>
@@ -2122,6 +2136,24 @@
       if (accepted) await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', {}, 300000);
     });
     bindClick('btn6dDebugGraphic', run6dDebug);
+    bindClick('btnPickDebugRefresh', async () => {
+      setBusy(true, 'Debug 6D');
+      try {
+        await run6dDebug();
+        if (q('rtDepthPreview')) q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=1&t=' + Date.now();
+      } finally {
+        setBusy(false);
+      }
+    });
+    bindClick('btnPickDebugLive', () => {
+      if (depthRunning) {
+        stopDepthMonitor();
+        if (q('btnPickDebugLive')) q('btnPickDebugLive').textContent = 'Live debug ON';
+      } else {
+        startDepthMonitor();
+        if (q('btnPickDebugLive')) q('btnPickDebugLive').textContent = 'Live debug OFF';
+      }
+    });
     bindClick('btn6dExecute', async () => {
       const accepted = window.confirm('Eseguire la presa 6D completa? Area libera e box correttamente evidenziato nella point cloud?');
       if (accepted) await callAndShow('Grasp 6D', '/api/pick/grasp6d/execute', 'POST', { confirm: 'EXECUTE_GRASP6D' }, 300000);

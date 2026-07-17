@@ -3148,7 +3148,7 @@ def create_d1_jog_app() -> Flask:
                     "offset_meta": offset_meta,
                 }
             ), 200
-        min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "14")))
+        min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "12")))
         visible_tags = int(marker.get("visible_marker_count") or 0)
         if visible_tags < min_tags:
             grasp6d.record_calibration_event(
