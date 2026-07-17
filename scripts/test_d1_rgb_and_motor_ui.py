@@ -243,7 +243,9 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn('@app.route("/api/pick/metric/calibration/auto_step"', app)
         self.assertIn('"explicit_auto_calibration_confirmation_required"', app)
         self.assertIn('D1_GRASP6D_AUTO_MAX_DELTA_DEG', app)
-        self.assertIn('move_to_servo_deg_smooth(target, tracking_max_error_deg=tracking_limit)', app)
+        self.assertIn("pose_mode=auto_pose_mode", app)
+        self.assertIn("max_step_deg=auto_step_deg", app)
+        self.assertIn("min_delay_ms=auto_min_delay", app)
         jog_stream = (ROOT / "go2_dashboard" / "d1_jog" / "jog_stream.py").read_text(
             encoding="utf-8", errors="replace"
         )
