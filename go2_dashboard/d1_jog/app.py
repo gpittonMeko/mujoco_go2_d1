@@ -2534,25 +2534,18 @@ def create_d1_jog_app() -> Flask:
         return jsonify(out), (200 if marker.get("ok") else 422)
 
     def _auto_calibration_offsets() -> list[list[float]]:
+        # Pochi offset piccoli: meno waypoint, meno stress servo D1.
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            [-4, -3, 3, -4, 0, 6, 0],
-            [4, -5, 5, -8, 7, -4, 0],
-            [6, 1, -1, 4, 10, -8, 0],
-            [1, 6, -6, 10, 4, -10, 0],
-            [-3, 7, -7, 12, -4, -8, 0],
-            [-7, 3, -3, 9, -9, 2, 0],
-            [3, -8, 8, -12, 10, 8, 0],
-            [-6, 4, -4, 10, -6, -8, 0],
-            [-10, 0, 0, 14, -10, -10, 0],
-            [-12, -5, 5, 12, -6, 10, 0],
-            [-7, -9, 9, 4, 3, 14, 0],
-            [0, -10, 10, -10, 8, 12, 0],
-            [8, -7, 7, -14, 12, 4, 0],
-            [13, -2, 2, -6, 14, -8, 0],
-            [10, 6, -6, 10, 6, -14, 0],
-            [2, 10, -10, 16, -4, -12, 0],
-            [-8, 8, -8, 18, -12, 0, 0],
+            [-6, -3, 3, -4, 0, 4, 0],
+            [6, -4, 4, -6, 5, -3, 0],
+            [4, 4, -4, 5, 6, -5, 0],
+            [-4, 5, -5, 6, -4, -4, 0],
+            [-8, 2, -2, 6, -6, 3, 0],
+            [5, -6, 6, -8, 6, 4, 0],
+            [8, 3, -3, -4, 8, -6, 0],
+            [-5, 6, -6, 8, -5, -5, 0],
+            [0, -8, 8, -6, 5, 6, 0],
         ]
 
     def _auto_calibration_base_pose() -> list[float]:
@@ -2623,11 +2616,13 @@ def create_d1_jog_app() -> Flask:
             built = grasp6d.build_handeye_calibration(samples)
             return jsonify({"ok": bool(built.get("ok")), "done": True, "reason": "max_samples_reached", "build": built, "quality": current_quality}), (200 if built.get("ok") else 422)
 
+        from go2_dashboard.d1_jog import motion_profile
+
         offsets = _auto_calibration_offsets()
         offset = offsets[step % len(offsets)]
         target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
-        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "18"))
+        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "10"))
         if max_delta > max_delta_allowed:
             return jsonify({"ok": False, "reason": "auto_target_delta_too_large", "target_servo_deg": target, "base_servo_deg": base}), 400
 
@@ -2637,9 +2632,13 @@ def create_d1_jog_app() -> Flask:
             return jsonify(
                 {"ok": False, "reason": "feedback_before_move_unavailable", "feedback": pre_feedback, "daemon": daemon_ready.get("daemon")}
             ), 503
-        pre_hold = service.couple_and_hold_pose(list(pre_raw[:7]), with_power=True, force=True, acquire_lock=False)
-        if not pre_hold.get("ok"):
-            return jsonify({"ok": False, "reason": "pre_move_hold_failed", "hold": pre_hold, "daemon": daemon_ready.get("daemon")}), 502
+        # Niente couple/power a ogni step se HOLD e' gia' attivo (flood = cedimento).
+        if service.arm_coupled() and daemon_ready.get("ok"):
+            pre_hold = {"ok": True, "skipped": True, "reason": "already_holding_soft_path"}
+        else:
+            pre_hold = service.couple_and_hold_pose(list(pre_raw[:7]), with_power=True, force=True, acquire_lock=False)
+            if not pre_hold.get("ok"):
+                return jsonify({"ok": False, "reason": "pre_move_hold_failed", "hold": pre_hold, "daemon": daemon_ready.get("daemon")}), 502
         daemon_ready = _auto_calibration_daemon_ready()
         if not daemon_ready.get("ok"):
             return jsonify({"ok": False, **daemon_ready, "pre_hold": pre_hold}), 503
@@ -2650,8 +2649,8 @@ def create_d1_jog_app() -> Flask:
         couple = service.ensure_coupled_for_motion()
         if not couple.get("ok"):
             return jsonify({"ok": False, "reason": "couple_failed", "coupling": couple}), 502
-        tracking_limit = max(4.0, float(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", "12")))
-        tracking_violation_limit = max(1, int(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS", "2")))
+        tracking_limit = max(4.0, float(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", "15")))
+        tracking_violation_limit = max(1, int(os.environ.get("D1_GRASP6D_AUTO_TRACKING_MAX_VIOLATIONS", "3")))
         # Mai fold/safe-transit. Se siamo lontani da scan SX, usa la posa corrente
         # come base (offset piccoli) invece di un salto pericoloso.
         start_delta = max(abs(float(base[i]) - float(pre_raw[i])) for i in range(6))
@@ -2667,13 +2666,22 @@ def create_d1_jog_app() -> Flask:
                 hold_ok=True,
             )
         prev_move_speed = os.environ.get("D1_PROG_MOVE_DEG_PER_S")
-        auto_move_speed = os.environ.get("D1_GRASP6D_AUTO_MOVE_DEG_PER_S", "6").strip()
+        auto_move_speed = os.environ.get("D1_GRASP6D_AUTO_MOVE_DEG_PER_S", "4").strip()
         if auto_move_speed:
             os.environ["D1_PROG_MOVE_DEG_PER_S"] = auto_move_speed
+        auto_pose_mode = motion_profile.auto_move_mode()
+        auto_step_deg = motion_profile.auto_joint_step_deg()
+        auto_min_delay = motion_profile.auto_waypoint_delay_ms()
         move: dict[str, Any] = {"ok": False, "reason": "auto_move_not_started"}
         try:
             try:
-                move = program_runner.move_to_servo_deg_smooth(target, tracking_max_error_deg=tracking_limit)
+                move = program_runner.move_to_servo_deg_smooth(
+                    target,
+                    tracking_max_error_deg=tracking_limit,
+                    pose_mode=auto_pose_mode,
+                    max_step_deg=auto_step_deg,
+                    min_delay_ms=auto_min_delay,
+                )
             finally:
                 if prev_move_speed is None:
                     os.environ.pop("D1_PROG_MOVE_DEG_PER_S", None)
@@ -2709,7 +2717,7 @@ def create_d1_jog_app() -> Flask:
                     "target_servo_deg": target,
                 }
             ), 502
-        settle_s = max(0.2, min(2.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "0.6"))))
+        settle_s = max(0.4, min(3.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "1.2"))))
         settle_deadline = time.monotonic() + settle_s
         settle_missing = 0
         settle_violations = 0
@@ -2782,8 +2790,9 @@ def create_d1_jog_app() -> Flask:
                     "safety_hold": service.request_emergency_hold(reason="auto_calibration_feedback_missing"),
                 }
             ), 503
-        hold = service.couple_and_hold_pose(list(raw[:7]), with_power=True, force=True, acquire_lock=False)
-        if not hold.get("ok"):
+        # Solo funcode-2 mode0: niente re-couple dopo ogni offset.
+        hold = service.hold_pose_stream(servo_deg=list(raw[:7]))
+        if not (hold.get("ok") or hold.get("skipped")):
             return jsonify(
                 {
                     "ok": False,
@@ -2794,6 +2803,9 @@ def create_d1_jog_app() -> Flask:
                     "safety_hold": service.request_emergency_hold(reason="auto_calibration_hold_after_move_failed"),
                 }
             ), 502
+        rest_s = max(0.0, min(3.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "0.8"))))
+        if rest_s > 0:
+            time.sleep(rest_s)
         try:
             frame = _capture_wrist_rgbd_with_retry(median_frames=1)
         except Exception as exc:
@@ -2807,7 +2819,18 @@ def create_d1_jog_app() -> Flask:
                 reprojection_rms_px=marker.get("reprojection_rms_px"),
                 hold_ok=True,
             )
-            return jsonify({"ok": True, "saved": False, "reason": marker.get("reason") or "target_not_valid", "marker": marker, "move": move, "hold": hold}), 200
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": marker.get("reason") or "target_not_valid",
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                }
+            ), 200
         if marker.get("target_type") == "aprilgrid_36h11" and marker.get("pose_method") != "tag_corners":
             grasp6d.record_calibration_event(
                 "auto_sample_skipped",
@@ -2816,7 +2839,18 @@ def create_d1_jog_app() -> Flask:
                 reprojection_rms_px=marker.get("reprojection_rms_px"),
                 hold_ok=True,
             )
-            return jsonify({"ok": True, "saved": False, "reason": "aprilgrid_corner_pose_required", "marker": marker, "move": move, "hold": hold}), 200
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "aprilgrid_corner_pose_required",
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                }
+            ), 200
 
         T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
         candidate = {
@@ -2838,7 +2872,20 @@ def create_d1_jog_app() -> Flask:
                 reprojection_rms_px=marker.get("reprojection_rms_px"),
                 hold_ok=True,
             )
-            return jsonify({"ok": True, "saved": False, "reason": "pose_too_similar", "novelty": novelty, "quality": quality, "marker": marker, "move": move, "hold": hold}), 200
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "pose_too_similar",
+                    "novelty": novelty,
+                    "quality": quality,
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                }
+            ), 200
         if len(samples) >= 8:
             current_quality = grasp6d.handeye_quality_report(samples)
             candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
@@ -2853,7 +2900,20 @@ def create_d1_jog_app() -> Flask:
                     reprojection_rms_px=marker.get("reprojection_rms_px"),
                     hold_ok=True,
                 )
-                return jsonify({"ok": True, "saved": False, "reason": "residual_not_improving", "current_quality": current_quality, "candidate_quality": candidate_quality, "marker": marker, "move": move, "hold": hold}), 200
+                return jsonify(
+                    {
+                        "ok": True,
+                        "saved": False,
+                        "reason": "residual_not_improving",
+                        "current_quality": current_quality,
+                        "candidate_quality": candidate_quality,
+                        "marker": marker,
+                        "move": move,
+                        "hold": hold,
+                        "base_source": base_source,
+                        "rest_s": rest_s,
+                    }
+                ), 200
 
         out = grasp6d.append_handeye_sample(
             T_base_tool,
@@ -2885,8 +2945,15 @@ def create_d1_jog_app() -> Flask:
                 "hold": hold,
                 "target_servo_deg": target,
                 "base_servo_deg": base,
-                "base_source": "scan_left",
+                "base_source": base_source,
                 "requested_base_ignored": isinstance(requested_base, list),
+                "rest_s": rest_s,
+                "auto_soft": {
+                    "pose_mode": auto_pose_mode,
+                    "joint_step_deg": auto_step_deg,
+                    "min_delay_ms": auto_min_delay,
+                    "move_deg_per_s": auto_move_speed,
+                },
             }
         )
 

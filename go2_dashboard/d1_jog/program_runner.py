@@ -273,8 +273,11 @@ def move_to_servo_deg_smooth(
     stop_check: Callable[[], bool] | None = None,
     pin_joints: dict[int, float] | None = None,
     tracking_max_error_deg: float | None = None,
+    pose_mode: int | None = None,
+    max_step_deg: float | None = None,
+    min_delay_ms: int | None = None,
 ) -> dict[str, Any]:
-    """Interpola in spazio giunti con funcode 2 mode 1."""
+    """Interpola in spazio giunti (mode1 traiettoria, o mode0 per AUTO soft)."""
     if safety_preempt_active():
         return {"ok": False, "reason": "motion_preempted:safety", "action": "move_to_point"}
     if not service.arm_coupled():
@@ -306,8 +309,12 @@ def move_to_servo_deg_smooth(
             return {"ok": False, "reason": fb.get("reason", "no_feedback")}
         cur = fb["servo_deg"]
         target = service.clamp_servo_deg(target_servo_deg)
-        waypoints = plan_joint_waypoints(cur, target, pin_joints=pin_joints)
+        waypoints = plan_joint_waypoints(
+            cur, target, pin_joints=pin_joints, max_step_deg=max_step_deg
+        )
         delay_ms = _waypoint_delay_ms()
+        if min_delay_ms is not None:
+            delay_ms = max(delay_ms, int(min_delay_ms))
         if not service.ensure_command_daemon(delay_ms):
             return {"ok": False, "reason": "daemon_start_failed"}
         service.set_servo_cache(cur)
@@ -337,7 +344,9 @@ def move_to_servo_deg_smooth(
                     "stopped_before_waypoint": i,
                     **_hold_measured_pose_for_abort("program_stopped_before_waypoint"),
                 }
-            msg = service._pose_message(sd, seq=int(time.time()) % 100000 + i)
+            msg = service._pose_message(
+                sd, mode=pose_mode, seq=int(time.time()) % 100000 + i
+            )
             pub = service.publish_messages_stream([msg], delay_ms=delay_ms)
             if not (pub.get("ok") or pub.get("skipped")):
                 return {"ok": False, "reason": pub.get("reason", "publish_failed"), "sent": sent}

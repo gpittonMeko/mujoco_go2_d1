@@ -39,6 +39,21 @@ def stream_delay_ms() -> int:
     return max(0, int(os.environ.get("D1_JOG_STREAM_DELAY_MS", "8")))
 
 
+def auto_move_mode() -> int:
+    """AUTO calib: default mode0 (dati ~10Hz), non mode1 trajectory flood."""
+    return int(os.environ.get("D1_GRASP6D_AUTO_MOVE_MODE", "0"))
+
+
+def auto_waypoint_delay_ms() -> int:
+    """Floor delay AUTO: <=10Hz comandi durante i piccoli offset."""
+    return max(100, int(os.environ.get("D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS", "120")))
+
+
+def auto_joint_step_deg() -> float:
+    """Passi giunto più grandi → meno waypoint → meno flood DDS."""
+    return max(2.0, float(os.environ.get("D1_GRASP6D_AUTO_JOINT_STEP_DEG", "4.0")))
+
+
 def daemon_delay_ms() -> int:
     """Sleep C++ dopo ogni riga stdin — 0 = minima latenza (rate limit solo lato Python)."""
     return max(0, int(os.environ.get("D1_JOG_DAEMON_DELAY_MS", "0")))
