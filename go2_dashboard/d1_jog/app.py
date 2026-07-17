@@ -2535,27 +2535,85 @@ def create_d1_jog_app() -> Flask:
         return jsonify(out), (200 if marker.get("ok") else 422)
 
     def _auto_calibration_offsets() -> list[list[float]]:
-        # Orbit hand-eye: J4/J5 per rotazione, J0/J1 per traslazione base.
-        # Evita offset che puntano fuori dall'AprilGrid (troppi skip tag).
+        """Orbit hand-eye pensata per residual cm-level.
+
+        Priorita': rotazione polso (J4/J5) + yaw base (J0) con compensate,
+        poi approach in/out (J1/J2). Offset zero solo per il primo sample.
+        """
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            [-8, -3, 3, 0, 12, -8, 0],
-            [8, -3, 3, 0, -12, 8, 0],
-            [-14, 2, -2, 0, 10, 6, 0],
-            [14, 2, -2, 0, -10, -6, 0],
-            [0, 6, -5, 0, 16, -6, 0],
-            [0, -6, 5, 0, -16, 6, 0],
-            [-10, 5, -4, 0, 14, 10, 0],
-            [10, 5, -4, 0, -14, -10, 0],
-            [-6, -6, 6, 0, 18, 4, 0],
-            [6, -6, 6, 0, -18, -4, 0],
-            [-16, 0, 0, 0, 8, 12, 0],
-            [16, 0, 0, 0, -8, -12, 0],
-            [0, 4, -3, 0, 20, 0, 0],
-            [0, -4, 3, 0, -20, 0, 0],
-            [-12, -4, 4, 0, 12, -12, 0],
-            [12, -4, 4, 0, -12, 12, 0],
+            # Orbit yaw ± con tilt polso (mantiene board in frame)
+            [-12, -2, 2, 0, 14, -10, 0],
+            [12, -2, 2, 0, -14, 10, 0],
+            [-18, 1, -1, 0, 12, 8, 0],
+            [18, 1, -1, 0, -12, -8, 0],
+            # Pitch polso dominante (J4) + lieve approach
+            [0, 5, -4, 0, 20, -6, 0],
+            [0, -5, 4, 0, -20, 6, 0],
+            [0, 7, -6, 0, 16, 10, 0],
+            [0, -7, 6, 0, -16, -10, 0],
+            # Diagonali: yaw + pitch insieme
+            [-14, 4, -3, 0, 18, 8, 0],
+            [14, 4, -3, 0, -18, -8, 0],
+            [-10, -5, 5, 0, 16, -12, 0],
+            [10, -5, 5, 0, -16, 12, 0],
+            # Traslazione tool: approach / retreat
+            [0, 10, -8, 0, 10, 0, 0],
+            [0, -8, 7, 0, -10, 0, 0],
+            # Roll-ish via J5 ampia, J0 piccolo
+            [-6, 2, -2, 0, 8, 16, 0],
+            [6, 2, -2, 0, -8, -16, 0],
+            [-8, -3, 3, 0, 22, 6, 0],
+            [8, -3, 3, 0, -22, -6, 0],
         ]
+
+    def _select_auto_calibration_offset(
+        *,
+        base: list[float],
+        samples: list[dict[str, Any]],
+        step: int,
+        residual_stuck: bool,
+    ) -> tuple[list[float], dict[str, Any]]:
+        """Sceglie l'offset con massima distanza dai sample gia' presi (joint space)."""
+        bank = _auto_calibration_offsets()
+        scale = 1.0
+        if residual_stuck:
+            scale = float(os.environ.get("D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE", "1.55"))
+        existing: list[list[float]] = []
+        for sample in samples:
+            servo = sample.get("servo_deg")
+            if isinstance(servo, list) and len(servo) >= 6:
+                existing.append([float(x) for x in servo[:7]])
+
+        best_offset = [0.0] * 7
+        best_score = -1.0
+        best_index = 0
+        for index, raw_off in enumerate(bank):
+            if index == 0 and (step > 0 or existing):
+                continue
+            offset = [float(v) * scale for v in raw_off]
+            target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+            wrist_boost = 0.4 * (abs(offset[4]) + abs(offset[5])) + 0.15 * abs(offset[0])
+            if not existing:
+                score = 1000.0 + wrist_boost + 0.01 * float((index + step) % max(len(bank), 1))
+            else:
+                min_l2 = min(
+                    sum((float(target[j]) - float(prev[j])) ** 2 for j in range(6)) ** 0.5
+                    for prev in existing
+                )
+                score = float(min_l2) + wrist_boost
+            # Evita di ripescare sempre lo stesso indice quando i score sono simili.
+            score += 0.05 * float((index + step * 3) % max(len(bank), 1))
+            if score > best_score:
+                best_score = score
+                best_offset = offset
+                best_index = index
+        return best_offset, {
+            "offset_index": best_index,
+            "offset_score": round(best_score, 3),
+            "offset_scale": scale,
+            "bank_size": len(bank),
+        }
 
     def _auto_calibration_base_pose() -> list[float]:
         """Auto 6D parte dal preset scan sinistro, non dalla posa corrente casuale."""
@@ -2678,22 +2736,21 @@ def create_d1_jog_app() -> Flask:
 
         from go2_dashboard.d1_jog import motion_profile
 
-        offsets = _auto_calibration_offsets()
-        # Con residual stuck usa bank "largo" (indici alti) per diversita' reale.
-        if residual_stuck:
-            offset = offsets[(step + len(offsets) // 2) % len(offsets)]
-            scale = float(os.environ.get("D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE", "1.35"))
-            offset = [float(v) * scale for v in offset]
-        else:
-            offset = offsets[step % len(offsets)]
+        offset, offset_meta = _select_auto_calibration_offset(
+            base=base,
+            samples=samples,
+            step=step,
+            residual_stuck=residual_stuck,
+        )
         target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
-        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "16"))
+        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "24"))
         if max_delta > max_delta_allowed:
             # Clamp soft verso la soglia invece di abortire lo step.
             shrink = max_delta_allowed / max(max_delta, 1e-6)
             offset = [float(v) * shrink for v in offset]
             target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+            offset_meta = {**offset_meta, "delta_clamped": True, "max_delta_deg": round(max_delta, 2)}
 
         pre_feedback = service.read_servo_deg(fast=False)
         pre_raw = pre_feedback.get("servo_deg") if pre_feedback.get("ok") else None
@@ -2788,7 +2845,7 @@ def create_d1_jog_app() -> Flask:
                     "target_servo_deg": target,
                 }
             ), 502
-        settle_s = max(0.4, min(3.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "1.2"))))
+        settle_s = max(0.4, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "2.0"))))
         settle_deadline = time.monotonic() + settle_s
         settle_missing = 0
         settle_violations = 0
@@ -2882,11 +2939,12 @@ def create_d1_jog_app() -> Flask:
                     ),
                 }
             ), 502
-        rest_s = max(0.0, min(3.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "0.8"))))
+        rest_s = max(0.0, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "1.2"))))
         if rest_s > 0:
             time.sleep(rest_s)
+        median_frames = max(1, min(5, int(os.environ.get("D1_GRASP6D_AUTO_MEDIAN_FRAMES", "3"))))
         try:
-            frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+            frame = _capture_wrist_rgbd_with_retry(median_frames=median_frames)
         except Exception as exc:
             return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc), "hold": hold}), 503
         marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
@@ -2908,9 +2966,10 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                     "base_source": base_source,
                     "rest_s": rest_s,
+                    "offset_meta": offset_meta,
                 }
             ), 200
-        min_tags = max(6, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "10")))
+        min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "14")))
         visible_tags = int(marker.get("visible_marker_count") or 0)
         if visible_tags < min_tags:
             grasp6d.record_calibration_event(
@@ -2931,6 +2990,31 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                     "base_source": base_source,
                     "rest_s": rest_s,
+                    "offset_meta": offset_meta,
+                }
+            ), 200
+        max_reproj = float(os.environ.get("D1_GRASP6D_AUTO_MAX_REPROJ_PX", "1.15"))
+        reproj = marker.get("reprojection_rms_px")
+        if reproj is not None and float(reproj) > max_reproj:
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason="reprojection_too_high",
+                visible_marker_count=visible_tags,
+                reprojection_rms_px=reproj,
+                hold_ok=True,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "reprojection_too_high",
+                    "max_reproj_px": max_reproj,
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                    "offset_meta": offset_meta,
                 }
             ), 200
         if marker.get("target_type") == "aprilgrid_36h11" and marker.get("pose_method") != "tag_corners":
@@ -2951,6 +3035,7 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                     "base_source": base_source,
                     "rest_s": rest_s,
+                    "offset_meta": offset_meta,
                 }
             ), 200
 
@@ -2971,9 +3056,9 @@ def create_d1_jog_app() -> Flask:
             and isinstance(current_quality, dict)
             and current_quality.get("next_action") in {"prune_and_aggiungi_sample", "residuo_alto_non_calcolare", "sessione_incoerente_reset"}
         )
-        novelty = grasp6d.sample_pose_novelty(samples, candidate, soft=residual_stuck)
+        # Mai soft novelty: pose troppo simili abbassano la qualita' del solve (errori cm).
+        novelty = grasp6d.sample_pose_novelty(samples, candidate, soft=False)
         if samples and not novelty.get("useful"):
-            # Sblocca: togli 1-2 outlier e riprova al prossimo step.
             prune_stuck = None
             if residual_stuck and len(samples) >= min_n + 1:
                 prune_stuck = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=3, force_drop=1)
@@ -3003,6 +3088,7 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                     "base_source": base_source,
                     "rest_s": rest_s,
+                    "offset_meta": offset_meta,
                 }
             ), 200
         if len(samples) >= min_n:
@@ -3012,22 +3098,21 @@ def create_d1_jog_app() -> Flask:
             improves_residual = (
                 current_severity is not None
                 and candidate_severity is not None
-                and candidate_severity <= current_severity * 0.98
+                and candidate_severity <= current_severity * 0.97
             )
             improves_diversity = float(candidate_quality.get("diversity_score") or 0.0) > float(
                 current_quality.get("diversity_score") or 0.0
-            ) + 0.02
-            # Con residuo alto accetta anche miglioramenti lievi (+2% severity max).
-            mild_ok = (
-                residual_stuck
-                and current_severity is not None
-                and candidate_severity is not None
-                and candidate_severity <= current_severity * 1.02
+            ) + 0.03
+            # Solo se il residual NON peggiora e c'e' ancora margine di diversita' sotto soglia.
+            diversity_headroom = float(current_quality.get("diversity_score") or 0.0) < 0.92
+            accept_for_diversity = improves_diversity and diversity_headroom and (
+                candidate_severity is None
+                or current_severity is None
+                or candidate_severity <= current_severity * 1.01
             )
             if (
                 not improves_residual
-                and not improves_diversity
-                and not mild_ok
+                and not accept_for_diversity
                 and not candidate_quality.get("build_ready")
             ):
                 prune_stuck = None
@@ -3053,6 +3138,7 @@ def create_d1_jog_app() -> Flask:
                         "hold": hold,
                         "base_source": base_source,
                         "rest_s": rest_s,
+                        "offset_meta": offset_meta,
                     }
                 ), 200
 
@@ -3103,11 +3189,13 @@ def create_d1_jog_app() -> Flask:
                 "base_source": base_source,
                 "requested_base_ignored": isinstance(requested_base, list),
                 "rest_s": rest_s,
+                "offset_meta": offset_meta,
                 "auto_soft": {
                     "pose_mode": auto_pose_mode,
                     "joint_step_deg": auto_step_deg,
                     "min_delay_ms": auto_min_delay,
                     "move_deg_per_s": auto_move_speed,
+                    "median_frames": median_frames,
                 },
             }
         )

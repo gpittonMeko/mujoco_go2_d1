@@ -873,11 +873,12 @@ def sample_pose_novelty(
         return {"ok": False, "reason": "no_valid_existing_samples"}
     min_trans = min(item[0] for item in distances)
     min_rot = min(item[1] for item in distances)
-    min_trans_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_TRANSLATION_M", "0.025"))
-    min_rot_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_ROTATION_DEG", "8.0"))
+    # Default piu' alti: viste troppo vicine danno residual cm e pick impreciso.
+    min_trans_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_TRANSLATION_M", "0.04"))
+    min_rot_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_ROTATION_DEG", "12.0"))
     if soft:
-        min_trans_req = min(min_trans_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_TRANSLATION_M", "0.012")))
-        min_rot_req = min(min_rot_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_ROTATION_DEG", "4.0")))
+        min_trans_req = min(min_trans_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_TRANSLATION_M", "0.025")))
+        min_rot_req = min(min_rot_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_ROTATION_DEG", "8.0")))
     useful = bool(min_trans >= min_trans_req or min_rot >= min_rot_req)
     return {
         "ok": True,
