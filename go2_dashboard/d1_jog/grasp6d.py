@@ -642,10 +642,24 @@ def build_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
     return {"ok": True, **out, "path": str(CALIBRATION_PATH)}
 
 
+def calib_min_samples() -> int:
+    """Minimo sample per solve hand-eye (6 consente prune con sessione da 8)."""
+    try:
+        return max(5, min(12, int(os.environ.get("D1_GRASP6D_CALIB_MIN_SAMPLES", "6"))))
+    except ValueError:
+        return 6
+
+
 def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
     """Calcola hand-eye senza salvare su disco."""
-    if len(samples) < 8:
-        return {"ok": False, "reason": "at_least_8_samples_required", "sample_count": len(samples)}
+    min_n = calib_min_samples()
+    if len(samples) < min_n:
+        return {
+            "ok": False,
+            "reason": "at_least_n_samples_required",
+            "sample_count": len(samples),
+            "min_samples": min_n,
+        }
     import cv2
 
     Tg_rows: list[np.ndarray] = []
@@ -777,7 +791,12 @@ def _transform_distance(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     return trans_m, rot_deg
 
 
-def sample_pose_novelty(samples: list[dict[str, Any]], candidate: dict[str, Any]) -> dict[str, Any]:
+def sample_pose_novelty(
+    samples: list[dict[str, Any]],
+    candidate: dict[str, Any],
+    *,
+    soft: bool = False,
+) -> dict[str, Any]:
     cand = np.asarray(candidate.get("T_base_tool"), dtype=float)
     if cand.shape != (4, 4):
         return {"ok": False, "reason": "candidate_transform_invalid"}
@@ -800,11 +819,15 @@ def sample_pose_novelty(samples: list[dict[str, Any]], candidate: dict[str, Any]
     min_rot = min(item[1] for item in distances)
     min_trans_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_TRANSLATION_M", "0.025"))
     min_rot_req = float(os.environ.get("D1_GRASP6D_CALIB_MIN_NEW_ROTATION_DEG", "8.0"))
+    if soft:
+        min_trans_req = min(min_trans_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_TRANSLATION_M", "0.012")))
+        min_rot_req = min(min_rot_req, float(os.environ.get("D1_GRASP6D_CALIB_SOFT_NEW_ROTATION_DEG", "4.0")))
     useful = bool(min_trans >= min_trans_req or min_rot >= min_rot_req)
     return {
         "ok": True,
         "useful": useful,
         "reason": "new_view_good" if useful else "pose_too_similar",
+        "soft": soft,
         "min_translation_delta_m": min_trans,
         "min_rotation_delta_deg": min_rot,
         "required_translation_delta_m": min_trans_req,
@@ -852,15 +875,17 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
         if marker_rows
         else None
     )
-    solve = solve_handeye_calibration(valid_samples) if len(valid_samples) >= 8 else {
+    min_n = calib_min_samples()
+    solve = solve_handeye_calibration(valid_samples) if len(valid_samples) >= min_n else {
         "ok": False,
-        "reason": "need_8_samples_for_residual",
+        "reason": "need_more_samples_for_residual",
         "sample_count": len(valid_samples),
+        "min_samples": min_n,
     }
     max_trans_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.025"))
     max_rot_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "6.0"))
     residual_trend: list[dict[str, Any]] = []
-    for n in range(8, len(valid_samples) + 1):
+    for n in range(min_n, len(valid_samples) + 1):
         partial = solve_handeye_calibration(valid_samples[:n])
         residual_trend.append(
             {
@@ -885,14 +910,21 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     residual_extreme = bool(
         solve.get("translation_rms_m") is not None
         and solve.get("rotation_rms_deg") is not None
-        and (float(solve["translation_rms_m"]) > 0.05 or float(solve["rotation_rms_deg"]) > 12.0)
+        and (float(solve["translation_rms_m"]) > 0.12 or float(solve["rotation_rms_deg"]) > 20.0)
     )
-    if count < 8:
+    residual_high = bool(
+        solve.get("translation_rms_m") is not None
+        and solve.get("rotation_rms_deg") is not None
+        and not solve.get("ok")
+    )
+    if count < min_n:
         next_action = "aggiungi_sample"
     elif diversity_score < 0.70:
         next_action = "aumenta_diversita_pose"
     elif residual_extreme:
         next_action = "sessione_incoerente_reset"
+    elif residual_high:
+        next_action = "prune_and_aggiungi_sample"
     elif not build_ready:
         next_action = "residuo_alto_non_calcolare"
     else:
@@ -1255,26 +1287,41 @@ def append_handeye_sample(
     return {"ok": True, "sample_count": len(samples), "path": str(HAND_EYE_SAMPLES_PATH)}
 
 
-def prune_handeye_outliers(*, min_keep: int = 8, max_drop: int = 5) -> dict[str, Any]:
-    """Toglie i sample con errore residuo peggiore finche' il solve e' valido o min_keep."""
+def prune_handeye_outliers(
+    *,
+    min_keep: int | None = None,
+    max_drop: int = 5,
+    force_drop: int = 0,
+) -> dict[str, Any]:
+    """Toglie i sample peggiori finche' il solve e' valido, fino a min_keep.
+
+    Con force_drop>0 elimina comunque i peggiori (sblocca sessioni bloccate a N=min_keep).
+    """
     samples = list_handeye_samples()
-    if len(samples) < min_keep:
+    keep = int(min_keep if min_keep is not None else calib_min_samples())
+    keep = max(calib_min_samples(), keep)
+    if len(samples) < keep and force_drop <= 0:
         return {
             "ok": False,
             "reason": "not_enough_samples_to_prune",
             "sample_count": len(samples),
-            "min_keep": min_keep,
+            "min_keep": keep,
         }
     max_t = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.025"))
     max_r = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "6.0"))
     working = list(samples)
     dropped: list[dict[str, Any]] = []
-    sol = solve_handeye_calibration(working)
-    while (not sol.get("ok")) and len(working) > min_keep and len(dropped) < max_drop:
-        t_err = sol.get("sample_translation_errors_m") or []
-        r_err = sol.get("sample_rotation_errors_deg") or []
-        if len(t_err) != len(working) or len(r_err) != len(working):
-            break
+    sol = solve_handeye_calibration(working) if len(working) >= calib_min_samples() else {
+        "ok": False,
+        "reason": "need_more_samples_for_residual",
+    }
+
+    def _drop_worst(current_sol: dict[str, Any]) -> bool:
+        nonlocal working, sol
+        t_err = current_sol.get("sample_translation_errors_m") or []
+        r_err = current_sol.get("sample_rotation_errors_deg") or []
+        if len(t_err) != len(working) or len(r_err) != len(working) or not working:
+            return False
         scores = [
             float(t) / max(max_t, 1e-6) + float(r) / max(max_r, 1e-6) for t, r in zip(t_err, r_err)
         ]
@@ -1290,7 +1337,63 @@ def prune_handeye_outliers(*, min_keep: int = 8, max_drop: int = 5) -> dict[str,
             }
         )
         working = [row for index, row in enumerate(working) if index != worst]
-        sol = solve_handeye_calibration(working)
+        sol = (
+            solve_handeye_calibration(working)
+            if len(working) >= calib_min_samples()
+            else {"ok": False, "reason": "need_more_samples_for_residual", "sample_count": len(working)}
+        )
+        return True
+
+    while (not sol.get("ok")) and len(working) > keep and len(dropped) < max_drop:
+        if not _drop_worst(sol):
+            break
+    forced = 0
+    while forced < max(0, int(force_drop)) and len(working) > keep and len(dropped) < max_drop + max(0, int(force_drop)):
+        if not sol.get("sample_translation_errors_m"):
+            break
+        if not _drop_worst(sol):
+            break
+        forced += 1
+    # Se ancora invalido: prova leave-k-out (k=1..3) senza esplodere combinatorio.
+    subset_search = None
+    if (not sol.get("ok")) and keep <= len(working) <= 12:
+        import itertools
+
+        best_subset: list[dict[str, Any]] | None = None
+        best_sol: dict[str, Any] | None = None
+        best_score = float("inf")
+        max_remove = min(3, len(working) - keep)
+        for remove_n in range(1, max_remove + 1):
+            for drop_idxs in itertools.combinations(range(len(working)), remove_n):
+                drop_set = set(drop_idxs)
+                subset = [row for index, row in enumerate(working) if index not in drop_set]
+                cand = solve_handeye_calibration(subset)
+                if cand.get("translation_rms_m") is None or cand.get("rotation_rms_deg") is None:
+                    continue
+                score = float(cand["translation_rms_m"]) / max(max_t, 1e-6) + float(
+                    cand["rotation_rms_deg"]
+                ) / max(max_r, 1e-6)
+                if score < best_score:
+                    best_score = score
+                    best_subset = subset
+                    best_sol = cand
+            if best_sol and best_sol.get("ok"):
+                break
+        if best_subset is not None and best_sol is not None and (
+            best_sol.get("ok")
+            or best_score
+            < (
+                float(sol.get("translation_rms_m") or 1.0) / max(max_t, 1e-6)
+                + float(sol.get("rotation_rms_deg") or 1e3) / max(max_r, 1e-6)
+            )
+        ):
+            kept_ids = {id(row) for row in best_subset}
+            for index, row in enumerate(working):
+                if id(row) not in kept_ids:
+                    dropped.append({"index": index, "reason": "subset_search_drop"})
+            working = best_subset
+            sol = best_sol
+            subset_search = {"size": len(working), "score": best_score, "ok": bool(sol.get("ok"))}
     changed = len(working) != len(samples)
     if changed:
         save_handeye_samples(working)
@@ -1301,6 +1404,9 @@ def prune_handeye_outliers(*, min_keep: int = 8, max_drop: int = 5) -> dict[str,
         "before": len(samples),
         "after": len(working),
         "dropped": dropped,
+        "forced_drops": forced,
+        "min_keep": keep,
+        "subset_search": subset_search,
         "solve": sol,
         "build": built,
     }

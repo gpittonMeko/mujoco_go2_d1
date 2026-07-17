@@ -2535,24 +2535,26 @@ def create_d1_jog_app() -> Flask:
         return jsonify(out), (200 if marker.get("ok") else 422)
 
     def _auto_calibration_offsets() -> list[list[float]]:
-        # Orbit hand-eye: piu' J4/J5 (rotazione vista), J0/J1 moderati (traslazione).
-        # Stile chen37058: pose chiave diverse, non micro-offset tutti uguali.
+        # Orbit hand-eye: J4/J5 per rotazione, J0/J1 per traslazione base.
+        # Evita offset che puntano fuori dall'AprilGrid (troppi skip tag).
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            [-10, -4, 4, 0, 14, -10, 0],
-            [10, -5, 5, 0, -14, 10, 0],
-            [0, 8, -6, 0, 18, -8, 0],
-            [0, -8, 8, 0, -18, 8, 0],
-            [-12, 2, -2, 0, 12, 14, 0],
-            [12, -3, 3, 0, -12, -14, 0],
-            [-6, 6, -6, 0, 20, 6, 0],
-            [6, -6, 6, 0, -20, -6, 0],
-            [-8, -8, 8, 0, 16, -12, 0],
-            [8, 8, -8, 0, -16, 12, 0],
-            [0, 4, -4, 0, 22, 0, 0],
-            [0, -4, 4, 0, -22, 0, 0],
-            [-4, 0, 0, 0, 0, 18, 0],
-            [4, 0, 0, 0, 0, -18, 0],
+            [-8, -3, 3, 0, 12, -8, 0],
+            [8, -3, 3, 0, -12, 8, 0],
+            [-14, 2, -2, 0, 10, 6, 0],
+            [14, 2, -2, 0, -10, -6, 0],
+            [0, 6, -5, 0, 16, -6, 0],
+            [0, -6, 5, 0, -16, 6, 0],
+            [-10, 5, -4, 0, 14, 10, 0],
+            [10, 5, -4, 0, -14, -10, 0],
+            [-6, -6, 6, 0, 18, 4, 0],
+            [6, -6, 6, 0, -18, -4, 0],
+            [-16, 0, 0, 0, 8, 12, 0],
+            [16, 0, 0, 0, -8, -12, 0],
+            [0, 4, -3, 0, 20, 0, 0],
+            [0, -4, 3, 0, -20, 0, 0],
+            [-12, -4, 4, 0, 12, -12, 0],
+            [12, -4, 4, 0, -12, 12, 0],
         ]
 
     def _auto_calibration_base_pose() -> list[float]:
@@ -2902,9 +2904,25 @@ def create_d1_jog_app() -> Flask:
                 if key in marker
             },
         }
-        novelty = grasp6d.sample_pose_novelty(samples, candidate)
+        min_n = grasp6d.calib_min_samples()
+        current_quality = grasp6d.handeye_quality_report(samples) if samples else {}
+        residual_stuck = bool(
+            len(samples) >= min_n
+            and isinstance(current_quality, dict)
+            and current_quality.get("next_action") in {"prune_and_aggiungi_sample", "residuo_alto_non_calcolare", "sessione_incoerente_reset"}
+        )
+        novelty = grasp6d.sample_pose_novelty(samples, candidate, soft=residual_stuck)
         if samples and not novelty.get("useful"):
-            quality = grasp6d.handeye_quality_report(samples)
+            # Sblocca: togli 1-2 outlier e riprova al prossimo step.
+            prune_stuck = None
+            if residual_stuck and len(samples) >= min_n + 1:
+                prune_stuck = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=3, force_drop=1)
+                samples = grasp6d.list_handeye_samples()
+                current_quality = grasp6d.handeye_quality_report(samples)
+            elif residual_stuck and len(samples) >= min_n:
+                prune_stuck = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=2, force_drop=1)
+                samples = grasp6d.list_handeye_samples()
+                current_quality = grasp6d.handeye_quality_report(samples)
             grasp6d.record_calibration_event(
                 "auto_sample_skipped",
                 reason="pose_too_similar",
@@ -2918,7 +2936,8 @@ def create_d1_jog_app() -> Flask:
                     "saved": False,
                     "reason": "pose_too_similar",
                     "novelty": novelty,
-                    "quality": quality,
+                    "quality": current_quality,
+                    "prune": prune_stuck,
                     "marker": marker,
                     "move": move,
                     "hold": hold,
@@ -2926,8 +2945,7 @@ def create_d1_jog_app() -> Flask:
                     "rest_s": rest_s,
                 }
             ), 200
-        if len(samples) >= 8:
-            current_quality = grasp6d.handeye_quality_report(samples)
+        if len(samples) >= min_n:
             candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
             current_severity = grasp6d.residual_severity(current_quality)
             candidate_severity = grasp6d.residual_severity(candidate_quality)
@@ -2939,11 +2957,22 @@ def create_d1_jog_app() -> Flask:
             improves_diversity = float(candidate_quality.get("diversity_score") or 0.0) > float(
                 current_quality.get("diversity_score") or 0.0
             ) + 0.02
+            # Con residuo alto accetta anche miglioramenti lievi (+2% severity max).
+            mild_ok = (
+                residual_stuck
+                and current_severity is not None
+                and candidate_severity is not None
+                and candidate_severity <= current_severity * 1.02
+            )
             if (
                 not improves_residual
                 and not improves_diversity
+                and not mild_ok
                 and not candidate_quality.get("build_ready")
             ):
+                prune_stuck = None
+                if residual_stuck:
+                    prune_stuck = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=3, force_drop=1)
                 grasp6d.record_calibration_event(
                     "auto_sample_skipped",
                     reason="residual_not_improving",
@@ -2958,6 +2987,7 @@ def create_d1_jog_app() -> Flask:
                         "reason": "residual_not_improving",
                         "current_quality": current_quality,
                         "candidate_quality": candidate_quality,
+                        "prune": prune_stuck,
                         "marker": marker,
                         "move": move,
                         "hold": hold,
@@ -2974,15 +3004,15 @@ def create_d1_jog_app() -> Flask:
         )
         samples_after = grasp6d.list_handeye_samples()
         prune = None
-        if len(samples_after) >= 10:
-            prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=4)
+        if len(samples_after) >= min_n:
+            prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=4)
             samples_after = grasp6d.list_handeye_samples()
         quality = grasp6d.handeye_quality_report(samples_after)
         built = None
         if quality.get("build_ready") or (isinstance(prune, dict) and (prune.get("build") or {}).get("ok")):
             built = grasp6d.build_handeye_calibration(samples_after)
-            if not built.get("ok") and len(samples_after) >= 8:
-                prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=5)
+            if not built.get("ok") and len(samples_after) >= min_n:
+                prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=5)
                 samples_after = grasp6d.list_handeye_samples()
                 quality = grasp6d.handeye_quality_report(samples_after)
                 if quality.get("build_ready") or (prune.get("build") or {}).get("ok"):
@@ -3036,7 +3066,7 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/pick/metric/calibration/build", methods=["POST"])
     def pick_metric_calibration_build() -> Response:
-        prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=5)
+        prune = grasp6d.prune_handeye_outliers(min_keep=grasp6d.calib_min_samples(), max_drop=5)
         out = grasp6d.build_handeye_calibration(grasp6d.list_handeye_samples())
         if not out.get("ok") and prune.get("build") and prune["build"].get("ok"):
             out = prune["build"]
