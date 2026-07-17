@@ -162,6 +162,7 @@
     .auto-step-pill.running { border-color:rgba(95,210,255,.55); background:rgba(31,125,173,.28); color:#a8eaff; }
     .auto-step-pill.soft { border-color:rgba(180,200,220,.4); background:rgba(80,100,120,.22); color:#d7e8f4; }
     .auto-step-pill b { display:block; margin-bottom:3px; color:inherit; }
+    button.pulse-hint { animation: buttonPop .55s ease 0s 4; box-shadow:0 0 0 3px rgba(255,180,40,.55), 0 8px 22px rgba(200,120,20,.35) !important; }
     .auto-live-panel { margin-top:12px; padding:14px 16px; border-radius:18px; border:1px solid rgba(8,127,208,.35); background:linear-gradient(145deg,rgba(12,57,83,.94),rgba(18,90,122,.88)); color:#e8fbff; box-shadow:0 12px 28px rgba(8,70,110,.22); }
     .auto-live-panel.running { border-color:rgba(80,210,255,.65); box-shadow:0 0 0 2px rgba(80,210,255,.25), 0 12px 28px rgba(8,70,110,.28); }
     .auto-live-panel.done { border-color:rgba(91,243,154,.55); }
@@ -288,7 +289,7 @@
         <div id="panelCalibMode">
           <div id="calibGuide" class="calib-guide">
             <strong id="calibGuideTitle">Passo attuale: attiva il controllo, poi calibra</strong>
-            <p id="calibGuideBody">1) Attiva controllo. 2) Togli il cuboide dall’AprilGrid. 3) Reset sessione. 4) Guida live. Poi: Release → muovi → salva solo quando la guida lo dice. Oppure usa AUTO (il braccio si muove da solo).</p>
+            <p id="calibGuideBody">Per partire in automatico: premi il bottone arancione «AUTO CALIBRAZIONE 6D» qui sotto e conferma OK nel popup. «A · Calibra hand-eye» apre solo questo pannello, non avvia il braccio.</p>
             <div class="row" style="margin-top:10px">
               <button id="btn6dAutoCalibTop" class="warn" type="button">AUTO CALIBRAZIONE 6D</button>
               <a class="button-link" href="/api/pick/metric/calibration/target.pdf" target="_blank" rel="noopener">PDF target ArUco fallback</a>
@@ -563,7 +564,14 @@
           signal: ctrl.signal,
         });
         const text = await res.text();
-        const data = text ? JSON.parse(text) : {};
+        let data = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (parseErr) {
+            data = { ok: false, reason: 'invalid_json_response', detail: String(text).slice(0, 240) };
+          }
+        }
         if (!res.ok && data.ok !== false) data.ok = false;
         data._http = res.status;
         return data;
@@ -644,6 +652,22 @@
       if (uiMode === 'pick' && !grasp6dCalibrationOk) {
         setStatus('Hand-eye mancante: prima completa la calibrazione (modo A)', false);
       }
+      if (uiMode === 'calib') {
+        setCalibGuide(
+          '',
+          'Sei in A · Calibra hand-eye',
+          'Questo pulsante apre solo il pannello. Per muovere il braccio premi il bottone arancione «AUTO CALIBRAZIONE 6D» (o Avvia AUTO) e conferma il popup.'
+        );
+        setStatus('Modo calibrazione: premi AUTO CALIBRAZIONE 6D per partire', true);
+        const autoBtn = q('btn6dAutoCalibTop') || q('btn6dAutoCalib');
+        if (autoBtn) {
+          autoBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          autoBtn.classList.add('pulse-hint');
+          setTimeout(function () { autoBtn.classList.remove('pulse-hint'); }, 2400);
+        }
+        const live = q('autoLivePanel');
+        if (live) live.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
     }
 
     function setAutoMotionUi(enabled) {
@@ -657,16 +681,22 @@
       ['btn6dAutoCalib', 'btn6dAutoCalibTop'].forEach(function (id) {
         const el = q(id);
         if (!el) return;
-        el.disabled = !autoMotionEnabled || autoCalibRunning;
+        // Mai lasciare i bottoni "morti" senza feedback: se auto e' off si puo' comunque cliccare
+        // e ricevere un messaggio chiaro (non disabled silenzioso).
+        el.disabled = !!autoCalibRunning;
         el.textContent = id === 'btn6dAutoCalibTop'
-          ? (autoMotionEnabled ? 'AUTO CALIBRAZIONE 6D' : 'AUTO 6D DISABILITATA')
-          : (autoMotionEnabled ? 'Avvia AUTO' : 'Auto disabilitata');
+          ? (autoMotionEnabled ? 'AUTO CALIBRAZIONE 6D' : 'AUTO 6D (verifica server)')
+          : (autoMotionEnabled ? 'Avvia AUTO' : 'Avvia AUTO (verifica)');
+        el.classList.toggle('warn', true);
+        el.title = autoMotionEnabled
+          ? 'Avvia calibrazione automatica hand-eye (il braccio si muove)'
+          : 'Provo ad avviare: se il server ha AUTO disabilitata vedrai l\'errore in guida';
       });
       const st = q('autoCalibState');
       if (st && !autoCalibRunning) {
         st.textContent = autoMotionEnabled
-          ? 'Auto attiva: conferma e area libera prima di avviare.'
-          : 'Auto disabilitata sul server (D1_GRASP6D_AUTO_MOTION_ENABLE).';
+          ? 'Pronto: premi AUTO e conferma il popup. Guarda il pannello Avanzamento sotto.'
+          : 'Stato AUTO non ancora letto dal server — puoi comunque premere AUTO.';
       }
     }
 
@@ -1364,7 +1394,7 @@
       if (calibrationOk) {
         setCalibGuide('good', 'Pronto per il cuboide', 'Hand-eye 6D valida. Rimetti il cuboide e usa “Riconosci oggetto e prese” prima del pregrasp.');
       } else if (count <= 0) {
-        setCalibGuide('', 'Cosa fare adesso: 1 poi 2', 'Togli il cuboide, lascia AprilGrid ferma, premi “1. Inizia nuova calibrazione 6D”, poi “2. Avvia guida live”.');
+        setCalibGuide('', 'Cosa fare adesso: AUTO', 'AprilGrid ferma in vista. Premi «AUTO CALIBRAZIONE 6D» (arancione) e conferma OK. Oppure procedura manuale 1→5.');
       } else if (count < 8) {
         setCalibGuide('', 'Cosa fare adesso: sample ' + (count + 1), 'Premi “3. Release”, sostieni il braccio e muovi seguendo la guida live. Prima di 8 sample cerca viste nuove; dopo 8 deve migliorare il residuo.');
       } else if (count < 10) {
@@ -1665,51 +1695,85 @@
     }
 
     async function startAutoCalibration() {
-      const status = await api('/api/pick/metric/calibration', 'GET', null, 30000);
-      if (typeof status.auto_motion_enabled === 'boolean') setAutoMotionUi(status.auto_motion_enabled);
-      if (!autoMotionEnabled) {
-        setCalibGuide('bad', 'Auto disabilitata', 'Sul server manca D1_GRASP6D_AUTO_MOTION_ENABLE=1. Usa la procedura manuale 1→5.');
-        return;
-      }
-      const existingSamples = Number((status && status.sample_count) || 0);
-      const message = existingSamples > 0
-        ? ('Riprendere AUTO calibrazione 6D dai ' + existingSamples + ' sample già salvati? Il braccio si muove. Area libera, AprilGrid ferma, mano su HOLD.')
-        : 'Avviare AUTO calibrazione 6D? Il braccio si muove in piccole pose. Area libera, AprilGrid ferma, mano su HOLD.';
-      const accepted = window.confirm(message);
-      if (!accepted) return;
-      await activateArmControl();
-      autoCalibRunning = true;
-      autoCalibStep = existingSamples;
-      autoCalibTrace = [];
-      if (existingSamples > 0) {
-        autoCalibTrace = Array.from({ length: existingSamples }, function (_, i) {
-          return { step: i + 1, status: 'saved', reason: 'sample già presente', tags: '?' };
-        });
-      }
-      renderAutoCalibrationDebug();
-      calibrationSessionStarted = true;
-      calibrationSaveAllowed = false;
-      setCalibrationFocus(true);
-      stopDepthMonitor();
-      stopRealtimeMonitor();
-      setAutoMotionUi(autoMotionEnabled);
-      q('btn6dAutoCalib').disabled = true;
-      q('btn6dAutoCalibTop').disabled = true;
-      q('autoCalibState').textContent = existingSamples > 0
-        ? ('Auto: riprendo da sample ' + (existingSamples + 1) + ' partendo dal preset scan SX...')
-        : 'Auto: azzero sessione e parto dal preset scan SX...';
-      if (existingSamples === 0) {
-        const reset = await api('/api/pick/metric/calibration', 'DELETE', {}, 70000);
-        if (!reset.ok) {
-          q('autoCalibState').textContent = 'Auto: reset fallito';
-          autoCalibRunning = false;
-          setAutoMotionUi(autoMotionEnabled);
+      setStatus('AUTO: click ricevuto, preparo…', null);
+      setCalibGuide('', 'AUTO in avvio', 'Sto leggendo lo stato server. Tra poco compare il popup di conferma.');
+      if (q('autoCalibState')) q('autoCalibState').textContent = 'AUTO: click ricevuto…';
+      if (q('autoLiveMsg')) q('autoLiveMsg').textContent = 'Click ricevuto: leggo stato e chiedo conferma…';
+      try {
+        let status = {};
+        try {
+          status = await api('/api/pick/metric/calibration', 'GET', null, 30000);
+        } catch (e) {
+          setCalibGuide('bad', 'AUTO: server non risponde', String(e));
+          setStatus('AUTO fallita: GET calibrazione · ' + String(e), false);
           return;
         }
+        if (typeof status.auto_motion_enabled === 'boolean') setAutoMotionUi(status.auto_motion_enabled);
+        else setAutoMotionUi(true); // lab default: prova comunque
+        if (status.auto_motion_enabled === false) {
+          setCalibGuide('bad', 'Auto disabilitata sul server', 'Manca D1_GRASP6D_AUTO_MOTION_ENABLE=1. Usa procedura manuale 1→5 oppure chiedi deploy env.');
+          setStatus('AUTO disabilitata sul server', false);
+          return;
+        }
+        const existingSamples = Number((status && status.sample_count) || 0);
+        const message = existingSamples > 0
+          ? ('Riprendere AUTO calibrazione 6D dai ' + existingSamples + ' sample già salvati?\n\nIl braccio SI MUOVE. Area libera, AprilGrid ferma, mano su HOLD.')
+          : 'Avviare AUTO calibrazione 6D?\n\nIl braccio SI MUOVE in piccole pose. Area libera, AprilGrid ferma, mano su HOLD.\n\nPremi OK per partire.';
+        const accepted = window.confirm(message);
+        if (!accepted) {
+          setStatus('AUTO: annullata dal popup (devi premere OK)', false);
+          setCalibGuide('bad', 'AUTO annullata', 'Hai chiuso il popup. Schiaccia di nuovo AUTO e premi OK nella finestra di conferma.');
+          if (q('autoCalibState')) q('autoCalibState').textContent = 'Annullata: riprova e conferma OK.';
+          return;
+        }
+        setStatus('AUTO: attivo controllo + HOLD…', null);
+        if (q('autoLiveMsg')) q('autoLiveMsg').textContent = 'Confermato: attivo HOLD e avvio loop…';
+        await activateArmControl();
+        autoCalibRunning = true;
+        autoCalibStep = 0; // step UI parte da 0; i sample esistenti restano su disco se non resettiamo
+        autoCalibTrace = [];
+        if (existingSamples > 0) {
+          autoCalibTrace = Array.from({ length: existingSamples }, function (_, i) {
+            return { step: i + 1, status: 'saved', reason: 'sample già presente', tags: '?' };
+          });
+          autoCalibStep = existingSamples;
+        }
+        renderAutoCalibrationDebug();
+        calibrationSessionStarted = true;
+        calibrationSaveAllowed = false;
+        setCalibrationFocus(true);
+        stopDepthMonitor();
+        stopRealtimeMonitor();
+        setAutoMotionUi(autoMotionEnabled);
+        if (q('btn6dAutoCalib')) q('btn6dAutoCalib').disabled = true;
+        if (q('btn6dAutoCalibTop')) q('btn6dAutoCalibTop').disabled = true;
+        if (q('autoCalibState')) {
+          q('autoCalibState').textContent = existingSamples > 0
+            ? ('Auto: riprendo da sample ' + (existingSamples + 1) + '…')
+            : 'Auto: azzero sessione e parto…';
+        }
+        if (existingSamples === 0) {
+          const reset = await api('/api/pick/metric/calibration', 'DELETE', {}, 70000);
+          if (!reset.ok) {
+            if (q('autoCalibState')) q('autoCalibState').textContent = 'Auto: reset fallito';
+            setStatus('AUTO: reset sessione fallito', false);
+            autoCalibRunning = false;
+            setAutoMotionUi(autoMotionEnabled);
+            return;
+          }
+        }
+        autoCalibBase = null;
+        await refreshHandeyeCalibration();
+        setCalibGuide('', 'AUTO in corso', 'Guarda il pannello Avanzamento: fasi moving/settling/capturing/saved. Non chiudere la pagina.');
+        setStatus('AUTO avviata: step in corso', true);
+        autoCalibrationLoop();
+      } catch (e) {
+        autoCalibRunning = false;
+        setAutoMotionUi(true);
+        setCalibGuide('bad', 'AUTO errore', String(e));
+        setStatus('AUTO errore: ' + String(e), false);
+        if (q('autoCalibState')) q('autoCalibState').textContent = 'Errore: ' + String(e);
       }
-      autoCalibBase = null;
-      await refreshHandeyeCalibration();
-      autoCalibrationLoop();
     }
 
     function stopAutoCalibration() {
@@ -2312,10 +2376,10 @@
       await refreshThermal();
     });
     setUiMode('calib');
-    setAutoMotionUi(false);
+    setAutoMotionUi(true); // non lasciare AUTO "morta" in attesa del GET; refresh aggiorna il flag reale
     refreshFixedSafetyState();
     refreshGrasp6dStatus(false);
-    refreshHandeyeCalibration();
+    refreshHandeyeCalibration().catch(function () { setAutoMotionUi(true); });
     refresh6dLogs();
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) {

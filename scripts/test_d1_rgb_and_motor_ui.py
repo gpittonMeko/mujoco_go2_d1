@@ -278,6 +278,8 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn("autoLivePanel", html)
         self.assertIn("pollAutoCalibrationProgress", html)
         self.assertIn("renderAutoLiveProgress", html)
+        self.assertIn("AUTO: click ricevuto", html)
+        self.assertIn("setAutoMotionUi(true)", html)
         self.assertIn("pickDebugPanel", html)
         self.assertIn("btnPickDebugLive", html)
         grasp6d = (ROOT / "go2_dashboard" / "d1_jog" / "grasp6d.py").read_text(encoding="utf-8", errors="replace")
