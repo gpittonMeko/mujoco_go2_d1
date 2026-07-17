@@ -2534,18 +2534,20 @@ def create_d1_jog_app() -> Flask:
         return jsonify(out), (200 if marker.get("ok") else 422)
 
     def _auto_calibration_offsets() -> list[list[float]]:
-        # Pochi offset piccoli: meno waypoint, meno stress servo D1.
+        # Offset soft ma abbastanza diversi per novelty hand-eye (max ~12°).
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            [-6, -3, 3, -4, 0, 4, 0],
-            [6, -4, 4, -6, 5, -3, 0],
-            [4, 4, -4, 5, 6, -5, 0],
-            [-4, 5, -5, 6, -4, -4, 0],
-            [-8, 2, -2, 6, -6, 3, 0],
-            [5, -6, 6, -8, 6, 4, 0],
-            [8, 3, -3, -4, 8, -6, 0],
-            [-5, 6, -6, 8, -5, -5, 0],
-            [0, -8, 8, -6, 5, 6, 0],
+            [-8, -4, 4, -6, 2, 6, 0],
+            [8, -5, 5, -8, 6, -4, 0],
+            [5, 6, -6, 8, 8, -8, 0],
+            [-6, 7, -7, 9, -6, -6, 0],
+            [-10, 3, -3, 8, -8, 5, 0],
+            [7, -8, 8, -10, 8, 6, 0],
+            [10, 4, -4, -6, 10, -8, 0],
+            [-7, 8, -8, 10, -7, -7, 0],
+            [2, -10, 10, -8, 7, 8, 0],
+            [-9, -6, 6, 4, -4, 10, 0],
+            [9, 5, -5, -10, 10, 2, 0],
         ]
 
     def _auto_calibration_base_pose() -> list[float]:
