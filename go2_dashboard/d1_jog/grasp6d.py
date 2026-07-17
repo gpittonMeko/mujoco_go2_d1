@@ -923,6 +923,23 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 for b in rotations
             )
         )
+    # Diversita' degli ASSI di rotazione (requisito hand-eye Tsai-Lenz/Daniilidis):
+    # se i moti relativi ruotano attorno ad assi paralleli il sistema e' degenere
+    # e la traslazione non e' osservabile (residuo alto anche con tanti tag).
+    # Riportiamo il max angolo tra gli assi dei moti relativi (0=degenere, >30=buono).
+    rotation_axis_spread_deg = 0.0
+    if len(rotations) >= 2:
+        axes = []
+        for a in range(len(rotations)):
+            for b in range(a + 1, len(rotations)):
+                rv = _rotation_vector(rotations[a] @ rotations[b].T)
+                ang = float(np.linalg.norm(rv))
+                if math.degrees(ang) > 5.0:
+                    axes.append(rv / ang)
+        for i in range(len(axes)):
+            for j in range(i + 1, len(axes)):
+                dot = float(np.clip(abs(float(np.dot(axes[i], axes[j]))), 0.0, 1.0))
+                rotation_axis_spread_deg = max(rotation_axis_spread_deg, math.degrees(math.acos(dot)))
     target_trans_span = float(os.environ.get("D1_GRASP6D_CALIB_TARGET_TRANSLATION_SPAN_M", "0.10"))
     # 25° e' raggiungibile dal D1 su AprilGrid senza orbitare troppo.
     target_rot_span = float(os.environ.get("D1_GRASP6D_CALIB_TARGET_ROTATION_SPAN_DEG", "25.0"))
@@ -1028,6 +1045,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "next_action": next_action,
         "translation_span_m": trans_span,
         "rotation_span_deg": rot_span,
+        "rotation_axis_spread_deg": rotation_axis_spread_deg,
         "target_translation_span_m": target_trans_span,
         "target_rotation_span_deg": target_rot_span,
         "max_translation_rms_m": max_trans_rms,

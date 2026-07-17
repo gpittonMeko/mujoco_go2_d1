@@ -70,6 +70,10 @@
     .rgb-badge.bad { color:#a52d3c; background:rgba(239,107,113,.18); border-color:rgba(201,60,75,.28); }
     .rgb-badge.bad::before { background:#d84655; box-shadow:0 0 0 4px rgba(216,70,85,.13); }
     .stream { width:100%; height:310px; object-fit:contain; background:linear-gradient(135deg,#071c2b,#0c3751); border-radius:16px; border:1px solid rgba(19,91,127,.3); box-shadow:inset 0 0 35px rgba(0,0,0,.24); }
+    .frame-badge { position:absolute; top:10px; left:10px; padding:8px 14px; border-radius:12px; font-size:15px; font-weight:900; letter-spacing:.3px; color:#fff; background:rgba(0,0,0,.55); border:2px solid rgba(255,255,255,.35); backdrop-filter:blur(3px); text-shadow:0 1px 2px rgba(0,0,0,.6); transition:background .12s,border-color .12s; z-index:3; }
+    .frame-badge.good { background:rgba(16,150,84,.85); border-color:#6ef2a7; }
+    .frame-badge.warn { background:rgba(190,140,20,.85); border-color:#ffce6b; }
+    .frame-badge.bad  { background:rgba(170,40,52,.85); border-color:#ff7b86; }
     .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     button { border:1px solid rgba(255,255,255,.58); background:linear-gradient(180deg,#279ee7,#0879c5); color:#fff; padding:10px 13px; border-radius:12px; font-weight:700; cursor:pointer; box-shadow:0 6px 14px rgba(8,102,166,.18),inset 0 1px 0 rgba(255,255,255,.42); }
     button:hover { filter:brightness(1.05); transform:translateY(-1px); }
@@ -247,7 +251,7 @@
   <div class="wrap">
     <section id="tabTeach">
       <div class="teach-section" data-teach-section="cameras"><h2 class="section-title">1. Camere</h2><div class="grid2">
-        <div class="card camera-card"><div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div><img id="wristStream" class="stream" alt="Wrist stream" /><div class="sub" id="wristCameraMeta">Detection e depth della presa.</div><span class="camera-state" id="wristCameraState">Connessione…</span></div>
+        <div class="card camera-card"><div class="camera-head"><h3>Camera polso · D456</h3><span class="rgb-badge" id="wristRgbBadge">RGB ONLY</span></div><div style="position:relative"><img id="wristStream" class="stream" alt="Wrist stream" /><div id="wristFrameBadge" class="frame-badge hide">FRAME —</div></div><div class="row" style="gap:8px;margin:8px 0;flex-wrap:wrap"><button id="btnFrameQualityToggle" class="neutral" type="button">Qualità frame live</button><button id="btnSavePositionHere" class="good" type="button" disabled>Salva questa posizione</button></div><div class="sub" id="wristCameraMeta">Detection e depth della presa.</div><span class="camera-state" id="wristCameraState">Connessione…</span></div>
         <div class="card camera-card"><div class="camera-head"><h3>Camera frontale · D435i</h3><span class="rgb-badge" id="frontRgbBadge">RGB ONLY</span></div><img id="frontStream" class="stream" alt="Front stream" /><div class="sub" id="frontCameraMeta">Vista ambiente, non usata dalla presa.</div><span class="camera-state" id="frontCameraState">Connessione…</span></div>
       </div></div>
 
@@ -346,9 +350,15 @@
             <div class="mode-kpi"><small>Vista live</small><strong id="calibLiveState">non avviata</strong></div>
             <div class="mode-kpi"><small>Residuo</small><strong id="calibResidualState">—</strong></div>
           </div>
-          <details class="ops-section">
+          <details class="ops-section" open>
             <summary>Debug grafico calibrazione</summary>
             <div class="ops-body">
+              <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                <button id="btnRefreshCalibDebug" class="neutral" type="button">Aggiorna feedback</button>
+                <button id="btnSaveCalibRefs" class="good" type="button">Memorizza punti per AUTO</button>
+                <button id="btnDownloadCalibBackup" class="neutral" type="button">Scarica backup grafico</button>
+                <span id="calibRefsState" style="font-size:12px;color:#9fb6c6">riferimenti AUTO: —</span>
+              </div>
               <div class="calib-history"><strong>Sample / residuo</strong><div id="calibDebugGraph">Serve almeno un refresh stato calibrazione.</div></div>
               <div class="calib-history"><strong>Traccia AUTO</strong><div id="autoCalibDebugGraph">Auto non avviata.</div></div>
               <div class="calib-history"><strong>Storico</strong><div id="calibHistory">Nessun evento registrato.</div></div>
@@ -541,6 +551,7 @@
     let calibrationBuildReady = false;
     let autoCalibRunning = false;
     let autoCalibStep = 0;
+    let autoCalibNewSession = false;
     let autoCalibBase = null;
     let autoCalibTrace = [];
     let rgbStatusInFlight = false;
@@ -1451,10 +1462,14 @@
       panel.classList.toggle('done', !!d.cal_ok || phase === 'done');
       panel.classList.toggle('error', phase === 'error');
       if (q('autoLivePhase')) q('autoLivePhase').textContent = phase;
+      const searchInfo = d.search || {};
       if (q('autoLiveTitle')) {
-        q('autoLiveTitle').textContent = d.cal_ok
-          ? 'AUTO completata · cal_ok'
-          : (running ? 'AUTO in corso…' : 'Avanzamento AUTO hand-eye');
+        let title;
+        if (d.cal_ok) title = 'AUTO completata · cal_ok';
+        else if (searchInfo.active) title = 'AUTO · ricerca vista migliore (' + (searchInfo.index || 0) + '/' + (searchInfo.total || '?') + ')';
+        else if (running) title = 'AUTO in corso…';
+        else title = 'Avanzamento AUTO hand-eye';
+        q('autoLiveTitle').textContent = title;
       }
       const step = d.step == null ? '—' : ((Number(d.step) + 1) + ' / ' + (d.max_steps || 48));
       if (q('autoLiveStep')) q('autoLiveStep').textContent = step;
@@ -1572,7 +1587,90 @@
       const worst = quality && quality.worst_sample ? (' · peggiore #' + quality.worst_sample.index) : '';
       const solver = quality && quality.residual ? quality.residual : {};
       const solverInfo = solver.solver_method ? ('<div>Solver: ' + solver.solver_method + ' · ' + solver.solver_variant + (solver.candidate_inverted ? ' · invertito' : '') + '</div>') : '';
-      el.innerHTML = '<div>Residuo: ' + residual + worst + '</div>' + solverInfo + trendSvg + '<div style="margin-top:10px">Scatter target ricostruito dai sample:</div><svg viewBox="0 0 300 170" style="width:100%;max-width:520px;height:170px;margin-top:8px;background:#081f30;border-radius:10px"><rect x="20" y="20" width="260" height="130" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.18)"/>' + points + '</svg><div style="margin-top:8px">' + rows + '</div>';
+      el.innerHTML = renderCalibVerdict(quality) + '<div style="margin-top:10px">Residuo: ' + residual + worst + '</div>' + solverInfo + trendSvg + '<div style="margin-top:10px">Scatter target ricostruito dai sample:</div><svg viewBox="0 0 300 170" style="width:100%;max-width:520px;height:170px;margin-top:8px;background:#081f30;border-radius:10px"><rect x="20" y="20" width="260" height="130" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.18)"/>' + points + '</svg><div style="margin-top:8px">' + rows + '</div>';
+    }
+
+    // Barra "gauge" con soglia: valore, target, colore semaforico.
+    function calibGauge(label, value, target, unit, higherIsBetter, hint) {
+      const v = Number(value || 0);
+      const t = Number(target || 1);
+      const ratio = higherIsBetter ? (v / Math.max(t, 1e-6)) : (t / Math.max(v, 1e-6));
+      const ok = higherIsBetter ? v >= t : v <= t;
+      const warn = higherIsBetter ? v >= t * 0.7 : v <= t * 1.5;
+      const color = ok ? '#6ef2a7' : (warn ? '#ffce6b' : '#ff7b86');
+      const pct = Math.max(4, Math.min(100, (higherIsBetter ? (v / Math.max(t * 1.3, 1e-6)) : Math.min(1, t / Math.max(v, 1e-6))) * 100));
+      const badge = ok ? 'OK' : (warn ? '~' : 'NO');
+      return '<div style="margin-top:7px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>' + label + '</span>'
+        + '<span style="color:' + color + ';font-weight:800">' + v.toFixed(unit === '°' || unit === 'px' || unit === 'cm' ? 1 : 2) + unit + ' / ' + (higherIsBetter ? '≥' : '≤') + t.toFixed(unit === '°' ? 0 : 2) + unit + ' ' + badge + '</span></div>'
+        + '<div style="height:7px;border-radius:999px;background:rgba(255,255,255,.14)"><span style="display:block;height:7px;width:' + pct.toFixed(0) + '%;border-radius:999px;background:' + color + '"></span></div>'
+        + (hint ? '<div style="font-size:11px;color:#9fb6c6;margin-top:2px">' + hint + '</div>' : '') + '</div>';
+    }
+
+    function renderCalibVerdict(quality) {
+      const q = quality || {};
+      const res = q.residual || {};
+      const tm = res.translation_rms_m == null ? null : Number(res.translation_rms_m) * 100;
+      const rd = res.rotation_rms_deg == null ? null : Number(res.rotation_rms_deg);
+      const tmax = Number(q.max_translation_rms_m || 0.025) * 100;
+      const rmax = Number(q.max_rotation_rms_deg || 6.0);
+      const good = !!q.build_ready && !!(q.residual && q.residual.ok);
+      const nSamples = Number(q.sample_count || 0);
+      let head, headColor;
+      if (good) { head = 'CALIBRAZIONE VALIDA ✓'; headColor = '#0e3a24'; }
+      else if (tm == null) { head = 'Servono piu\' sample (' + nSamples + '/8) per calcolare il residuo'; headColor = '#3a340e'; }
+      else { head = 'NON ANCORA VALIDA · residuo ' + tm.toFixed(1) + 'cm / ' + rd.toFixed(1) + '°'; headColor = '#3a1414'; }
+      const axisSpread = Number(q.rotation_axis_spread_deg || 0);
+      let blocks = '';
+      if (tm != null) blocks += calibGauge('Residuo traslazione', tm, tmax, 'cm', false, tm <= tmax ? '' : 'troppo alto: rimuovi i sample peggiori');
+      if (rd != null) blocks += calibGauge('Residuo rotazione', rd, rmax, '°', false, '');
+      blocks += calibGauge('Diversita\' ASSI rotazione', axisSpread, 30, '°', true,
+        axisSpread < 30 ? 'CHIAVE hand-eye: assi troppo paralleli → ruota il polso su ASSI DIVERSI (pitch, roll e un terzo asse)' : 'buona varieta\' di assi');
+      blocks += calibGauge('Span rotazione', Number(q.rotation_span_deg || 0), Number(q.target_rotation_span_deg || 25), '°', true, '');
+      blocks += calibGauge('Span traslazione', Number(q.translation_span_m || 0) * 100, Number(q.target_translation_span_m || 0.10) * 100, 'cm', true, '');
+      if (q.avg_visible_marker_count != null) blocks += calibGauge('Tag medi visti', Number(q.avg_visible_marker_count), 12, '', true, '');
+      if (q.avg_reprojection_rms_px != null) blocks += calibGauge('Reproiezione img', Number(q.avg_reprojection_rms_px), 1.15, 'px', false, '');
+      return '<div style="padding:8px 10px;border-radius:10px;background:' + headColor + ';font-weight:800;margin-bottom:6px">' + head
+        + ' <span style="font-weight:600;font-size:12px">· ' + nSamples + ' sample</span></div>' + blocks;
+    }
+
+    async function refreshCalibRefsState() {
+      try {
+        const d = await api('/api/pick/metric/calibration/refs', 'GET');
+        if (q('calibRefsState')) q('calibRefsState').textContent = 'riferimenti AUTO: ' + (Number(d.count || 0)) + ' pose salvate';
+      } catch (e) {
+        if (q('calibRefsState')) q('calibRefsState').textContent = 'riferimenti AUTO: errore';
+      }
+    }
+
+    async function saveCalibrationRefs() {
+      try {
+        const d = await api('/api/pick/metric/calibration/refs', 'POST', {});
+        setDiag('Memorizza punti AUTO', d);
+        if (q('calibRefsState')) q('calibRefsState').textContent = 'riferimenti AUTO: ' + Number(d.count || 0) + ' pose salvate';
+        setKpi('calibLastAction', 'Salvati ' + Number(d.count || 0) + ' punti come riferimenti AUTO');
+      } catch (e) {
+        setKpi('calibLastAction', 'errore salvataggio riferimenti');
+      }
+    }
+
+    function downloadCalibrationBackup() {
+      const graph = q('calibDebugGraph') ? q('calibDebugGraph').innerHTML : '';
+      const hist = q('calibHistory') ? q('calibHistory').textContent : '';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const html = '<!doctype html><html><head><meta charset="utf-8"><title>Backup calibrazione ' + stamp
+        + '</title><style>body{font-family:system-ui,Segoe UI,Arial;background:#04121d;color:#dff8ff;padding:18px}'
+        + 'h1{font-size:18px} pre{white-space:pre-wrap;background:#081f30;padding:10px;border-radius:8px}</style></head><body>'
+        + '<h1>Backup grafico calibrazione hand-eye · ' + stamp + '</h1>'
+        + '<div>' + graph + '</div><h2 style="font-size:15px;margin-top:16px">Storico eventi</h2><pre>' + hist + '</pre></body></html>';
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'calibrazione_backup_' + stamp + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
 
     function applyCalibrationQuality(quality) {
@@ -1694,6 +1792,94 @@
       });
     }
 
+    let frameQualityTimer = null;
+    let frameQualityInFlight = false;
+    let lastFrameQuality = null;
+
+    function applyFrameQuality(d) {
+      lastFrameQuality = d || null;
+      const badge = q('wristFrameBadge');
+      const saveBtn = q('btnSavePositionHere');
+      const verdict = (d && d.verdict) || 'bad';
+      const tags = d && d.tags != null ? d.tags : 0;
+      const minTags = d && d.min_tags != null ? d.min_tags : 12;
+      const reproj = d && d.reprojection_rms_px != null ? Number(d.reprojection_rms_px).toFixed(2) + 'px' : '—';
+      if (badge) {
+        badge.classList.remove('hide', 'good', 'warn', 'bad');
+        badge.classList.add(verdict);
+        const label = verdict === 'good' ? 'FRAME BUONO' : (verdict === 'warn' ? 'FRAME DEBOLE' : 'FRAME NO');
+        badge.textContent = label + ' · ' + tags + '/' + minTags + ' tag · ' + reproj;
+      }
+      if (saveBtn) saveBtn.disabled = !(verdict === 'good' || verdict === 'warn');
+    }
+
+    async function tickFrameQuality() {
+      if (frameQualityInFlight) return;
+      frameQualityInFlight = true;
+      try {
+        const d = await api('/api/pick/metric/calibration/frame_quality', 'POST', {}, 20000);
+        applyFrameQuality(d);
+      } catch (e) {
+        applyFrameQuality({ verdict: 'bad', tags: 0, reason: 'errore' });
+      } finally {
+        frameQualityInFlight = false;
+      }
+    }
+
+    function startFrameQuality() {
+      if (frameQualityTimer) return;
+      const btn = q('btnFrameQualityToggle');
+      if (btn) { btn.textContent = 'Stop qualità frame'; btn.classList.add('danger'); }
+      const loop = async function () {
+        if (!frameQualityTimer) return;
+        await tickFrameQuality();
+        if (frameQualityTimer) frameQualityTimer = setTimeout(loop, 150);
+      };
+      frameQualityTimer = -1;
+      loop();
+    }
+
+    function stopFrameQuality() {
+      if (frameQualityTimer && frameQualityTimer !== -1) clearTimeout(frameQualityTimer);
+      frameQualityTimer = null;
+      const btn = q('btnFrameQualityToggle');
+      if (btn) { btn.textContent = 'Qualità frame live'; btn.classList.remove('danger'); }
+      const badge = q('wristFrameBadge');
+      if (badge) badge.classList.add('hide');
+      const saveBtn = q('btnSavePositionHere');
+      if (saveBtn) saveBtn.disabled = true;
+    }
+
+    function toggleFrameQuality() {
+      if (frameQualityTimer) stopFrameQuality(); else startFrameQuality();
+    }
+
+    async function savePositionHere() {
+      const fq = lastFrameQuality || {};
+      if (fq.verdict === 'warn') {
+        if (!window.confirm('Frame debole (' + (fq.tags || 0) + ' tag). Salvare comunque questa posizione?')) return;
+      }
+      const btn = q('btnSavePositionHere');
+      if (btn) btn.disabled = true;
+      setStatus('Salvo posizione: sample + riferimento AUTO…', null);
+      try {
+        const saved = await api('/api/pick/metric/calibration/sample', 'POST', {}, 120000);
+        setDiag('Salva posizione · sample', saved);
+        if (saved && saved.ok === false) {
+          setStatus('Sample non salvato: ' + (saved.reason || 'motivo ignoto'), false);
+        } else {
+          const ref = await api('/api/pick/metric/calibration/refs', 'POST', { append_current: true, visible_marker_count: fq.tags || 0 }, 20000);
+          if (q('calibRefsState')) q('calibRefsState').textContent = 'riferimenti AUTO: ' + Number(ref.count || 0) + ' pose salvate';
+          setStatus('Posizione salvata · sample + riferimento AUTO (' + Number(ref.count || 0) + ')' + (ref.duplicate ? ' · già presente' : ''), true);
+        }
+        await refreshHandeyeCalibration();
+      } catch (e) {
+        setStatus('Errore salvataggio posizione: ' + String(e), false);
+      } finally {
+        if (btn && lastFrameQuality && (lastFrameQuality.verdict === 'good' || lastFrameQuality.verdict === 'warn')) btn.disabled = false;
+      }
+    }
+
     async function startAutoCalibration() {
       setStatus('AUTO: click ricevuto, preparo…', null);
       setCalibGuide('', 'AUTO in avvio', 'Sto leggendo lo stato server. Tra poco compare il popup di conferma.');
@@ -1731,6 +1917,7 @@
         await activateArmControl();
         autoCalibRunning = true;
         autoCalibStep = 0; // step UI parte da 0; i sample esistenti restano su disco se non resettiamo
+        autoCalibNewSession = true; // forza la fase SEARCH all'avvio anche con sample esistenti
         autoCalibTrace = [];
         if (existingSamples > 0) {
           autoCalibTrace = Array.from({ length: existingSamples }, function (_, i) {
@@ -1802,7 +1989,9 @@
           confirm: 'AUTO_CALIBRATE_6D',
           step: autoCalibStep,
           max_samples: 16,
+          new_session: autoCalibNewSession,
         }, 180000);
+        autoCalibNewSession = false;
         setDiag('Auto calibrazione 6D', d);
         const softContinueReasons = {
           max_samples_still_residual_high: 1,
@@ -1816,6 +2005,7 @@
           handeye_linalg_error: 1,
           handeye_solver_failed: 1,
           reprojection_too_high: 1,
+          search_viewpoint: 1,
           'Singular matrix': 1,
         };
         if (!d.ok && !softContinueReasons[d.reason]) {
@@ -1835,7 +2025,14 @@
         }
         if (d.quality) applyCalibrationQuality(d.quality);
         await refreshHandeyeCalibration();
-        const msg = 'Auto step ' + (autoCalibStep + 1) + ': ' + (d.saved ? 'sample salvato' : ('skip · ' + (d.reason || 'non valido')));
+        let msg;
+        if (d.reason === 'search_viewpoint' && d.search) {
+          msg = 'Search vista ' + ((d.search.index || 0) + 1) + '/' + (d.search.total || '?') + ': ' + (d.search.tags || 0) + ' tag'
+              + (d.search.best_tags != null ? ' · best ' + d.search.best_tags : '')
+              + (d.search.done ? ' · orbito attorno alla migliore' : '');
+        } else {
+          msg = 'Auto step ' + (autoCalibStep + 1) + ': ' + (d.saved ? 'sample salvato' : ('skip · ' + (d.reason || 'non valido')));
+        }
         const traceRow = autoCalibTrace[autoCalibTrace.length - 1];
         if (traceRow) {
           traceRow.status = d.saved ? 'saved' : (!d.ok ? 'soft' : 'skip');
@@ -1891,6 +2088,7 @@
         }
         update6dWorkflow();
         updateCalibrationPokaYoke();
+        refreshCalibRefsState();
         if (!(d.quality && d.quality.sample_count >= 8)) updateCalibGuideFromCount(count, grasp6dCalibrationOk);
         setKpi('calibSavedState', cal.ok ? 'VALIDA · ' + (cal.sample_count || count) + ' sample' : 'non presente');
         const history = Array.isArray(d.history) ? d.history.slice().reverse().slice(0, 20) : [];
@@ -2232,6 +2430,11 @@
     bindClick('btn6dAutoCalib', startAutoCalibration);
     bindClick('btn6dAutoCalibTop', startAutoCalibration);
     bindClick('btn6dAutoCalibStop', stopAutoCalibration);
+    bindClick('btnRefreshCalibDebug', refreshHandeyeCalibration);
+    bindClick('btnSaveCalibRefs', saveCalibrationRefs);
+    bindClick('btnDownloadCalibBackup', downloadCalibrationBackup);
+    bindClick('btnFrameQualityToggle', toggleFrameQuality);
+    bindClick('btnSavePositionHere', savePositionHere);
     bindClick('btn6dCalibReset', async () => {
       const accepted = window.confirm('Azzerare i sample della sessione hand-eye? La calibrazione valida precedente resta attiva finché il nuovo calcolo non riesce.');
       if (!accepted) return;

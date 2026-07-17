@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import math
 import threading
@@ -206,6 +207,18 @@ def create_d1_jog_app() -> Flask:
         "updated_at": None,
         "history": [],
     }
+    # Stato fase "search": prima di raccogliere sample, il braccio prova alcune
+    # pose di vista molto diverse e sceglie quella che vede piu' tag come base
+    # per l'orbita di calibrazione (risolve: poca variabilita', polso troppo in basso).
+    auto_calibration_search: dict[str, Any] = {
+        "active": False,
+        "done": False,
+        "index": 0,
+        "results": [],          # [{"index", "tags", "reproj", "servo_deg"}]
+        "best_tags": -1,
+        "best_base": None,      # servo_deg della posa migliore
+        "session_key": None,    # per resettare a nuova sessione
+    }
 
     def _set_auto_progress(**fields: Any) -> None:
         with auto_calibration_progress_lock:
@@ -243,6 +256,65 @@ def create_d1_jog_app() -> Flask:
             "max_residual_m": q.get("max_translation_rms_m") or 0.025,
             "max_residual_deg": q.get("max_rotation_rms_deg") or 6.0,
         }
+
+    def _auto_search_offsets() -> list[list[float]]:
+        """Pose di vista grossolane per la fase search (offset da scan SX).
+
+        Obiettivo: vista genuinamente diversa (yaw base ampio, braccio piu'
+        alto/meno piegato, polso che guarda avanti invece che in basso) per
+        trovare dove si vedono piu' tag prima di orbitare per la calibrazione.
+        J4 negativo = polso meno puntato in basso.
+        """
+        return [
+            [0, -12, 10, 0, -20, 0, 0],     # arretra + guarda avanti: vede tutta la board
+            [-24, -6, 4, 0, -12, 0, 0],     # yaw sx ampio
+            [24, -6, 4, 0, -12, 0, 0],      # yaw dx ampio
+            [-16, -14, 12, 0, -22, 0, 0],   # yaw sx + arretra alto
+            [16, -14, 12, 0, -22, 0, 0],    # yaw dx + arretra alto
+            [0, -16, 14, 0, -10, 0, 0],     # molto arretrato/alto (whole board)
+            [0, 0, 0, 0, 0, 0, 0],          # scan SX di riferimento
+            [0, 8, -8, 0, 12, 0, 0],        # avvicina/basso (fallback board bassa)
+        ]
+
+    def _auto_search_enabled() -> bool:
+        return os.environ.get("D1_GRASP6D_AUTO_SEARCH_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _auto_search_reset(session_key: str, base_scan_left: list[float]) -> None:
+        # Se ci sono pose di riferimento salvate manualmente, saltiamo la search:
+        # l'AUTO le ripete direttamente (replay) come target di raccolta.
+        refs = _auto_reference_poses()
+        if refs:
+            auto_calibration_search.update(
+                {
+                    "active": False,
+                    "done": True,
+                    "index": 0,
+                    "ref_index": 0,
+                    "results": [],
+                    "best_tags": -1,
+                    "best_base": None,
+                    "session_key": session_key,
+                    "candidates": [],
+                    "use_refs": True,
+                }
+            )
+            return
+        offsets = _auto_search_offsets()
+        candidates = [service.clamp_servo_deg([base_scan_left[i] + off[i] for i in range(7)]) for off in offsets]
+        auto_calibration_search.update(
+            {
+                "active": True,
+                "done": False,
+                "index": 0,
+                "ref_index": 0,
+                "results": [],
+                "best_tags": -1,
+                "best_base": None,
+                "session_key": session_key,
+                "candidates": candidates,
+                "use_refs": False,
+            }
+        )
 
     camera_diag: dict[str, dict[str, Any]] = {
         "wrist": {"index": None, "chroma": None, "rgb_like": False},
@@ -2414,6 +2486,32 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                 }
             ), 422
+        # Scarta i frame DEBOLI: pochi tag o reproiezione alta non devono MAI
+        # entrare nel calcolo hand-eye (stesse soglie del badge live e dell'AUTO).
+        _min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "12")))
+        _max_reproj = float(os.environ.get("D1_GRASP6D_AUTO_MAX_REPROJ_PX", "1.15"))
+        _tags = int(marker.get("visible_marker_count") or 0)
+        _reproj = marker.get("reprojection_rms_px")
+        if _tags < _min_tags:
+            grasp6d.record_calibration_event(
+                "sample_failed", reason="too_few_tags",
+                visible_marker_count=_tags, reprojection_rms_px=_reproj, hold_ok=True,
+            )
+            return jsonify({
+                "ok": False, "reason": "too_few_tags",
+                "hint": f"Frame scartato: {_tags} tag visti, ne servono almeno {_min_tags}. Riavvicina/riorienta la griglia.",
+                "marker": marker, "hold": hold,
+            }), 422
+        if _reproj is not None and float(_reproj) > _max_reproj:
+            grasp6d.record_calibration_event(
+                "sample_failed", reason="reprojection_too_high",
+                visible_marker_count=_tags, reprojection_rms_px=_reproj, hold_ok=True,
+            )
+            return jsonify({
+                "ok": False, "reason": "reprojection_too_high",
+                "hint": f"Frame scartato: reproiezione {float(_reproj):.2f}px > {_max_reproj:.2f}px. Vista instabile o sfocata.",
+                "marker": marker, "hold": hold,
+            }), 422
         raw = feedback.get("servo_deg") if isinstance(feedback, dict) else None
         import numpy as np
 
@@ -2597,37 +2695,91 @@ def create_d1_jog_app() -> Flask:
         }
         return jsonify(out), (200 if marker.get("ok") else 422)
 
+    @app.route("/api/pick/metric/calibration/frame_quality", methods=["POST"])
+    def pick_metric_calibration_frame_quality() -> Response:
+        """Feedback VELOCE sulla qualita' del frame: solo tag + reproiezione.
+
+        Niente FK/novita'/solve/quality-report: serve per un badge live rapido
+        sopra lo stream. Le soglie sono le stesse dell'AUTO, cosi' 'good' qui
+        significa 'accettabile anche in automazione'.
+        """
+        try:
+            frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+        except Exception as exc:
+            return jsonify({"ok": False, "verdict": "bad", "reason": "wrist_rgbd_capture_failed", "detail": str(exc)}), 503
+        marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        tags = int(marker.get("visible_marker_count") or 0)
+        reproj = marker.get("reprojection_rms_px")
+        pose_method = marker.get("pose_method")
+        target_type = marker.get("target_type")
+        min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "12")))
+        max_reproj = float(os.environ.get("D1_GRASP6D_AUTO_MAX_REPROJ_PX", "1.15"))
+        ok = bool(marker.get("ok"))
+        corners_ok = not (
+            target_type == "aprilgrid_36h11"
+            and pose_method != "tag_corners"
+            and os.environ.get("D1_GRASP6D_ALLOW_CENTER_ONLY_CALIB", "0").lower() not in {"1", "true", "yes", "on"}
+        )
+        reproj_ok = reproj is None or float(reproj) <= max_reproj
+        if ok and tags >= min_tags and corners_ok and reproj_ok:
+            verdict = "good"
+        elif ok and tags >= max(4, min_tags // 2) and corners_ok:
+            verdict = "warn"
+        else:
+            verdict = "bad"
+        return jsonify(
+            {
+                "ok": ok,
+                "verdict": verdict,
+                "tags": tags,
+                "min_tags": min_tags,
+                "reprojection_rms_px": reproj,
+                "max_reprojection_rms_px": max_reproj,
+                "pose_method": pose_method,
+                "target_type": target_type,
+                "reason": marker.get("reason"),
+            }
+        )
+
     def _auto_calibration_offsets() -> list[list[float]]:
         """Orbit hand-eye pensata per residual cm-level.
 
         Priorita': rotazione polso (J4/J5) + yaw base (J0) con compensate,
         poi approach in/out (J1/J2). Offset zero solo per il primo sample.
         """
+        # Requisito hand-eye (Tsai-Lenz/Daniilidis): rotazioni relative attorno ad
+        # assi NON paralleli, angoli ampi, traslazione minima. Quindi ruotiamo i
+        # TRE assi del polso J3/J4/J5 (assi distinti) in entrambe le direzioni e in
+        # combinazioni diagonali, tenendo J0/J1/J2 quasi fermi (poca traslazione =
+        # board resta in frame). J3 prima era sempre 0: asse di rotazione sprecato.
+        a = float(os.environ.get("D1_GRASP6D_AUTO_ROT_AMPL_DEG", "24"))
+        h = a * 0.6
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            # Orbit yaw ± con tilt polso (mantiene board in frame)
-            [-12, -2, 2, 0, 14, -10, 0],
-            [12, -2, 2, 0, -14, 10, 0],
-            [-18, 1, -1, 0, 12, 8, 0],
-            [18, 1, -1, 0, -12, -8, 0],
-            # Pitch polso dominante (J4) + lieve approach
-            [0, 5, -4, 0, 20, -6, 0],
-            [0, -5, 4, 0, -20, 6, 0],
-            [0, 7, -6, 0, 16, 10, 0],
-            [0, -7, 6, 0, -16, -10, 0],
-            # Diagonali: yaw + pitch insieme
-            [-14, 4, -3, 0, 18, 8, 0],
-            [14, 4, -3, 0, -18, -8, 0],
-            [-10, -5, 5, 0, 16, -12, 0],
-            [10, -5, 5, 0, -16, 12, 0],
-            # Traslazione tool: approach / retreat
-            [0, 10, -8, 0, 10, 0, 0],
-            [0, -8, 7, 0, -10, 0, 0],
-            # Roll-ish via J5 ampia, J0 piccolo
-            [-6, 2, -2, 0, 8, 16, 0],
-            [6, 2, -2, 0, -8, -16, 0],
-            [-8, -3, 3, 0, 22, 6, 0],
-            [8, -3, 3, 0, -22, -6, 0],
+            # Asse A: pitch polso J4 (entrambe le direzioni, angolo ampio)
+            [0, 2, -2, 0, a, 0, 0],
+            [0, -2, 2, 0, -a, 0, 0],
+            # Asse B: J3 (asse distinto da J4)
+            [0, 0, 0, a, 0, 0, 0],
+            [0, 0, 0, -a, 0, 0, 0],
+            # Asse C: J5 (roll)
+            [0, 0, 0, 0, 0, a, 0],
+            [0, 0, 0, 0, 0, -a, 0],
+            # Diagonali J3+J4 (asse obliquo, non parallelo ai precedenti)
+            [0, 1, -1, h, h, 0, 0],
+            [0, -1, 1, -h, -h, 0, 0],
+            # Diagonali J4+J5
+            [0, 1, -1, 0, h, h, 0],
+            [0, -1, 1, 0, -h, -h, 0],
+            # Diagonali J3+J5
+            [0, 0, 0, h, 0, h, 0],
+            [0, 0, 0, -h, 0, -h, 0],
+            # Tripla J3+J4+J5 (massima diversita' d'asse)
+            [0, 1, -1, h, h, h, 0],
+            [0, -1, 1, -h, -h, -h, 0],
+            # Piccolo yaw base per una direzione di vista extra (traslazione minima)
+            [-10, 1, -1, 0, 8, 0, 0],
+            [10, 1, -1, 0, -8, 0, 0],
         ]
 
     def _select_auto_calibration_offset(
@@ -2656,7 +2808,8 @@ def create_d1_jog_app() -> Flask:
                 continue
             offset = [float(v) * scale for v in raw_off]
             target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
-            wrist_boost = 0.4 * (abs(offset[4]) + abs(offset[5])) + 0.15 * abs(offset[0])
+            # Premia la diversita' d'asse di rotazione (J3/J4/J5), non la traslazione base.
+            wrist_boost = 0.35 * (abs(offset[3]) + abs(offset[4]) + abs(offset[5])) + 0.05 * abs(offset[0])
             if not existing:
                 score = 1000.0 + wrist_boost + 0.01 * float((index + step) % max(len(bank), 1))
             else:
@@ -2699,6 +2852,115 @@ def create_d1_jog_app() -> Flask:
             "reason": None if ok else "hold_daemon_not_ready_for_auto_calibration",
         }
 
+    CALIB_REFS_PATH = grasp6d.HAND_EYE_SAMPLES_PATH.parent / "d1_grasp6d_calibration_refs.json"
+
+    def _auto_reference_poses() -> list[dict[str, Any]]:
+        """Pose di calibrazione salvate manualmente come riferimento per l'AUTO."""
+        try:
+            data = json.loads(CALIB_REFS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        refs = data.get("refs") if isinstance(data, dict) else None
+        out: list[dict[str, Any]] = []
+        if isinstance(refs, list):
+            for r in refs:
+                servo = r.get("servo_deg") if isinstance(r, dict) else None
+                if isinstance(servo, list) and len(servo) >= 6:
+                    out.append(r)
+        return out
+
+    def _save_calibration_refs(max_trans_err_m: float, max_rot_err_deg: float) -> dict[str, Any]:
+        """Salva i sample buoni (errore sotto soglia) come pose di riferimento."""
+        samples = grasp6d.list_handeye_samples()
+        quality = grasp6d.handeye_quality_report(samples)
+        debug = quality.get("sample_debug") if isinstance(quality, dict) else None
+        refs: list[dict[str, Any]] = []
+        for row in (debug or []):
+            servo = row.get("servo_deg")
+            if not isinstance(servo, list) or len(servo) < 6:
+                continue
+            terr = row.get("translation_error_m")
+            rerr = row.get("rotation_error_deg")
+            # Se non c'e' residuo per-sample (pochi sample), salva comunque la posa.
+            good = True
+            if terr is not None and float(terr) > max_trans_err_m:
+                good = False
+            if rerr is not None and float(rerr) > max_rot_err_deg:
+                good = False
+            if good:
+                refs.append({
+                    "servo_deg": [float(x) for x in servo[:7]],
+                    "visible_marker_count": row.get("visible_marker_count"),
+                    "translation_error_m": terr,
+                    "rotation_error_deg": rerr,
+                })
+        CALIB_REFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ok": True,
+            "count": len(refs),
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "residual": quality.get("residual") if isinstance(quality, dict) else None,
+            "refs": refs,
+        }
+        tmp = CALIB_REFS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(CALIB_REFS_PATH)
+        return payload
+
+    def _append_current_ref(visible_marker_count: int) -> dict[str, Any]:
+        """Aggiunge la posa motori CORRENTE come riferimento AUTO (dedup)."""
+        feedback = service.read_servo_deg(fast=True)
+        servo = feedback.get("servo_deg") if isinstance(feedback, dict) else None
+        if not feedback.get("ok") or not isinstance(servo, list) or len(servo) < 6:
+            return {"ok": False, "reason": "arm_feedback_unavailable"}
+        servo = [float(x) for x in servo[:7]]
+        refs = _auto_reference_poses()
+        for r in refs:
+            existing = r.get("servo_deg") or []
+            if len(existing) >= 6 and max(abs(float(existing[i]) - servo[i]) for i in range(6)) < 2.0:
+                return {"ok": True, "count": len(refs), "duplicate": True}
+        refs.append({
+            "servo_deg": servo,
+            "visible_marker_count": visible_marker_count or None,
+            "translation_error_m": None,
+            "rotation_error_deg": None,
+        })
+        CALIB_REFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ok": True,
+            "count": len(refs),
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "refs": refs,
+        }
+        tmp = CALIB_REFS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(CALIB_REFS_PATH)
+        return {"ok": True, "count": len(refs), "duplicate": False}
+
+    @app.route("/api/pick/metric/calibration/refs", methods=["GET", "POST", "DELETE"])
+    def pick_metric_calibration_refs() -> Response:
+        if request.method == "DELETE":
+            try:
+                CALIB_REFS_PATH.unlink(missing_ok=True)
+            except OSError as exc:
+                return jsonify({"ok": False, "reason": "refs_delete_failed", "detail": str(exc)}), 500
+            return jsonify({"ok": True, "count": 0})
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            if body.get("append_current"):
+                out = _append_current_ref(int(body.get("visible_marker_count") or 0))
+                if not out.get("ok"):
+                    return jsonify(out), 503
+                grasp6d.record_calibration_event("calibration_ref_appended", count=out.get("count"))
+                return jsonify(out)
+            max_t = float(body.get("max_translation_error_m") or os.environ.get("D1_GRASP6D_REF_MAX_TRANS_ERR_M", "0.03"))
+            max_r = float(body.get("max_rotation_error_deg") or os.environ.get("D1_GRASP6D_REF_MAX_ROT_ERR_DEG", "8.0"))
+            out = _save_calibration_refs(max_t, max_r)
+            grasp6d.record_calibration_event("calibration_refs_saved", count=out.get("count"))
+            return jsonify(out)
+        refs = _auto_reference_poses()
+        return jsonify({"ok": True, "count": len(refs), "refs": refs})
+
     @app.route("/api/pick/metric/calibration/auto_progress", methods=["GET"])
     def pick_metric_calibration_auto_progress() -> Response:
         """Stato live AUTO (anche se lo step e' partito da script/agente, non solo UI)."""
@@ -2706,6 +2968,13 @@ def create_d1_jog_app() -> Flask:
             snap = dict(auto_calibration_progress)
             snap["history"] = list(auto_calibration_progress.get("history") or [])
         snap["lock_busy"] = bool(auto_calibration_lock.locked())
+        snap["search"] = {
+            "active": bool(auto_calibration_search.get("active")),
+            "done": bool(auto_calibration_search.get("done")),
+            "index": int(auto_calibration_search.get("index") or 0),
+            "total": len(auto_calibration_search.get("candidates") or []),
+            "best_tags": int(auto_calibration_search.get("best_tags") or 0) if auto_calibration_search.get("best_tags", -1) >= 0 else None,
+        }
         cal = grasp6d.load_calibration()
         snap["cal_ok"] = bool(cal.get("ok"))
         if snap.get("sample_count") is None:
@@ -2774,6 +3043,8 @@ def create_d1_jog_app() -> Flask:
         base = _auto_calibration_base_pose()
         samples = grasp6d.list_handeye_samples()
         min_n = grasp6d.calib_min_samples()
+        # Pool target: accumula viste diverse prima di potare verso i migliori.
+        collect_target = max(min_n + 6, int(os.environ.get("D1_GRASP6D_AUTO_COLLECT_TARGET", "12")))
         current_quality = grasp6d.handeye_quality_report(samples)
         _set_auto_progress(
             running=True,
@@ -2788,6 +3059,86 @@ def create_d1_jog_app() -> Flask:
             offset_meta=None,
             **_auto_progress_from_quality(current_quality),
         )
+
+        # --- Rilevamento BLOCCO + re-search automatico ---------------------
+        # Se non aggiungiamo sample da troppi step (braccio bloccato su una
+        # vista con pochi tag / residuo alto), rifacciamo la SEARCH per
+        # spostarlo su viste nuove. Se il residuo e' catastrofico con sample
+        # degeneri, azzeriamo i sample e ripartiamo puliti. Funziona anche
+        # senza refresh del client (server-side).
+        new_session = bool(body.get("new_session")) or step == 0
+        # Non contare i passi di SEARCH come "nessun progresso": la search non
+        # salva sample per definizione, altrimenti si riavvia in loop.
+        search_busy = bool(auto_calibration_search.get("active") and not auto_calibration_search.get("done"))
+        prev_n = auto_calibration_search.get("last_sample_count")
+        if prev_n is None or int(prev_n) != len(samples):
+            auto_calibration_search["last_sample_count"] = len(samples)
+            auto_calibration_search["steps_since_progress"] = 0
+        elif not search_busy:
+            auto_calibration_search["steps_since_progress"] = int(auto_calibration_search.get("steps_since_progress") or 0) + 1
+        steps_stuck = int(auto_calibration_search.get("steps_since_progress") or 0)
+        reset_after = max(2, int(os.environ.get("D1_GRASP6D_AUTO_RESEARCH_AFTER_STUCK", "3")))
+        _res = current_quality.get("residual") if isinstance(current_quality.get("residual"), dict) else {}
+        _trans_m = _res.get("translation_rms_m")
+        _rot_deg = _res.get("rotation_rms_deg")
+        _tmax = float(current_quality.get("max_translation_rms_m") or 0.025)
+        _rmax = float(current_quality.get("max_rotation_rms_deg") or 6.0)
+        catastrophic = bool(
+            (_trans_m is not None and float(_trans_m) > 2.0 * _tmax)
+            or (_rot_deg is not None and float(_rot_deg) > 2.0 * _rmax)
+        )
+        force_research = (not new_session) and (not search_busy) and _auto_search_enabled() and steps_stuck >= reset_after
+        reset_on_stuck = os.environ.get("D1_GRASP6D_AUTO_RESET_ON_STUCK", "1").strip().lower() in {"1", "true", "yes", "on"}
+        if new_session or force_research:
+            # Wipe SOLO all'avvio di una nuova sessione con residuo catastrofico
+            # (sample vecchi degeneri). MAI in mezzo alla sessione: azzerare in
+            # continuazione impedisce di accumulare sample e di far scendere il
+            # residuo con il pruning degli outlier.
+            if new_session and catastrophic and reset_on_stuck and len(samples) >= min_n:
+                try:
+                    grasp6d.HAND_EYE_SAMPLES_PATH.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                grasp6d.record_calibration_event(
+                    "auto_samples_reset_catastrophic",
+                    reason="degenerate_residual_restart_with_search",
+                    translation_rms_m=_trans_m,
+                    rotation_rms_deg=_rot_deg,
+                    steps_stuck=steps_stuck,
+                )
+                samples = grasp6d.list_handeye_samples()
+                current_quality = grasp6d.handeye_quality_report(samples)
+            elif force_research and len(samples) > min_n:
+                # Bloccato: elimina gli outlier peggiori (foto che non migliorano)
+                # e cambia vista, ma NON azzerare tutto.
+                pruned_stuck = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=3, force_drop=1)
+                samples = grasp6d.list_handeye_samples()
+                current_quality = grasp6d.handeye_quality_report(samples)
+                grasp6d.record_calibration_event(
+                    "auto_prune_on_stuck",
+                    reason="drop_worst_and_relocate_view",
+                    dropped=len(pruned_stuck.get("dropped") or []) if isinstance(pruned_stuck, dict) else None,
+                    steps_stuck=steps_stuck,
+                    hold_ok=True,
+                )
+            if _auto_search_enabled():
+                _auto_search_reset(session_key=f"s{int(time.time())}", base_scan_left=base)
+                auto_calibration_search["steps_since_progress"] = 0
+                auto_calibration_search["last_sample_count"] = len(samples)
+                grasp6d.record_calibration_event(
+                    "auto_research_triggered",
+                    reason="new_session" if new_session else "stuck_low_progress",
+                    steps_stuck=steps_stuck,
+                    catastrophic=catastrophic,
+                    hold_ok=True,
+                )
+                _set_auto_progress(
+                    phase="search",
+                    running=True,
+                    message=("Nuova sessione: cerco la vista migliore" if new_session else f"Bloccato da {steps_stuck} step: cambio vista (tengo i sample buoni)"),
+                    **_auto_progress_from_quality(current_quality),
+                )
+
         if current_quality.get("build_ready"):
             built = grasp6d.build_handeye_calibration(samples)
             _set_auto_progress(
@@ -2808,7 +3159,7 @@ def create_d1_jog_app() -> Flask:
             "residuo_alto_non_calcolare",
             "sessione_incoerente_reset",
         }
-        if residual_stuck and len(samples) >= min_n:
+        if residual_stuck and len(samples) >= collect_target:
             _set_auto_progress(
                 phase="pruning",
                 message=f"Step {step + 1}: prune outlier (residuo alto)",
@@ -2869,21 +3220,86 @@ def create_d1_jog_app() -> Flask:
 
         from go2_dashboard.d1_jog import motion_profile
 
-        offset, offset_meta = _select_auto_calibration_offset(
-            base=base,
-            samples=samples,
-            step=step,
-            residual_stuck=residual_stuck,
+        # --- Fase SEARCH: la (ri)attivazione e' gia' decisa sopra (nuova
+        # sessione o blocco). Qui si esegue soltanto lo step di search. ---
+        search_active = bool(
+            _auto_search_enabled()
+            and auto_calibration_search.get("active")
+            and not auto_calibration_search.get("done")
         )
-        _set_auto_progress(
-            phase="planning",
-            message=f"Step {step + 1}: scelgo posa #{offset_meta.get('offset_index')} (score {offset_meta.get('offset_score')})",
-            offset_meta=offset_meta,
-            **_auto_progress_from_quality(current_quality),
-        )
-        target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+        search_candidates = auto_calibration_search.get("candidates") or []
+        if search_active and int(auto_calibration_search.get("index") or 0) >= len(search_candidates):
+            auto_calibration_search["active"] = False
+            auto_calibration_search["done"] = True
+            search_active = False
+        # Search finita: orbita attorno alla posa migliore trovata (non scan SX).
+        if (
+            not search_active
+            and auto_calibration_search.get("done")
+            and isinstance(auto_calibration_search.get("best_base"), list)
+        ):
+            base = list(auto_calibration_search["best_base"])
+
+        if search_active:
+            idx = int(auto_calibration_search.get("index") or 0)
+            best_so_far = max(0, int(auto_calibration_search.get("best_tags") or 0))
+            target = service.clamp_servo_deg(list(search_candidates[idx]))
+            offset = [float(target[i]) - float(base[i]) for i in range(7)]
+            offset_meta = {
+                "search": True,
+                "search_index": idx,
+                "search_total": len(search_candidates),
+                "best_tags": best_so_far,
+            }
+            _set_auto_progress(
+                phase="planning",
+                message=f"Search {idx + 1}/{len(search_candidates)}: provo vista (best {best_so_far} tag finora)",
+                offset_meta=offset_meta,
+                **_auto_progress_from_quality(current_quality),
+            )
+        else:
+            # REPLAY riferimenti: se ci sono pose validate manualmente, l'AUTO le
+            # ripete esattamente (target assoluto) per raccogliere i sample nei
+            # punti buoni. Esaurite, passa all'orbita attorno all'ultimo.
+            using_reference = False
+            _refs = _auto_reference_poses() if auto_calibration_search.get("use_refs") else []
+            _ref_idx = int(auto_calibration_search.get("ref_index") or 0)
+            if _refs and _ref_idx < len(_refs):
+                ref_servo = [float(x) for x in _refs[_ref_idx]["servo_deg"][:7]]
+                target = service.clamp_servo_deg(ref_servo)
+                offset = [float(target[i]) - float(base[i]) for i in range(7)]
+                auto_calibration_search["ref_index"] = _ref_idx + 1
+                offset_meta = {"reference": True, "ref_index": _ref_idx, "ref_total": len(_refs)}
+                using_reference = True
+                _set_auto_progress(
+                    phase="planning",
+                    message=f"Step {step + 1}: replay riferimento {_ref_idx + 1}/{len(_refs)}",
+                    offset_meta=offset_meta,
+                    **_auto_progress_from_quality(current_quality),
+                )
+            else:
+                offset, offset_meta = _select_auto_calibration_offset(
+                    base=base,
+                    samples=samples,
+                    step=step,
+                    residual_stuck=residual_stuck,
+                )
+                _set_auto_progress(
+                    phase="planning",
+                    message=f"Step {step + 1}: scelgo posa #{offset_meta.get('offset_index')} (score {offset_meta.get('offset_score')})",
+                    offset_meta=offset_meta,
+                    **_auto_progress_from_quality(current_quality),
+                )
+                target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
+
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
-        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "24"))
+        if search_active:
+            max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_SEARCH_MAX_DELTA_DEG", "30"))
+        elif not search_active and offset_meta.get("reference"):
+            # Pose validate e raggiungibili: consenti escursione ampia per centrarle.
+            max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_REF_MAX_DELTA_DEG", "70"))
+        else:
+            max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "24"))
         if max_delta > max_delta_allowed:
             # Clamp soft verso la soglia invece di abortire lo step.
             shrink = max_delta_allowed / max(max_delta, 1e-6)
@@ -2920,8 +3336,17 @@ def create_d1_jog_app() -> Flask:
         # come base (offset piccoli) invece di un salto pericoloso.
         start_delta = max(abs(float(base[i]) - float(pre_raw[i])) for i in range(6))
         max_start_delta = float(os.environ.get("D1_GRASP6D_AUTO_MAX_START_DELTA_DEG", "40"))
-        base_source = "scan_left"
-        if start_delta > max_start_delta:
+        if search_active:
+            base_source = "search_probe"
+        elif offset_meta.get("reference"):
+            base_source = "reference_replay"
+        elif auto_calibration_search.get("done") and isinstance(auto_calibration_search.get("best_base"), list):
+            base_source = "search_best"
+        else:
+            base_source = "scan_left"
+        # Per il replay riferimenti il target e' ASSOLUTO e validato: non rimappare
+        # su base=posa corrente (romperebbe la posa). Vai diretto alla posa salvata.
+        if start_delta > max_start_delta and not offset_meta.get("reference"):
             base = service.clamp_servo_deg(list(pre_raw[:7]))
             target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
             base_source = "current_pose"
@@ -2990,6 +3415,9 @@ def create_d1_jog_app() -> Flask:
                 }
             ), 502
         settle_s = max(0.4, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_SETTLE_S", "2.0"))))
+        if search_active:
+            # In search conta solo il numero di tag: bastano settle breve e 1 frame.
+            settle_s = min(settle_s, max(0.3, float(os.environ.get("D1_GRASP6D_AUTO_SEARCH_SETTLE_S", "0.8"))))
         _set_auto_progress(
             phase="settling",
             message=f"Step {step + 1}: settle {settle_s:.1f}s (braccio fermo)",
@@ -3089,6 +3517,8 @@ def create_d1_jog_app() -> Flask:
                 }
             ), 502
         rest_s = max(0.0, min(4.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "1.2"))))
+        if search_active:
+            rest_s = 0.0  # in search non serve il rest: conta solo i tag
         if rest_s > 0:
             _set_auto_progress(
                 phase="resting",
@@ -3096,6 +3526,8 @@ def create_d1_jog_app() -> Flask:
             )
             time.sleep(rest_s)
         median_frames = max(1, min(5, int(os.environ.get("D1_GRASP6D_AUTO_MEDIAN_FRAMES", "3"))))
+        if search_active:
+            median_frames = 1
         _set_auto_progress(
             phase="capturing",
             message=f"Step {step + 1}: catturo RGBD (median {median_frames}) + AprilGrid",
@@ -3111,6 +3543,64 @@ def create_d1_jog_app() -> Flask:
             )
             return jsonify({"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc), "hold": hold}), 503
         marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+        # --- SEARCH: registra i tag visti, aggiorna la posa migliore, non salva sample ---
+        if search_active:
+            visible = int(marker.get("visible_marker_count") or 0)
+            reproj = marker.get("reprojection_rms_px")
+            idx = int(auto_calibration_search.get("index") or 0)
+            auto_calibration_search.setdefault("results", []).append(
+                {"index": idx, "tags": visible, "reproj": reproj, "servo_deg": [float(x) for x in raw[:7]]}
+            )
+            if visible > int(auto_calibration_search.get("best_tags") or -1):
+                auto_calibration_search["best_tags"] = visible
+                auto_calibration_search["best_base"] = [float(x) for x in raw[:7]]
+            auto_calibration_search["index"] = idx + 1
+            total = len(auto_calibration_search.get("candidates") or [])
+            good_enough = max(8, int(os.environ.get("D1_GRASP6D_AUTO_SEARCH_GOOD_TAGS", "18")))
+            search_finished = (auto_calibration_search["index"] >= total) or (visible >= good_enough)
+            if search_finished:
+                auto_calibration_search["active"] = False
+                auto_calibration_search["done"] = True
+            best_tags = int(auto_calibration_search.get("best_tags") or 0)
+            _set_auto_progress(
+                running=False,
+                phase="search",
+                saved=False,
+                reason="search_viewpoint",
+                message=(
+                    f"Search {idx + 1}/{total}: vista con {visible} tag"
+                    + (f" · scelta base migliore ({best_tags} tag), inizio orbita" if search_finished else " · provo prossima vista")
+                ),
+                tags=visible,
+                reproj_px=reproj,
+            )
+            grasp6d.record_calibration_event(
+                "auto_search_viewpoint",
+                reason="search_done" if search_finished else "search_probe",
+                visible_marker_count=visible,
+                reprojection_rms_px=reproj,
+                hold_ok=True,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "search_viewpoint",
+                    "search": {
+                        "index": idx,
+                        "total": total,
+                        "tags": visible,
+                        "best_tags": best_tags,
+                        "done": bool(search_finished),
+                    },
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": "search",
+                    "rest_s": rest_s,
+                    "offset_meta": offset_meta,
+                }
+            ), 200
         _set_auto_progress(
             phase="evaluating",
             message=f"Step {step + 1}: valuto sample (tag/novita'/residuo)",
@@ -3149,6 +3639,10 @@ def create_d1_jog_app() -> Flask:
                 }
             ), 200
         min_tags = max(8, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "12")))
+        # Non pretendere piu' tag di quanti la vista migliore trovata in search ne veda.
+        search_best_tags = int(auto_calibration_search.get("best_tags") or 0)
+        if search_best_tags >= 8:
+            min_tags = min(min_tags, max(8, search_best_tags - 3))
         visible_tags = int(marker.get("visible_marker_count") or 0)
         if visible_tags < min_tags:
             grasp6d.record_calibration_event(
@@ -3298,7 +3792,11 @@ def create_d1_jog_app() -> Flask:
                     "offset_meta": offset_meta,
                 }
             ), 200
-        if len(samples) >= min_n:
+        # Prima costruiamo un POOL diverso (fino a collect_target): accettiamo
+        # sample nuovi/vari anche se non abbassano subito il residuo, cosi' il
+        # pruning finale puo' scartare i peggiori e tenere i migliori. Solo dopo
+        # collect_target pretendiamo che ogni foto migliori davvero il residuo.
+        if len(samples) >= collect_target:
             candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
             current_severity = grasp6d.residual_severity(current_quality)
             candidate_severity = grasp6d.residual_severity(candidate_quality)
@@ -3367,8 +3865,11 @@ def create_d1_jog_app() -> Flask:
         )
         samples_after = grasp6d.list_handeye_samples()
         prune = None
-        if len(samples_after) >= min_n:
-            prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=4)
+        # Finche' stiamo costruendo il pool (< collect_target) NON potiamo: prima
+        # accumula viste diverse. Al raggiungimento del pool, elimina i peggiori
+        # e tieni i migliori (foto che non aiutano = scartate).
+        if len(samples_after) >= collect_target:
+            prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=max(4, collect_target - min_n))
             samples_after = grasp6d.list_handeye_samples()
         quality = grasp6d.handeye_quality_report(samples_after)
         built = None
