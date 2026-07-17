@@ -2669,7 +2669,7 @@ def create_d1_jog_app() -> Flask:
                 hold_ok=True,
             )
         prev_move_speed = os.environ.get("D1_PROG_MOVE_DEG_PER_S")
-        auto_move_speed = os.environ.get("D1_GRASP6D_AUTO_MOVE_DEG_PER_S", "4").strip()
+        auto_move_speed = os.environ.get("D1_GRASP6D_AUTO_MOVE_DEG_PER_S", "5").strip()
         if auto_move_speed:
             os.environ["D1_PROG_MOVE_DEG_PER_S"] = auto_move_speed
         auto_pose_mode = motion_profile.auto_move_mode()

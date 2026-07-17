@@ -4,11 +4,13 @@ Doc Unitree (D1 Arm services):
   mode 0 = small smoothing of 10Hz data
   mode 1 = large smoothing of trajectory use
 
-Contratto hold (issue D1 / lab):
+Contratto hold/moto (doc Unitree + chen37058 Grasp-with-D1):
   - idle: heartbeat mode0 ~10Hz, un solo publisher
+  - moto: mode1 trajectory + delay tra comandi (loro: sleep(1) tra keyframe)
   - abort motion: soft hold = solo pose mode0 sulla MISURA (mai re-couple)
   - HOLD UI: hard = power + funcode 5 + pose (una volta)
   - vietato: hold measured poi snap al target software (= strattone)
+  - vietato: mode0 a passi grossi in moto (= scattoso)
 
 Anti-pattern (Caltech SURF + lab): stream continuo mode1 a 20–100Hz fa
 surriscaldare i servo e dopo 1–pochi minuti il braccio smette di rispondere
@@ -46,18 +48,22 @@ def stream_delay_ms() -> int:
 
 
 def auto_move_mode() -> int:
-    """AUTO calib: default mode0 (dati ~10Hz), non mode1 trajectory flood."""
-    return int(os.environ.get("D1_GRASP6D_AUTO_MOVE_MODE", "0"))
+    """AUTO in moto: mode1 (traiettoria), come chen37058 Grasp-with-D1.
+
+    mode0 sulle pose intermedie rende lo stream a scatti; mode1 e' lo
+    smoothing "trajectory use" della doc Unitree. Hold idle resta mode0.
+    """
+    return int(os.environ.get("D1_GRASP6D_AUTO_MOVE_MODE", "1"))
 
 
 def auto_waypoint_delay_ms() -> int:
-    """Floor delay AUTO: <=10Hz comandi durante i piccoli offset."""
-    return max(100, int(os.environ.get("D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS", "120")))
+    """Attendi che il comando precedente inizi ad eseguire (chen: sleep tra pose)."""
+    return max(150, int(os.environ.get("D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS", "220")))
 
 
 def auto_joint_step_deg() -> float:
-    """Passi giunto più grandi → meno waypoint → meno flood DDS."""
-    return max(2.0, float(os.environ.get("D1_GRASP6D_AUTO_JOINT_STEP_DEG", "4.0")))
+    """Passi piccoli + mode1 = moto fluido senza flood (non 4° mode0)."""
+    return max(1.0, float(os.environ.get("D1_GRASP6D_AUTO_JOINT_STEP_DEG", "1.5")))
 
 
 def daemon_delay_ms() -> int:
