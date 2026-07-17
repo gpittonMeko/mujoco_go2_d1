@@ -4,6 +4,12 @@ Doc Unitree (D1 Arm services):
   mode 0 = small smoothing of 10Hz data
   mode 1 = large smoothing of trajectory use
 
+Contratto hold (issue D1 / lab):
+  - idle: heartbeat mode0 ~10Hz, un solo publisher
+  - abort motion: soft hold = solo pose mode0 sulla MISURA (mai re-couple)
+  - HOLD UI: hard = power + funcode 5 + pose (una volta)
+  - vietato: hold measured poi snap al target software (= strattone)
+
 Anti-pattern (Caltech SURF + lab): stream continuo mode1 a 20–100Hz fa
 surriscaldare i servo e dopo 1–pochi minuti il braccio smette di rispondere
 mentre il software crede ancora che HOLD sia attivo.

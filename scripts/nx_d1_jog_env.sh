@@ -101,6 +101,8 @@ export D1_HOLD_DAEMON_EXTERNAL=1
 export D1_HOLD_SOCKET="${D1_HOLD_SOCKET:-/tmp/go2_d1_hold.sock}"
 # Keepalive hold = ciclo ufficiale D1 ~10Hz. 50ms (20Hz) era troppo aggressivo
 # e, con mode1, duplicava lo stream di motion → flood servo.
+# Abort motion = soft hold (pose mode0); HOLD UI = hard couple. Mai snap
+# measured→target (causa tipica dello "strattone" di recupero).
 # Richiede reload hold daemon a freddo (braccio sostenuto) per applicare.
 export D1_HOLD_HEARTBEAT_MS="${D1_HOLD_HEARTBEAT_MS:-100}"
 export D1_ZERO_TRANSIT_J1_DEG="${D1_ZERO_TRANSIT_J1_DEG:--90}"

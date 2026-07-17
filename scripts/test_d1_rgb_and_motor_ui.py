@@ -215,7 +215,7 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn("pose_mode=auto_pose_mode", app)
         self.assertIn("auto_base_current_pose", app)
         self.assertIn("start_far_from_scan_left_using_current", app)
-        self.assertIn("auto_step_finally_measured", app)
+        self.assertIn("auto_step_finally_measured_soft", app)
         self.assertIn("program_wait_at_target_failed", (ROOT / "go2_dashboard" / "d1_jog" / "program_runner.py").read_text(encoding="utf-8", errors="replace"))
         env = (ROOT / "scripts" / "nx_d1_jog_env.sh").read_text(encoding="utf-8", errors="replace")
         self.assertIn('D1_GRASP6D_AUTO_MOTION_ENABLE="${D1_GRASP6D_AUTO_MOTION_ENABLE:-1}"', env)
@@ -229,7 +229,20 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn("_pose_for_heartbeat_locked", hold_daemon_src)
         self.assertIn("_client_motion_recent_locked", hold_daemon_src)
         self.assertIn('default=int(os.environ.get("D1_HOLD_HEARTBEAT_MS", "100"))', hold_daemon_src)
-        self.assertIn("hold_mode", (ROOT / "go2_dashboard" / "d1_jog" / "motion_profile.py").read_text(encoding="utf-8", errors="replace"))
+        motion_profile = (ROOT / "go2_dashboard" / "d1_jog" / "motion_profile.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn("hold_mode", motion_profile)
+        self.assertIn("soft hold", motion_profile)
+        self.assertIn("def soft_hold_measured", service)
+        self.assertIn("def _hard_hold_reason", service)
+        self.assertIn("hard: bool | None = None", service)
+        self.assertIn("request_emergency_hold(reason=reason, hard=True)", app)
+        runner = (ROOT / "go2_dashboard" / "d1_jog" / "program_runner.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn("held_measured", runner)
+        self.assertIn("measured_feedback_soft", runner)
         self.assertIn("D1_GRASP6D_AUTO_TRACKING_MAX_ERR_DEG", env)
         self.assertIn("D1_GRASP6D_AUTO_MAX_START_DELTA_DEG", env)
         self.assertIn("D1_GRASP6D_AUTO_MOTION_ENABLE", app)

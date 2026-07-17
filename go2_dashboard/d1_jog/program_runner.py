@@ -137,9 +137,9 @@ def _within_target_range(current: list[float], target: list[float]) -> tuple[boo
 
 
 def _hold_measured_pose_for_abort(reason: str) -> dict[str, Any]:
-    """Safety abort: never hold the cached target; freeze the measured pose."""
-    hold = service.request_emergency_hold(reason=reason)
-    return {"safety_hold": hold, "hold_source": "measured_feedback"}
+    """Safety abort: freeze measured with soft hold (no funcode-5 strattone)."""
+    hold = service.request_emergency_hold(reason=reason, hard=False)
+    return {"safety_hold": hold, "hold_source": "measured_feedback_soft"}
 
 
 def _estimate_move_duration_s(from_sd: list[float], to_sd: list[float]) -> float:
@@ -191,14 +191,16 @@ def wait_until_at_target(
             last_max_err = round(max_err, 2)
             last_errs = errs
             if ok:
-                service.set_servo_cache(service.clamp_servo_deg(cur))
-                service.hold_pose_stream(servo_deg=target)
+                # Hold sulla misura, NON sul target software: evita strattone.
+                held = service.clamp_servo_deg(cur)
+                service.set_servo_cache(held)
+                service.hold_pose_stream(servo_deg=held)
                 return {
                     "ok": True,
                     "action": "wait_at_target",
                     "reached": True,
                     "target_servo_deg": target,
-                    "servo_deg": service.clamp_servo_deg(cur),
+                    "servo_deg": held,
                     "max_error_deg": last_max_err,
                     "tolerance_deg": arm_tol,
                     "joint_errors_deg": errs,
@@ -207,15 +209,16 @@ def wait_until_at_target(
         time.sleep(max(0.05, float(os.environ.get("D1_PROG_POLL_GAP_S", "0.15"))))
 
     if _proceed_on_timeout() and last_max_err is not None and last_max_err <= soft_tol:
-        service.set_servo_cache(target)
-        service.hold_pose_stream(servo_deg=target)
+        held = service.clamp_servo_deg(last_cur) if last_cur is not None else target
+        service.set_servo_cache(held)
+        service.hold_pose_stream(servo_deg=held)
         return {
             "ok": True,
             "action": "wait_at_target",
             "reached": True,
             "reached_approx": True,
             "target_servo_deg": target,
-            "servo_deg": last_cur or target,
+            "servo_deg": held,
             "max_error_deg": last_max_err,
             "tolerance_deg": arm_tol,
             "soft_tolerance_deg": soft_tol,
@@ -360,7 +363,9 @@ def move_to_servo_deg_smooth(
                 if not isinstance(cur_guard, list) or len(cur_guard) < 7:
                     tracking_missing += 1
                     if tracking_missing >= tracking_violation_limit:
-                        hold = service.request_emergency_hold(reason="program_tracking_feedback_missing")
+                        hold = service.request_emergency_hold(
+                            reason="program_tracking_feedback_missing", hard=False
+                        )
                         return {
                             "ok": False,
                             "reason": "tracking_feedback_missing",
@@ -378,9 +383,8 @@ def move_to_servo_deg_smooth(
                 errs = _joint_errors(cur_guard, sd)
                 max_err = max(errs[:6]) if errs else 0.0
                 if max_err > float(tracking_max_error_deg):
-                    # Freeze IMMEDIATO sulla posa misurata: non continuare a
-                    # comandare un target avanti al braccio (causa tipica di cedimento).
-                    hold = service.request_emergency_hold(reason="program_tracking_error")
+                    # Freeze soft sulla misura: NO re-couple (evita strattone).
+                    hold = service.request_emergency_hold(reason="program_tracking_error", hard=False)
                     return {
                         "ok": False,
                         "reason": "tracking_error_too_high",
@@ -427,7 +431,9 @@ def move_to_servo_deg_smooth(
                 if not isinstance(cur_guard, list) or len(cur_guard) < 7:
                     settle_missing += 1
                     if settle_missing >= tracking_violation_limit:
-                        hold = service.request_emergency_hold(reason="program_settle_feedback_missing")
+                        hold = service.request_emergency_hold(
+                            reason="program_settle_feedback_missing", hard=False
+                        )
                         return {
                             "ok": False,
                             "reason": "settle_feedback_missing",
@@ -446,7 +452,9 @@ def move_to_servo_deg_smooth(
                 if max_err > float(tracking_max_error_deg):
                     settle_violations += 1
                     if settle_violations >= tracking_violation_limit:
-                        hold = service.request_emergency_hold(reason="program_settle_tracking_error")
+                        hold = service.request_emergency_hold(
+                            reason="program_settle_tracking_error", hard=False
+                        )
                         return {
                             "ok": False,
                             "reason": "settle_tracking_error_too_high",
@@ -481,14 +489,7 @@ def move_to_servo_deg_smooth(
                 "target_servo_deg": target,
                 **_hold_measured_pose_for_abort("program_stopped_after_settle"),
             }
-        # Mai lasciare il target software avanti rispetto al braccio senza hold
-        # sulla posa misurata: e' la causa tipica di "braccio ceduto".
-        measured = service.read_servo_deg(fast=True)
-        measured_sd = measured.get("servo_deg") if measured.get("ok") else None
-        if isinstance(measured_sd, list) and len(measured_sd) >= 7:
-            service.hold_pose_stream(servo_deg=list(measured_sd[:7]))
-        else:
-            service.hold_pose_stream(servo_deg=target)
+        # Attendi arrivo; wait_until_at_target tiene la MISURA (mai snap al target).
         wait = wait_until_at_target(target, stop_check=stop_check)
         if not wait.get("ok"):
             return {
@@ -500,8 +501,8 @@ def move_to_servo_deg_smooth(
                 "wait_at_target": wait,
                 **_hold_measured_pose_for_abort("program_wait_at_target_failed"),
             }
-        hold = service.hold_pose_stream(servo_deg=target)
         pose_sd = wait.get("servo_deg") or target
+        hold = service.hold_pose_stream(servo_deg=list(pose_sd[:7]))
         return {
             "ok": True,
             "action": "move_to_point",
@@ -511,6 +512,7 @@ def move_to_servo_deg_smooth(
             "coupling_maintained": bool(hold.get("ok") or hold.get("skipped")),
             "wait_at_target": wait,
             "max_error_deg": wait.get("max_error_deg"),
+            "held_measured": True,
         }
     finally:
         if not keep_lock:

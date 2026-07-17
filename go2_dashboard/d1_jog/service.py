@@ -740,8 +740,66 @@ def goto_true_zero_pose() -> dict[str, Any]:
         return {"ok": False, "reason": repr(exc)}
 
 
-def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
-    """Stop immediato: ferma i flussi e mantiene la posa corrente."""
+def soft_hold_measured(*, reason: str = "soft_hold") -> dict[str, Any]:
+    """Freeze sulla posa misurata con SOLO funcode-2 mode0.
+
+    Contratto D1 (doc + report Caltech/lab):
+    - idle/abort: mode0 keepalive, mai re-assert funcode 5/6
+    - re-couple (funcode 5 + power) mentre il braccio e' gia' in hold causa
+      lo "strattone" di recupero dopo un micro-cedimento
+    """
+    pose = _current_servo_deg_for_save(fast=True)
+    if pose is None:
+        return {"ok": False, "reason": "no_feedback_for_hold", "action": "soft_hold_measured", "soft": True}
+    out = hold_pose_stream(servo_deg=pose)
+    out["action"] = "soft_hold_measured"
+    out["reason"] = reason
+    out["soft"] = True
+    out["forced_power_couple_before_hold"] = False
+    out["target_servo_deg"] = pose
+    return out
+
+
+def _hard_hold_reason(reason: str) -> bool:
+    """Hard couple+power solo per HOLD esplicito UI / perdita coppia reale."""
+    r = (reason or "").strip().lower()
+    hard_markers = (
+        "ui",
+        "hold_now",
+        "holdora",
+        "hold_ora",
+        "user",
+        "manual",
+        "after_collapse",
+        "pre_soft_auto",
+        "auto_calib_start",
+        "clear_stuck",
+        "agent_activate",
+    )
+    if any(m in r for m in hard_markers):
+        return True
+    # Abort di motion/tracking: soft. Non strattare.
+    soft_markers = (
+        "program_",
+        "tracking",
+        "settle",
+        "auto_calibration",
+        "preempt",
+        "stopped",
+        "wait_at_target",
+        "feedback_missing",
+    )
+    if any(m in r for m in soft_markers):
+        return False
+    return False
+
+
+def request_emergency_hold(*, reason: str = "ui", hard: bool | None = None) -> dict[str, Any]:
+    """Stop immediato: ferma i flussi e mantiene la posa corrente.
+
+    - soft (default su abort motion): solo pose mode0 sulla misura
+    - hard (HOLD UI / coppia persa): power + funcode 5 + pose
+    """
     begin_safety_preempt(f"hold:{reason}")
     try:
         from go2_dashboard.d1_jog import program_runner
@@ -755,11 +813,18 @@ def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
         pose = _current_servo_deg_for_save(fast=True)
         if pose is None:
             hold = {"ok": False, "reason": "no_feedback_for_hold"}
+            use_hard = bool(hard) if hard is not None else _hard_hold_reason(reason)
         else:
-            # Safety path: HOLD ORA must not trust the software-coupled flag.
-            # Always refresh power+couple and pose in one batch.
-            hold = couple_and_hold_pose(pose, with_power=True, force=True, acquire_lock=False)
-            hold["forced_power_couple_before_hold"] = True
+            use_hard = bool(hard) if hard is not None else _hard_hold_reason(reason)
+            # Se la coppia non e' attiva, soft non basta: serve hard.
+            if not use_hard and not arm_coupled():
+                use_hard = True
+            if use_hard:
+                hold = couple_and_hold_pose(pose, with_power=True, force=True, acquire_lock=False)
+                hold["forced_power_couple_before_hold"] = True
+                hold["soft"] = False
+            else:
+                hold = soft_hold_measured(reason=reason)
         return {
             "ok": bool(hold.get("ok") or hold.get("skipped")),
             "action": "hold_now",
@@ -768,6 +833,8 @@ def request_emergency_hold(*, reason: str = "ui") -> dict[str, Any]:
             "feedback": {"ok": pose is not None, "servo_deg": pose},
             "hold": hold,
             "safety_preempt": True,
+            "hard_hold": bool(hold.get("forced_power_couple_before_hold")),
+            "soft_hold": bool(hold.get("soft")),
         }
     finally:
         end_safety_preempt(source=f"hold:{reason}")

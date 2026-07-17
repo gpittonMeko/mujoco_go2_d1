@@ -954,7 +954,8 @@ def create_d1_jog_app() -> Flask:
     def joints_hold_now() -> Response:
         body = request.get_json(silent=True) or {}
         reason = str(body.get("reason") or "ui").strip() or "ui"
-        out = service.request_emergency_hold(reason=reason)
+        # HOLD ORA utente = hard (power+couple). Abort motion usano soft.
+        out = service.request_emergency_hold(reason=reason, hard=True)
         code = 200 if out.get("ok") or out.get("skipped") else 502
         return jsonify(out), code
 
@@ -2700,11 +2701,13 @@ def create_d1_jog_app() -> Flask:
                     hold_ok=bool((move.get("safety_hold") or {}).get("ok")) if isinstance(move.get("safety_hold"), dict) else None,
                 )
                 # Sempre freeze sulla posa MISURATA, anche se il move ha gia' tentato un hold.
-                payload["safety_hold"] = service.request_emergency_hold(reason="auto_calibration_move_failed")
-                payload["safety_hold_source"] = "auto_step_finally_measured"
+                payload["safety_hold"] = service.request_emergency_hold(
+                    reason="auto_calibration_move_failed", hard=False
+                )
+                payload["safety_hold_source"] = "auto_step_finally_measured_soft"
                 return jsonify(payload), 502
         except Exception as exc:
-            safety_hold = service.request_emergency_hold(reason="auto_calibration_exception")
+            safety_hold = service.request_emergency_hold(reason="auto_calibration_exception", hard=False)
             grasp6d.record_calibration_event(
                 "auto_motion_failed",
                 reason=f"exception:{type(exc).__name__}",
@@ -2745,7 +2748,9 @@ def create_d1_jog_app() -> Flask:
                             "feedback": guard_fb,
                             "tracking_missing_count": settle_missing,
                             "tracking_violation_limit": tracking_violation_limit,
-                            "safety_hold": service.request_emergency_hold(reason="auto_calibration_settle_feedback_missing"),
+                            "safety_hold": service.request_emergency_hold(
+                                reason="auto_calibration_settle_feedback_missing", hard=False
+                            ),
                         }
                     ), 503
                 continue
@@ -2775,7 +2780,9 @@ def create_d1_jog_app() -> Flask:
                             "tracking_limit_deg": tracking_limit,
                             "tracking_violation_count": settle_violations,
                             "tracking_violation_limit": tracking_violation_limit,
-                            "safety_hold": service.request_emergency_hold(reason="auto_calibration_settle_tracking_error"),
+                            "safety_hold": service.request_emergency_hold(
+                                reason="auto_calibration_settle_tracking_error", hard=False
+                            ),
                         }
                     ), 502
             else:
@@ -2789,7 +2796,9 @@ def create_d1_jog_app() -> Flask:
                     "reason": "feedback_after_move_unavailable",
                     "feedback": feedback,
                     "move": move,
-                    "safety_hold": service.request_emergency_hold(reason="auto_calibration_feedback_missing"),
+                    "safety_hold": service.request_emergency_hold(
+                        reason="auto_calibration_feedback_missing", hard=False
+                    ),
                 }
             ), 503
         # Solo funcode-2 mode0: niente re-couple dopo ogni offset.
@@ -2802,7 +2811,9 @@ def create_d1_jog_app() -> Flask:
                     "hold": hold,
                     "feedback": feedback,
                     "move": move,
-                    "safety_hold": service.request_emergency_hold(reason="auto_calibration_hold_after_move_failed"),
+                    "safety_hold": service.request_emergency_hold(
+                        reason="auto_calibration_hold_after_move_failed", hard=False
+                    ),
                 }
             ), 502
         rest_s = max(0.0, min(3.0, float(os.environ.get("D1_GRASP6D_AUTO_REST_S", "0.8"))))
