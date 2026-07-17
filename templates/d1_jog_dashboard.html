@@ -1580,20 +1580,20 @@
 
     async function autoCalibrationLoop() {
       if (!autoCalibRunning) return;
-      if (autoCalibStep >= 28) {
+      if (autoCalibStep >= 48) {
         stopAutoCalibration();
         setCalibGuide('bad', 'Auto fermata: limite step raggiunto', 'Non insisto oltre: controlla il grafico e la diagnostica solver/FK.');
         return;
       }
-      q('autoCalibState').textContent = 'Auto step ' + (autoCalibStep + 1) + ': muovo/verifico/salvo se valido...';
+      q('autoCalibState').textContent = 'Auto step ' + (autoCalibStep + 1) + ': muovo/prune/salvo finche\' cal_ok...';
       setStatus('Auto calibrazione step ' + (autoCalibStep + 1), null);
-      autoCalibTrace.push({ step: autoCalibStep + 1, status: 'running', reason: 'muovo/verifico/salvo' });
+      autoCalibTrace.push({ step: autoCalibStep + 1, status: 'running', reason: 'muovo/prune/salvo' });
       renderAutoCalibrationDebug();
       try {
         const d = await api('/api/pick/metric/calibration/auto_step', 'POST', {
           confirm: 'AUTO_CALIBRATE_6D',
           step: autoCalibStep,
-          max_samples: 10,
+          max_samples: 16,
         }, 180000);
         setDiag('Auto calibrazione 6D', d);
         if (!d.ok) {

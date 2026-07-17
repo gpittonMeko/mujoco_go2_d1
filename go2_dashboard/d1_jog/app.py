@@ -2613,27 +2613,88 @@ def create_d1_jog_app() -> Flask:
             return jsonify({"ok": False, **daemon_ready}), 503
 
         step = max(0, int(body.get("step") or 0))
-        max_samples = max(8, min(16, int(body.get("max_samples") or 10)))
+        max_samples = max(8, min(20, int(body.get("max_samples") or 16)))
         requested_base = body.get("base_servo_deg")
         base = _auto_calibration_base_pose()
         samples = grasp6d.list_handeye_samples()
+        min_n = grasp6d.calib_min_samples()
         current_quality = grasp6d.handeye_quality_report(samples)
         if current_quality.get("build_ready"):
             built = grasp6d.build_handeye_calibration(samples)
             return jsonify({"ok": True, "done": True, "reason": "already_build_ready", "build": built, "quality": current_quality})
+        # Residual alto / pieno: prune automatico e continua (non chiudere come fallimento).
+        pre_prune = None
+        next_act = str(current_quality.get("next_action") or "")
+        residual_stuck = next_act in {
+            "prune_and_aggiungi_sample",
+            "residuo_alto_non_calcolare",
+            "sessione_incoerente_reset",
+        }
+        if residual_stuck and len(samples) >= min_n:
+            pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=4, force_drop=1)
+            samples = grasp6d.list_handeye_samples()
+            current_quality = grasp6d.handeye_quality_report(samples)
+            if current_quality.get("build_ready") or (pre_prune.get("build") or {}).get("ok"):
+                built = grasp6d.build_handeye_calibration(samples)
+                if built.get("ok"):
+                    return jsonify(
+                        {
+                            "ok": True,
+                            "done": True,
+                            "reason": "build_ok_after_auto_prune",
+                            "build": built,
+                            "quality": current_quality,
+                            "prune": pre_prune,
+                        }
+                    )
         if len(samples) >= max_samples:
+            # Fai spazio: drop outlier e prova ancora un sample, non stoppare.
+            pre_prune = grasp6d.prune_handeye_outliers(min_keep=min_n, max_drop=5, force_drop=2)
+            samples = grasp6d.list_handeye_samples()
+            current_quality = grasp6d.handeye_quality_report(samples)
             built = grasp6d.build_handeye_calibration(samples)
-            return jsonify({"ok": bool(built.get("ok")), "done": True, "reason": "max_samples_reached", "build": built, "quality": current_quality}), (200 if built.get("ok") else 422)
+            if built.get("ok"):
+                return jsonify(
+                    {
+                        "ok": True,
+                        "done": True,
+                        "reason": "build_ok_after_max_samples_prune",
+                        "build": built,
+                        "quality": current_quality,
+                        "prune": pre_prune,
+                    }
+                )
+            if len(samples) >= max_samples:
+                return jsonify(
+                    {
+                        "ok": False,
+                        "done": False,
+                        "reason": "max_samples_still_residual_high",
+                        "build": built,
+                        "quality": current_quality,
+                        "prune": pre_prune,
+                        "hint": "AUTO continua: prune forzato non basta, serve vista piu' diversa",
+                    }
+                ), 200
 
         from go2_dashboard.d1_jog import motion_profile
 
         offsets = _auto_calibration_offsets()
-        offset = offsets[step % len(offsets)]
+        # Con residual stuck usa bank "largo" (indici alti) per diversita' reale.
+        if residual_stuck:
+            offset = offsets[(step + len(offsets) // 2) % len(offsets)]
+            scale = float(os.environ.get("D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE", "1.35"))
+            offset = [float(v) * scale for v in offset]
+        else:
+            offset = offsets[step % len(offsets)]
         target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
-        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "22"))
+        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "16"))
         if max_delta > max_delta_allowed:
-            return jsonify({"ok": False, "reason": "auto_target_delta_too_large", "target_servo_deg": target, "base_servo_deg": base}), 400
+            # Clamp soft verso la soglia invece di abortire lo step.
+            shrink = max_delta_allowed / max(max_delta, 1e-6)
+            offset = [float(v) * shrink for v in offset]
+            target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
 
         pre_feedback = service.read_servo_deg(fast=False)
         pre_raw = pre_feedback.get("servo_deg") if pre_feedback.get("ok") else None
