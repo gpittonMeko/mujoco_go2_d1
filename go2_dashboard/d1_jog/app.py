@@ -2535,20 +2535,24 @@ def create_d1_jog_app() -> Flask:
         return jsonify(out), (200 if marker.get("ok") else 422)
 
     def _auto_calibration_offsets() -> list[list[float]]:
-        # Offset soft ma abbastanza diversi per novelty hand-eye (max ~12°).
+        # Orbit hand-eye: piu' J4/J5 (rotazione vista), J0/J1 moderati (traslazione).
+        # Stile chen37058: pose chiave diverse, non micro-offset tutti uguali.
         return [
             [0, 0, 0, 0, 0, 0, 0],
-            [-8, -4, 4, -6, 2, 6, 0],
-            [8, -5, 5, -8, 6, -4, 0],
-            [5, 6, -6, 8, 8, -8, 0],
-            [-6, 7, -7, 9, -6, -6, 0],
-            [-10, 3, -3, 8, -8, 5, 0],
-            [7, -8, 8, -10, 8, 6, 0],
-            [10, 4, -4, -6, 10, -8, 0],
-            [-7, 8, -8, 10, -7, -7, 0],
-            [2, -10, 10, -8, 7, 8, 0],
-            [-9, -6, 6, 4, -4, 10, 0],
-            [9, 5, -5, -10, 10, 2, 0],
+            [-10, -4, 4, 0, 14, -10, 0],
+            [10, -5, 5, 0, -14, 10, 0],
+            [0, 8, -6, 0, 18, -8, 0],
+            [0, -8, 8, 0, -18, 8, 0],
+            [-12, 2, -2, 0, 12, 14, 0],
+            [12, -3, 3, 0, -12, -14, 0],
+            [-6, 6, -6, 0, 20, 6, 0],
+            [6, -6, 6, 0, -20, -6, 0],
+            [-8, -8, 8, 0, 16, -12, 0],
+            [8, 8, -8, 0, -16, 12, 0],
+            [0, 4, -4, 0, 22, 0, 0],
+            [0, -4, 4, 0, -22, 0, 0],
+            [-4, 0, 0, 0, 0, 18, 0],
+            [4, 0, 0, 0, 0, -18, 0],
         ]
 
     def _auto_calibration_base_pose() -> list[float]:
@@ -2625,7 +2629,7 @@ def create_d1_jog_app() -> Flask:
         offset = offsets[step % len(offsets)]
         target = service.clamp_servo_deg([base[i] + offset[i] for i in range(7)])
         max_delta = max(abs(float(target[i]) - float(base[i])) for i in range(6))
-        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "10"))
+        max_delta_allowed = float(os.environ.get("D1_GRASP6D_AUTO_MAX_DELTA_DEG", "22"))
         if max_delta > max_delta_allowed:
             return jsonify({"ok": False, "reason": "auto_target_delta_too_large", "target_servo_deg": target, "base_servo_deg": base}), 400
 
@@ -2844,6 +2848,29 @@ def create_d1_jog_app() -> Flask:
                     "rest_s": rest_s,
                 }
             ), 200
+        min_tags = max(6, int(os.environ.get("D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS", "10")))
+        visible_tags = int(marker.get("visible_marker_count") or 0)
+        if visible_tags < min_tags:
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason="too_few_visible_tags",
+                visible_marker_count=visible_tags,
+                min_visible_tags=min_tags,
+                hold_ok=True,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "too_few_visible_tags",
+                    "min_visible_tags": min_tags,
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                }
+            ), 200
         if marker.get("target_type") == "aprilgrid_36h11" and marker.get("pose_method") != "tag_corners":
             grasp6d.record_calibration_event(
                 "auto_sample_skipped",
@@ -2904,8 +2931,19 @@ def create_d1_jog_app() -> Flask:
             candidate_quality = grasp6d.handeye_quality_report(samples + [candidate])
             current_severity = grasp6d.residual_severity(current_quality)
             candidate_severity = grasp6d.residual_severity(candidate_quality)
-            improves = current_severity is not None and candidate_severity is not None and candidate_severity <= current_severity * 0.98
-            if not improves and not candidate_quality.get("build_ready"):
+            improves_residual = (
+                current_severity is not None
+                and candidate_severity is not None
+                and candidate_severity <= current_severity * 0.98
+            )
+            improves_diversity = float(candidate_quality.get("diversity_score") or 0.0) > float(
+                current_quality.get("diversity_score") or 0.0
+            ) + 0.02
+            if (
+                not improves_residual
+                and not improves_diversity
+                and not candidate_quality.get("build_ready")
+            ):
                 grasp6d.record_calibration_event(
                     "auto_sample_skipped",
                     reason="residual_not_improving",
@@ -2935,8 +2973,20 @@ def create_d1_jog_app() -> Flask:
             servo_deg=[float(x) for x in raw[:7]],
         )
         samples_after = grasp6d.list_handeye_samples()
+        prune = None
+        if len(samples_after) >= 10:
+            prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=4)
+            samples_after = grasp6d.list_handeye_samples()
         quality = grasp6d.handeye_quality_report(samples_after)
-        built = grasp6d.build_handeye_calibration(samples_after) if quality.get("build_ready") else None
+        built = None
+        if quality.get("build_ready") or (isinstance(prune, dict) and (prune.get("build") or {}).get("ok")):
+            built = grasp6d.build_handeye_calibration(samples_after)
+            if not built.get("ok") and len(samples_after) >= 8:
+                prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=5)
+                samples_after = grasp6d.list_handeye_samples()
+                quality = grasp6d.handeye_quality_report(samples_after)
+                if quality.get("build_ready") or (prune.get("build") or {}).get("ok"):
+                    built = grasp6d.build_handeye_calibration(samples_after)
         grasp6d.record_calibration_event(
             "auto_sample_saved",
             sample_count=int(out.get("sample_count") or 0),
@@ -2945,13 +2995,15 @@ def create_d1_jog_app() -> Flask:
             reprojection_rms_px=marker.get("reprojection_rms_px"),
             hold_ok=True,
         )
+        done = bool(built and built.get("ok"))
         return jsonify(
             {
                 "ok": True,
                 "saved": True,
-                "done": bool(built and built.get("ok")),
+                "done": done,
                 "sample": out,
                 "build": built,
+                "prune": prune,
                 "quality": quality,
                 "marker": marker,
                 "move": move,
@@ -2970,16 +3022,33 @@ def create_d1_jog_app() -> Flask:
             }
         )
 
+    @app.route("/api/pick/metric/calibration/prune", methods=["POST"])
+    def pick_metric_calibration_prune() -> Response:
+        out = grasp6d.prune_handeye_outliers()
+        grasp6d.record_calibration_event(
+            "prune_ok" if out.get("ok") else "prune_failed",
+            before=out.get("before"),
+            after=out.get("after"),
+            dropped=len(out.get("dropped") or []),
+            build_ok=bool((out.get("build") or {}).get("ok")),
+        )
+        return jsonify(out), (200 if out.get("ok") else 422)
+
     @app.route("/api/pick/metric/calibration/build", methods=["POST"])
     def pick_metric_calibration_build() -> Response:
+        prune = grasp6d.prune_handeye_outliers(min_keep=8, max_drop=5)
         out = grasp6d.build_handeye_calibration(grasp6d.list_handeye_samples())
+        if not out.get("ok") and prune.get("build") and prune["build"].get("ok"):
+            out = prune["build"]
         grasp6d.record_calibration_event(
             "build_ok" if out.get("ok") else "build_failed",
             sample_count=int(out.get("sample_count") or len(grasp6d.list_handeye_samples())),
             reason=out.get("reason"),
             translation_rms_m=out.get("translation_rms_m"),
             rotation_rms_deg=out.get("rotation_rms_deg"),
+            pruned=bool(prune.get("changed")),
         )
+        out["prune"] = {k: prune.get(k) for k in ("before", "after", "dropped", "changed") if k in prune}
         return jsonify(out), (200 if out.get("ok") else 422)
 
     @app.route("/api/pick/metric/calibration", methods=["GET", "DELETE"])

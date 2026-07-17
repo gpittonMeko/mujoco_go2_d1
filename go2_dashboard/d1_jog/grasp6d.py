@@ -658,8 +658,9 @@ def solve_handeye_calibration(samples: list[dict[str, Any]]) -> dict[str, Any]:
         Tg_rows.append(Tg)
         Tc_rows.append(Tc)
 
-    max_trans = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.010"))
-    max_rot = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "3.0"))
+    # Soglie lab D1+AprilGrid: 1cm/3° e' spesso irrealistico con orbit limitata.
+    max_trans = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.025"))
+    max_rot = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "6.0"))
     methods = [
         ("tsai", cv2.CALIB_HAND_EYE_TSAI),
         ("park", cv2.CALIB_HAND_EYE_PARK),
@@ -838,7 +839,8 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
             )
         )
     target_trans_span = float(os.environ.get("D1_GRASP6D_CALIB_TARGET_TRANSLATION_SPAN_M", "0.10"))
-    target_rot_span = float(os.environ.get("D1_GRASP6D_CALIB_TARGET_ROTATION_SPAN_DEG", "35.0"))
+    # 25° e' raggiungibile dal D1 su AprilGrid senza orbitare troppo.
+    target_rot_span = float(os.environ.get("D1_GRASP6D_CALIB_TARGET_ROTATION_SPAN_DEG", "25.0"))
     count_score = min(1.0, count / 8.0)
     trans_score = min(1.0, trans_span / max(target_trans_span, 1e-6))
     rot_score = min(1.0, rot_span / max(target_rot_span, 1e-6))
@@ -855,8 +857,8 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "reason": "need_8_samples_for_residual",
         "sample_count": len(valid_samples),
     }
-    max_trans_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.010"))
-    max_rot_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "3.0"))
+    max_trans_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.025"))
+    max_rot_rms = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "6.0"))
     residual_trend: list[dict[str, Any]] = []
     for n in range(8, len(valid_samples) + 1):
         partial = solve_handeye_calibration(valid_samples[:n])
@@ -879,7 +881,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     progress = int(round(100.0 * (0.35 * count_score + 0.30 * diversity_score + 0.35 * residual_score)))
     if not solve.get("ok"):
         progress = min(progress, 95)
-    build_ready = bool(solve.get("ok") and diversity_score >= 0.75)
+    build_ready = bool(solve.get("ok") and diversity_score >= 0.70)
     residual_extreme = bool(
         solve.get("translation_rms_m") is not None
         and solve.get("rotation_rms_deg") is not None
@@ -887,7 +889,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     )
     if count < 8:
         next_action = "aggiungi_sample"
-    elif diversity_score < 0.75:
+    elif diversity_score < 0.70:
         next_action = "aumenta_diversita_pose"
     elif residual_extreme:
         next_action = "sessione_incoerente_reset"
@@ -954,8 +956,8 @@ def residual_severity(report: dict[str, Any]) -> float | None:
     rot = residual.get("rotation_rms_deg")
     if trans is None or rot is None:
         return None
-    max_trans = max(float(report.get("max_translation_rms_m") or 0.010), 1e-6)
-    max_rot = max(float(report.get("max_rotation_rms_deg") or 3.0), 1e-6)
+    max_trans = max(float(report.get("max_translation_rms_m") or 0.025), 1e-6)
+    max_rot = max(float(report.get("max_rotation_rms_deg") or 6.0), 1e-6)
     return float(trans) / max_trans + float(rot) / max_rot
 
 
@@ -1211,6 +1213,14 @@ def record_calibration_event(event: str, **payload: Any) -> dict[str, Any]:
     return row
 
 
+def save_handeye_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    HAND_EYE_SAMPLES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HAND_EYE_SAMPLES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(list(samples), indent=2), encoding="utf-8")
+    tmp.replace(HAND_EYE_SAMPLES_PATH)
+    return {"ok": True, "sample_count": len(samples), "path": str(HAND_EYE_SAMPLES_PATH)}
+
+
 def append_handeye_sample(
     T_base_tool: np.ndarray,
     T_camera_target: np.ndarray,
@@ -1241,11 +1251,59 @@ def append_handeye_sample(
     if servo_deg is not None:
         row["servo_deg"] = [float(x) for x in servo_deg[:7]]
     samples.append(row)
-    HAND_EYE_SAMPLES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HAND_EYE_SAMPLES_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(samples, indent=2), encoding="utf-8")
-    tmp.replace(HAND_EYE_SAMPLES_PATH)
+    save_handeye_samples(samples)
     return {"ok": True, "sample_count": len(samples), "path": str(HAND_EYE_SAMPLES_PATH)}
+
+
+def prune_handeye_outliers(*, min_keep: int = 8, max_drop: int = 5) -> dict[str, Any]:
+    """Toglie i sample con errore residuo peggiore finche' il solve e' valido o min_keep."""
+    samples = list_handeye_samples()
+    if len(samples) < min_keep:
+        return {
+            "ok": False,
+            "reason": "not_enough_samples_to_prune",
+            "sample_count": len(samples),
+            "min_keep": min_keep,
+        }
+    max_t = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_M", "0.025"))
+    max_r = float(os.environ.get("D1_GRASP6D_CALIB_MAX_RMS_DEG", "6.0"))
+    working = list(samples)
+    dropped: list[dict[str, Any]] = []
+    sol = solve_handeye_calibration(working)
+    while (not sol.get("ok")) and len(working) > min_keep and len(dropped) < max_drop:
+        t_err = sol.get("sample_translation_errors_m") or []
+        r_err = sol.get("sample_rotation_errors_deg") or []
+        if len(t_err) != len(working) or len(r_err) != len(working):
+            break
+        scores = [
+            float(t) / max(max_t, 1e-6) + float(r) / max(max_r, 1e-6) for t, r in zip(t_err, r_err)
+        ]
+        worst = int(np.argmax(np.asarray(scores, dtype=float)))
+        dropped.append(
+            {
+                "index": worst,
+                "score": scores[worst],
+                "translation_error_m": float(t_err[worst]),
+                "rotation_error_deg": float(r_err[worst]),
+                "servo_deg": working[worst].get("servo_deg"),
+                "visible_marker_count": (working[worst].get("marker") or {}).get("visible_marker_count"),
+            }
+        )
+        working = [row for index, row in enumerate(working) if index != worst]
+        sol = solve_handeye_calibration(working)
+    changed = len(working) != len(samples)
+    if changed:
+        save_handeye_samples(working)
+    built = build_handeye_calibration(working) if sol.get("ok") else None
+    return {
+        "ok": True,
+        "changed": changed,
+        "before": len(samples),
+        "after": len(working),
+        "dropped": dropped,
+        "solve": sol,
+        "build": built,
+    }
 
 
 def _candidate_orientation(vertical: np.ndarray, closing: np.ndarray) -> np.ndarray:
