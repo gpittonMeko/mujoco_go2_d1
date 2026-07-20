@@ -892,6 +892,78 @@ def sample_pose_novelty(
     }
 
 
+def _calibration_next_move(
+    valid_samples: list[dict[str, Any]],
+    axis_spread_deg: float,
+    count: int,
+    min_n: int,
+) -> dict[str, Any]:
+    """Coach: quale rotazione del polso manca per rompere la degenerazione.
+
+    Guarda la copertura (range) dei tre giunti di polso J4/J5/J6 (indici 3/4/5)
+    tra i sample salvati e propone la prossima rotazione sull'asse meno coperto.
+    Obiettivo hand-eye: assi di rotazione DIVERSI (Tsai-Lenz/Daniilidis).
+    """
+    wrist = [
+        (3, "J4 · rotazione del polso (roll)"),
+        (4, "J5 · inclinazione su/giu' (pitch)"),
+        (5, "J6 · rotazione utensile (roll finale)"),
+    ]
+    target_span = float(os.environ.get("D1_GRASP6D_CALIB_WRIST_TARGET_SPAN_DEG", "30.0"))
+    servos: list[list[float]] = []
+    for s in valid_samples:
+        sv = s.get("servo_deg")
+        if isinstance(sv, list) and len(sv) >= 6:
+            servos.append([float(x) for x in sv[:6]])
+    if count == 0:
+        return {
+            "ok": True,
+            "done": False,
+            "text": "Punta la AprilGrid ben centrata e frontale, porta il badge su VERDE e salva la 1a vista.",
+            "axis": None,
+        }
+    coverage: dict[int, float] = {}
+    for idx, _ in wrist:
+        vals = [sv[idx] for sv in servos] if servos else []
+        coverage[idx] = (max(vals) - min(vals)) if len(vals) >= 2 else 0.0
+    covered = {idx: coverage[idx] >= target_span for idx, _ in wrist}
+    checklist = [
+        {"joint_index": idx, "label": label, "span_deg": round(coverage[idx], 1), "done": bool(covered[idx])}
+        for idx, label in wrist
+    ]
+    all_axes_ok = all(covered.values())
+    spread_ok = axis_spread_deg >= 30.0
+    if count >= min_n and all_axes_ok and spread_ok:
+        return {
+            "ok": True,
+            "done": True,
+            "text": "Copertura assi OK: hai abbastanza diversita'. Premi 'Calcola hand-eye'.",
+            "axis": None,
+            "checklist": checklist,
+            "axis_spread_deg": round(axis_spread_deg, 1),
+        }
+    least_idx, least_label = min(wrist, key=lambda w: coverage[w[0]])
+    vals = [sv[least_idx] for sv in servos] if servos else [0.0]
+    mean = sum(vals) / max(1, len(vals))
+    lo, hi = (min(vals), max(vals)) if vals else (0.0, 0.0)
+    direction = "+" if (mean - lo) <= (hi - mean) else "-"
+    amount = int(max(15, min(25, round(target_span - coverage[least_idx]))))
+    arrow = "aumenta" if direction == "+" else "diminuisci"
+    text = (
+        f"Prossima mossa: {least_label} — {arrow} di ~{amount}°. "
+        f"Muovi SOLO questo asse, aspetta il badge VERDE, poi salva."
+    )
+    return {
+        "ok": True,
+        "done": False,
+        "text": text,
+        "axis": {"joint_index": least_idx, "label": least_label, "direction": direction, "amount_deg": amount},
+        "checklist": checklist,
+        "axis_spread_deg": round(axis_spread_deg, 1),
+        "target_span_deg": target_span,
+    }
+
+
 def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     count = len(samples)
     valid_samples = []
@@ -1036,10 +1108,15 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
             key=lambda row: float(row.get("translation_error_m") or 0.0) / 0.01
             + float(row.get("rotation_error_deg") or 0.0) / 3.0,
         )
+    next_move = _calibration_next_move(
+        valid_samples, rotation_axis_spread_deg, len(valid_samples), min_n
+    )
     return {
         "ok": True,
         "sample_count": count,
         "valid_sample_count": len(valid_samples),
+        "min_samples": min_n,
+        "residual_available": bool(len(valid_samples) >= min_n),
         "progress_percent": progress,
         "build_ready": build_ready,
         "next_action": next_action,
@@ -1055,6 +1132,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_reprojection_rms_px": avg_img_rms,
         "sample_debug": sample_debug,
         "worst_sample": worst_sample,
+        "next_move": next_move,
         "residual_trend": residual_trend,
         "residual": solve,
     }
@@ -1175,10 +1253,42 @@ def detect_calibration_marker(color_bgr: np.ndarray, intrinsics: dict[str, Any])
                     object_points = np.asarray(object_rows, dtype=np.float32)
                     ok, rvec, tvec, rms = solve_and_score(object_points, image_points)
                     corner_results.append((variant_name, ok, rvec, tvec, rms, object_points))
-                corner_variant, corner_ok, corner_rvec, corner_tvec, corner_rms, best_object_points = min(
-                    corner_results,
-                    key=lambda item: item[4],
+                # FIX hand-eye: usa SEMPRE l'ordinamento coerente con ArUco
+                # (TL,TR,BR,BL = "xy_down"). Scegliere per-frame la variante a
+                # reproiezione minima (min(...)) cambiava il sistema di
+                # riferimento del target tra un frame e l'altro (riflessioni /
+                # rotazioni di 90-180 deg): le rotazioni relative usate dalla
+                # hand-eye risultavano incoerenti pur con reproiezione bassa,
+                # producendo residui enormi (20cm / 50 deg). L'ordinamento e'
+                # ora fisso: un eventuale offset costante di frame viene
+                # assorbito dalla trasformazione mano-occhio X.
+                _by_variant = {item[0]: item for item in corner_results}
+                corner_variant, corner_ok, corner_rvec, corner_tvec, corner_rms, best_object_points = (
+                    _by_variant["xy_down"]
                 )
+                # Ambiguita' di posa del piano (planar pose ambiguity): con un
+                # target planare la PnP ammette due soluzioni speculari. Se la
+                # seconda soluzione ha reproiezione simile alla migliore, la posa
+                # (in particolare la rotazione) e' inaffidabile e va scartata.
+                pose_ambiguity_ratio: float | None = None
+                min_ambiguity_ratio = float(
+                    os.environ.get("D1_GRASP6D_APRILGRID_MIN_AMBIGUITY_RATIO", "2.0")
+                )
+                if corner_ok and hasattr(cv2, "solvePnPGeneric"):
+                    try:
+                        n_sol, rvecs_amb, tvecs_amb, reproj_amb = cv2.solvePnPGeneric(
+                            best_object_points,
+                            image_points,
+                            K,
+                            dist,
+                            flags=cv2.SOLVEPNP_IPPE,
+                        )
+                        if reproj_amb is not None and n_sol >= 2:
+                            errs = sorted(float(e) for e in np.asarray(reproj_amb).reshape(-1))
+                            if errs[0] > 1e-9:
+                                pose_ambiguity_ratio = errs[1] / errs[0]
+                    except cv2.error:
+                        pose_ambiguity_ratio = None
                 center_ok, center_rvec, center_tvec, center_rms = solve_and_score(
                     center_object_points,
                     center_image_points,
@@ -1207,6 +1317,15 @@ def detect_calibration_marker(color_bgr: np.ndarray, intrinsics: dict[str, Any])
                         "T_camera_target": _transform(R, np.asarray(tvec).reshape(3)).tolist(),
                         "corners_px": returned_points.tolist(),
                     }
+                    if pose_method == "tag_corners":
+                        out["pose_ambiguity_ratio"] = (
+                            None if pose_ambiguity_ratio is None else round(pose_ambiguity_ratio, 3)
+                        )
+                        out["pose_ambiguous"] = (
+                            pose_ambiguity_ratio is not None
+                            and pose_ambiguity_ratio < min_ambiguity_ratio
+                        )
+                        out["min_ambiguity_ratio"] = min_ambiguity_ratio
                     if corner_ok:
                         out["corner_reprojection_rms_px"] = round(corner_rms, 4)
                         out["corner_object_variant"] = corner_variant
@@ -1347,10 +1466,16 @@ def append_handeye_sample(
             "target_type",
             "visible_marker_count",
             "pose_method",
+            "object_point_variant",
             "reprojection_rms_px",
             "corner_reprojection_rms_px",
             "center_reprojection_rms_px",
             "marker_ids",
+            "pose_ambiguity_ratio",
+            "pose_ambiguous",
+            # corner grezzi: consentono di ricalcolare la posa offline se serve
+            # ridiagnosticare senza dover ricatturare (root-cause hand-eye).
+            "corners_px",
         )
         if isinstance(marker, dict) and key in marker
     }

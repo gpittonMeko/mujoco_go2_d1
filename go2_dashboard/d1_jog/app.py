@@ -2512,6 +2512,21 @@ def create_d1_jog_app() -> Flask:
                 "hint": f"Frame scartato: reproiezione {float(_reproj):.2f}px > {_max_reproj:.2f}px. Vista instabile o sfocata.",
                 "marker": marker, "hold": hold,
             }), 422
+        # Posa planare ambigua: la rotazione stimata e' inaffidabile (due
+        # soluzioni speculari quasi equivalenti) e falsa la hand-eye. Scarta.
+        if bool(marker.get("pose_ambiguous")):
+            grasp6d.record_calibration_event(
+                "sample_failed", reason="pose_ambiguous",
+                visible_marker_count=_tags, reprojection_rms_px=_reproj, hold_ok=True,
+            )
+            return jsonify({
+                "ok": False, "reason": "pose_ambiguous",
+                "hint": (
+                    f"Frame scartato: posa ambigua (ratio {marker.get('pose_ambiguity_ratio')} < "
+                    f"{marker.get('min_ambiguity_ratio')}). Inclina di piu' la griglia rispetto alla camera."
+                ),
+                "marker": marker, "hold": hold,
+            }), 422
         raw = feedback.get("servo_deg") if isinstance(feedback, dict) else None
         import numpy as np
 
@@ -2721,8 +2736,12 @@ def create_d1_jog_app() -> Flask:
             and os.environ.get("D1_GRASP6D_ALLOW_CENTER_ONLY_CALIB", "0").lower() not in {"1", "true", "yes", "on"}
         )
         reproj_ok = reproj is None or float(reproj) <= max_reproj
-        if ok and tags >= min_tags and corners_ok and reproj_ok:
+        ambiguous = bool(marker.get("pose_ambiguous"))
+        if ok and tags >= min_tags and corners_ok and reproj_ok and not ambiguous:
             verdict = "good"
+        elif ambiguous:
+            # Reproiezione ok ma rotazione ambigua: NON salvare, inclina il target.
+            verdict = "warn"
         elif ok and tags >= max(4, min_tags // 2) and corners_ok:
             verdict = "warn"
         else:
@@ -2737,7 +2756,9 @@ def create_d1_jog_app() -> Flask:
                 "max_reprojection_rms_px": max_reproj,
                 "pose_method": pose_method,
                 "target_type": target_type,
-                "reason": marker.get("reason"),
+                "pose_ambiguous": ambiguous,
+                "pose_ambiguity_ratio": marker.get("pose_ambiguity_ratio"),
+                "reason": "pose_ambiguous" if ambiguous else marker.get("reason"),
             }
         )
 
@@ -3721,6 +3742,42 @@ def create_d1_jog_app() -> Flask:
                     "ok": True,
                     "saved": False,
                     "reason": "aprilgrid_corner_pose_required",
+                    "marker": marker,
+                    "move": move,
+                    "hold": hold,
+                    "base_source": base_source,
+                    "rest_s": rest_s,
+                    "offset_meta": offset_meta,
+                }
+            ), 200
+        # Posa planare ambigua: rotazione inaffidabile -> non deve entrare nella
+        # hand-eye (causa dei residui enormi). Scarto e continuo l'orbita.
+        if bool(marker.get("pose_ambiguous")):
+            grasp6d.record_calibration_event(
+                "auto_sample_skipped",
+                reason="pose_ambiguous",
+                visible_marker_count=visible_tags,
+                reprojection_rms_px=reproj,
+                hold_ok=True,
+            )
+            _set_auto_progress(
+                running=False,
+                phase="skipped",
+                saved=False,
+                reason="pose_ambiguous",
+                message=(
+                    f"Step {step + 1}: skip · posa ambigua "
+                    f"(ratio {marker.get('pose_ambiguity_ratio')}) · inclina di piu' il target"
+                ),
+                tags=visible_tags,
+                reproj_px=reproj,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "saved": False,
+                    "reason": "pose_ambiguous",
+                    "pose_ambiguity_ratio": marker.get("pose_ambiguity_ratio"),
                     "marker": marker,
                     "move": move,
                     "hold": hold,
