@@ -1253,27 +1253,46 @@ def detect_calibration_marker(color_bgr: np.ndarray, intrinsics: dict[str, Any])
                     object_points = np.asarray(object_rows, dtype=np.float32)
                     ok, rvec, tvec, rms = solve_and_score(object_points, image_points)
                     corner_results.append((variant_name, ok, rvec, tvec, rms, object_points))
-                # FIX hand-eye: usa SEMPRE l'ordinamento coerente con ArUco
-                # (TL,TR,BR,BL = "xy_down"). Scegliere per-frame la variante a
-                # reproiezione minima (min(...)) cambiava il sistema di
-                # riferimento del target tra un frame e l'altro (riflessioni /
-                # rotazioni di 90-180 deg): le rotazioni relative usate dalla
-                # hand-eye risultavano incoerenti pur con reproiezione bassa,
-                # producendo residui enormi (20cm / 50 deg). L'ordinamento e'
-                # ora fisso: un eventuale offset costante di frame viene
-                # assorbito dalla trasformazione mano-occhio X.
+                # Posa a corner: tra i 4 ordinamenti dei corner scegliamo quello a
+                # reproiezione minima, cioe' l'unico che combacia con la convenzione
+                # dei corner restituiti da ArUco per questo board. DUE ambiguita'
+                # vanno pero' scartate perche' falsano le rotazioni della hand-eye
+                # (reproiezione bassa ma sistema di riferimento del target sbagliato):
+                #  1) ambiguita' di ORDINAMENTO: se la 2a variante valida ha una
+                #     reproiezione simile alla migliore, l'ordinamento non e' univoco
+                #     e frame diversi rischiano di scegliere convenzioni diverse.
+                #  2) ambiguita' PLANARE (front/back): un target planare ammette due
+                #     pose speculari; se sono quasi equivalenti la rotazione e'
+                #     inaffidabile. La rileviamo con solvePnPGeneric/IPPE.
                 _by_variant = {item[0]: item for item in corner_results}
-                corner_variant, corner_ok, corner_rvec, corner_tvec, corner_rms, best_object_points = (
-                    _by_variant["xy_down"]
+                _valid_corner = sorted(
+                    (r for r in corner_results if r[1]), key=lambda item: item[4]
                 )
-                # Ambiguita' di posa del piano (planar pose ambiguity): con un
-                # target planare la PnP ammette due soluzioni speculari. Se la
-                # seconda soluzione ha reproiezione simile alla migliore, la posa
-                # (in particolare la rotazione) e' inaffidabile e va scartata.
-                pose_ambiguity_ratio: float | None = None
                 min_ambiguity_ratio = float(
                     os.environ.get("D1_GRASP6D_APRILGRID_MIN_AMBIGUITY_RATIO", "2.0")
                 )
+                order_ambiguity_ratio: float | None = None
+                if _valid_corner:
+                    (
+                        corner_variant,
+                        corner_ok,
+                        corner_rvec,
+                        corner_tvec,
+                        corner_rms,
+                        best_object_points,
+                    ) = _valid_corner[0]
+                    if len(_valid_corner) > 1 and corner_rms > 1e-9:
+                        order_ambiguity_ratio = _valid_corner[1][4] / corner_rms
+                else:
+                    (
+                        corner_variant,
+                        corner_ok,
+                        corner_rvec,
+                        corner_tvec,
+                        corner_rms,
+                        best_object_points,
+                    ) = _by_variant["xy_down"]
+                pose_ambiguity_ratio: float | None = None
                 if corner_ok and hasattr(cv2, "solvePnPGeneric"):
                     try:
                         n_sol, rvecs_amb, tvecs_amb, reproj_amb = cv2.solvePnPGeneric(
@@ -1321,10 +1340,18 @@ def detect_calibration_marker(color_bgr: np.ndarray, intrinsics: dict[str, Any])
                         out["pose_ambiguity_ratio"] = (
                             None if pose_ambiguity_ratio is None else round(pose_ambiguity_ratio, 3)
                         )
-                        out["pose_ambiguous"] = (
+                        out["order_ambiguity_ratio"] = (
+                            None if order_ambiguity_ratio is None else round(order_ambiguity_ratio, 3)
+                        )
+                        planar_ambiguous = (
                             pose_ambiguity_ratio is not None
                             and pose_ambiguity_ratio < min_ambiguity_ratio
                         )
+                        order_ambiguous = (
+                            order_ambiguity_ratio is not None
+                            and order_ambiguity_ratio < min_ambiguity_ratio
+                        )
+                        out["pose_ambiguous"] = bool(planar_ambiguous or order_ambiguous)
                         out["min_ambiguity_ratio"] = min_ambiguity_ratio
                     if corner_ok:
                         out["corner_reprojection_rms_px"] = round(corner_rms, 4)
@@ -1472,6 +1499,7 @@ def append_handeye_sample(
             "center_reprojection_rms_px",
             "marker_ids",
             "pose_ambiguity_ratio",
+            "order_ambiguity_ratio",
             "pose_ambiguous",
             # corner grezzi: consentono di ricalcolare la posa offline se serve
             # ridiagnosticare senza dover ricatturare (root-cause hand-eye).
