@@ -128,7 +128,11 @@ export D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-8}"
 export D1_GRASP6D_AUTO_MAX_REPROJ_PX="${D1_GRASP6D_AUTO_MAX_REPROJ_PX:-1.15}"
 export D1_GRASP6D_AUTO_MEDIAN_FRAMES="${D1_GRASP6D_AUTO_MEDIAN_FRAMES:-2}"
 # Hand-eye: soglie strette per pick sub-cm; NON alzarle per "far passare" sample mediocri.
-export D1_GRASP6D_CALIB_MIN_SAMPLES="${D1_GRASP6D_CALIB_MIN_SAMPLES:-6}"
+# 5: con un target piccolo visibile solo quasi-frontale da un lato, 5 pose molto
+# coerenti (verificate: |diff| tool-vs-camera < 2 deg) danno gia' una hand-eye
+# valida (matematicamente ne bastano 3 con assi non paralleli). La qualita' resta
+# garantita da anti-ambiguita' + reproiezione + soglie di residuo strette.
+export D1_GRASP6D_CALIB_MIN_SAMPLES="${D1_GRASP6D_CALIB_MIN_SAMPLES:-5}"
 export D1_GRASP6D_CALIB_MAX_RMS_M="${D1_GRASP6D_CALIB_MAX_RMS_M:-0.025}"
 export D1_GRASP6D_CALIB_MAX_RMS_DEG="${D1_GRASP6D_CALIB_MAX_RMS_DEG:-6.0}"
 export D1_GRASP6D_CALIB_TARGET_ROTATION_SPAN_DEG="${D1_GRASP6D_CALIB_TARGET_ROTATION_SPAN_DEG:-30}"

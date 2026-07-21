@@ -293,7 +293,7 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn('@app.route("/api/pick/metric/calibration/prune"', app)
         self.assertIn("too_few_visible_tags", app)
         self.assertIn('D1_GRASP6D_CALIB_MAX_RMS_M="${D1_GRASP6D_CALIB_MAX_RMS_M:-0.025}"', env)
-        self.assertIn('D1_GRASP6D_CALIB_MIN_SAMPLES="${D1_GRASP6D_CALIB_MIN_SAMPLES:-6}"', env)
+        self.assertIn('D1_GRASP6D_CALIB_MIN_SAMPLES="${D1_GRASP6D_CALIB_MIN_SAMPLES:-5}"', env)
         self.assertIn("pose_mode=auto_pose_mode", app)
         self.assertIn("max_step_deg=auto_step_deg", app)
         self.assertIn("min_delay_ms=auto_min_delay", app)
