@@ -92,21 +92,24 @@ export D1_GRASP6D_AUTO_MOVE_DEG_PER_S="${D1_GRASP6D_AUTO_MOVE_DEG_PER_S:-5}"
 export D1_GRASP6D_AUTO_MOVE_MODE="${D1_GRASP6D_AUTO_MOVE_MODE:-1}"
 export D1_GRASP6D_AUTO_JOINT_STEP_DEG="${D1_GRASP6D_AUTO_JOINT_STEP_DEG:-1.5}"
 export D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS="${D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS:-220}"
-export D1_GRASP6D_AUTO_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_DELTA_DEG:-28}"
+export D1_GRASP6D_AUTO_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_DELTA_DEG:-16}"
 # Ampiezza rotazione polso (J3/J4/J5) per la diversita' d'asse hand-eye.
-export D1_GRASP6D_AUTO_ROT_AMPL_DEG="${D1_GRASP6D_AUTO_ROT_AMPL_DEG:-24}"
-export D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE="${D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE:-1.55}"
+# 14 deg: abbastanza per assi diversi ma la piccola AprilGrid resta nel campo
+# della camera da polso ravvicinata (a 24 deg usciva -> step a 2-3 tag).
+export D1_GRASP6D_AUTO_ROT_AMPL_DEG="${D1_GRASP6D_AUTO_ROT_AMPL_DEG:-14}"
+export D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE="${D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE:-1.2}"
 # Fase SEARCH: prima di orbitare, il braccio prova alcune viste molto diverse
 # (yaw ampio, piu' alto, polso meno puntato in basso) e sceglie quella con piu' tag.
 export D1_GRASP6D_AUTO_SEARCH_ENABLE="${D1_GRASP6D_AUTO_SEARCH_ENABLE:-1}"
-export D1_GRASP6D_AUTO_SEARCH_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_SEARCH_MAX_DELTA_DEG:-30}"
+export D1_GRASP6D_AUTO_SEARCH_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_SEARCH_MAX_DELTA_DEG:-16}"
 export D1_GRASP6D_AUTO_SEARCH_GOOD_TAGS="${D1_GRASP6D_AUTO_SEARCH_GOOD_TAGS:-18}"
 export D1_GRASP6D_AUTO_SEARCH_SETTLE_S="${D1_GRASP6D_AUTO_SEARCH_SETTLE_S:-0.8}"
 # Se AUTO non aggiunge sample per N step (bloccato su pochi tag/residuo alto),
-# rifa' la search per spostare il braccio su viste nuove; se il residuo e'
-# catastrofico con sample degeneri li azzera e riparte pulito.
-export D1_GRASP6D_AUTO_RESEARCH_AFTER_STUCK="${D1_GRASP6D_AUTO_RESEARCH_AFTER_STUCK:-3}"
-export D1_GRASP6D_AUTO_RESET_ON_STUCK="${D1_GRASP6D_AUTO_RESET_ON_STUCK:-1}"
+# rifa' la search per spostare il braccio su viste nuove. NON azzerare i sample
+# sullo stuck: con offset piccoli la griglia resta visibile e conviene accumulare
+# e potare, non ripartire (i reset causavano i loop di ricerca a 0 tag).
+export D1_GRASP6D_AUTO_RESEARCH_AFTER_STUCK="${D1_GRASP6D_AUTO_RESEARCH_AFTER_STUCK:-8}"
+export D1_GRASP6D_AUTO_RESET_ON_STUCK="${D1_GRASP6D_AUTO_RESET_ON_STUCK:-0}"
 # Pool: accumula almeno questo numero di viste diverse prima di potare verso i
 # migliori (con 6=min non si possono scartare gli outlier).
 export D1_GRASP6D_AUTO_COLLECT_TARGET="${D1_GRASP6D_AUTO_COLLECT_TARGET:-12}"
