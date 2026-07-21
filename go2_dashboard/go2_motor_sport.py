@@ -58,11 +58,21 @@ def _parse_subprocess_json(raw: str) -> dict[str, Any]:
     return {"ok": False, "reason": "bad_json", "stdout_tail": text[-800:]}
 
 
-def sport_motion_allowed() -> tuple[bool, str | None]:
+def sport_motion_allowed(*, mode: str | None = None) -> tuple[bool, str | None]:
     if os.environ.get("GO2_ENABLE_BASE_MOTION", "0").strip().lower() not in {"1", "true", "yes", "on"}:
         return False, "GO2_ENABLE_BASE_MOTION=1 richiesto sulla NX."
     if os.environ.get("GO2_LOCAL", "0").strip().lower() not in {"1", "true", "yes", "on"}:
         return False, "GO2_LOCAL=1 richiesto (server sulla Jetson)."
+    # Lock batteria: consente solo crouch (messa in sicurezza), niente stand/move/balance.
+    mode_l = (mode or "").strip().lower()
+    if mode_l and mode_l != "crouch":
+        try:
+            from go2_dashboard.go2_battery_protect import battery_lock_active
+
+            if battery_lock_active():
+                return False, "battery_critical_lock — ricaricare prima di stand/move/balance."
+        except Exception:
+            pass
     return True, None
 
 
@@ -225,12 +235,18 @@ def _run_sport_script(argv: list[str], env: dict[str, str], timeout_s: float) ->
             return {"ok": False, "reason": repr(exc)}
 
 
-def invoke_sport_pose(mode: str, *, pre_balance_crouch: bool = False, trigger: str = "manuale") -> dict[str, Any]:
+def invoke_sport_pose(
+    mode: str,
+    *,
+    pre_balance_crouch: bool = False,
+    trigger: str = "manuale",
+    arm_recovery: bool = True,
+) -> dict[str, Any]:
     mode = str(mode).strip().lower()
     if mode not in {"stand_up", "crouch"}:
         return {"ok": False, "reason": f"mode invalido: {mode!r}"}
 
-    ok_gate, reason = sport_motion_allowed()
+    ok_gate, reason = sport_motion_allowed(mode=mode)
     if not ok_gate:
         return {"ok": False, "reason": reason}
 
@@ -243,7 +259,7 @@ def invoke_sport_pose(mode: str, *, pre_balance_crouch: bool = False, trigger: s
     result = _run_sport_script(["--mode", mode, "--enable", "1"], env, timeout_s)
     result.setdefault("mode", mode)
 
-    if mode == "crouch" and result.get("ok"):
+    if mode == "crouch" and result.get("ok") and arm_recovery:
         try:
             from go2_dashboard.go2_thermal_runtime import arm_crouch_recovery
 
@@ -270,7 +286,7 @@ def invoke_sport_pose(mode: str, *, pre_balance_crouch: bool = False, trigger: s
 
 
 def invoke_sport_balance(*, trigger: str = "termico") -> dict[str, Any]:
-    ok_gate, reason = sport_motion_allowed()
+    ok_gate, reason = sport_motion_allowed(mode="balance")
     if not ok_gate:
         return {"ok": False, "reason": reason}
     timeout_s = float(os.environ.get("GO2_SPORT_RPC_TIMEOUT_S", "55"))
@@ -289,7 +305,7 @@ def invoke_sport_move(
     trigger: str = "termico",
     plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ok_gate, reason = sport_motion_allowed()
+    ok_gate, reason = sport_motion_allowed(mode="move")
     if not ok_gate:
         return {"ok": False, "reason": reason}
 

@@ -1,0 +1,3 @@
+file 'C:/Users/user/MujocoCaneD1/mujoco_go2_d1/data/audio/_tts_parts/part0.mp3'
+file 'C:/Users/user/MujocoCaneD1/mujoco_go2_d1/data/audio/_tts_parts/part1.mp3'
+file 'C:/Users/user/MujocoCaneD1/mujoco_go2_d1/data/audio/_tts_parts/part2.mp3'

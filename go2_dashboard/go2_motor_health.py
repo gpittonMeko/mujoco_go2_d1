@@ -270,4 +270,10 @@ def get_lowstate_store() -> LowStateStore:
                 attach_thermal_protector(_STORE.snapshot)
             except Exception:
                 pass
+            try:
+                from go2_dashboard.go2_battery_protect import attach_battery_protector
+
+                attach_battery_protector(_STORE.snapshot)
+            except Exception:
+                pass
         return _STORE

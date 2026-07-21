@@ -333,7 +333,16 @@ class ThermalProtector:
             self._last_critical_logged = ()
 
     def _recovery_enabled(self) -> bool:
-        return bool(get_thermal_settings().get("recovery_stand_enabled", True))
+        if not bool(get_thermal_settings().get("recovery_stand_enabled", True)):
+            return False
+        try:
+            from go2_dashboard.go2_battery_protect import battery_lock_active
+
+            if battery_lock_active():
+                return False
+        except Exception:
+            pass
+        return True
 
     def _tick_crouch(
         self,

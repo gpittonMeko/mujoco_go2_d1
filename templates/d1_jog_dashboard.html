@@ -1574,14 +1574,17 @@
         const rotLimitY = yRot(rotLimitDeg).toFixed(1);
         return '<div style="margin-top:10px">Trend residuo: deve scendere sotto ' + transLimitCm.toFixed(1) + 'cm e ' + rotLimitDeg.toFixed(1) + '°</div><svg viewBox="0 0 300 160" style="width:100%;max-width:520px;height:160px;margin-top:6px;background:#081f30;border-radius:10px"><rect x="25" y="20" width="250" height="120" fill="rgba(255,255,255,.04)" stroke="rgba(255,255,255,.18)"/><line x1="25" x2="275" y1="' + transLimitY + '" y2="' + transLimitY + '" stroke="#6ef2a7" stroke-dasharray="4 3"/><line x1="25" x2="275" y1="' + rotLimitY + '" y2="' + rotLimitY + '" stroke="#8fd3ff" stroke-dasharray="4 3"/><polyline points="' + transPts + '" fill="none" stroke="#ffb86b" stroke-width="3"/><polyline points="' + rotPts + '" fill="none" stroke="#8fd3ff" stroke-width="3"/></svg><div>arancio = cm, azzurro = gradi, linee tratteggiate = soglie</div>';
       })() : '<div style="margin-top:10px">Trend residuo: disponibile da 8 sample.</div>';
+      const residualReady = !!(quality && quality.residual_available);
       const rows = samples.map(function (row) {
+        const hasErr = residualReady && row.translation_error_m != null;
         const terr = Number(row.translation_error_m || 0) * 100;
         const rerr = Number(row.rotation_error_deg || 0);
         const tag = row.visible_marker_count == null ? '?' : row.visible_marker_count;
         const img = row.reprojection_rms_px == null ? '?' : Number(row.reprojection_rms_px).toFixed(2);
-        const w = Math.min(100, Math.max(2, terr * 4));
-        const bad = terr > 5 || rerr > 12;
-        return '<div style="margin-top:5px;color:' + (bad ? '#ffb3ba' : '#dff8ff') + '">#' + row.index + ' · err ' + terr.toFixed(1) + 'cm / ' + rerr.toFixed(1) + '° · tag ' + tag + ' · img ' + img + 'px<div style="height:5px;border-radius:999px;background:rgba(255,255,255,.14)"><span style="display:block;height:5px;width:' + w.toFixed(0) + '%;border-radius:999px;background:' + (bad ? '#ff7b86' : '#6ef2a7') + '"></span></div></div>';
+        const w = hasErr ? Math.min(100, Math.max(2, terr * 4)) : 0;
+        const bad = hasErr && (terr > 5 || rerr > 12);
+        const errText = hasErr ? (terr.toFixed(1) + 'cm / ' + rerr.toFixed(1) + '°') : 'err — (serve residuo)';
+        return '<div style="margin-top:5px;color:' + (bad ? '#ffb3ba' : '#dff8ff') + '">#' + row.index + ' · ' + errText + ' · tag ' + tag + ' · img ' + img + 'px<div style="height:5px;border-radius:999px;background:rgba(255,255,255,.14)"><span style="display:block;height:5px;width:' + w.toFixed(0) + '%;border-radius:999px;background:' + (bad ? '#ff7b86' : '#6ef2a7') + '"></span></div></div>';
       }).join('');
       const residual = formatCalibResidual(quality);
       const worst = quality && quality.worst_sample ? (' · peggiore #' + quality.worst_sample.index) : '';
@@ -1615,9 +1618,10 @@
       const rmax = Number(q.max_rotation_rms_deg || 6.0);
       const good = !!q.build_ready && !!(q.residual && q.residual.ok);
       const nSamples = Number(q.sample_count || 0);
+      const minS = Number(q.min_samples || 6);
       let head, headColor;
       if (good) { head = 'CALIBRAZIONE VALIDA ✓'; headColor = '#0e3a24'; }
-      else if (tm == null) { head = 'Servono piu\' sample (' + nSamples + '/8) per calcolare il residuo'; headColor = '#3a340e'; }
+      else if (tm == null) { head = 'Residuo non ancora calcolato · servono ' + minS + ' sample (hai ' + nSamples + '). Salvane altri ' + Math.max(0, minS - nSamples) + '.'; headColor = '#3a340e'; }
       else { head = 'NON ANCORA VALIDA · residuo ' + tm.toFixed(1) + 'cm / ' + rd.toFixed(1) + '°'; headColor = '#3a1414'; }
       const axisSpread = Number(q.rotation_axis_spread_deg || 0);
       let blocks = '';
@@ -1630,7 +1634,24 @@
       if (q.avg_visible_marker_count != null) blocks += calibGauge('Tag medi visti', Number(q.avg_visible_marker_count), 12, '', true, '');
       if (q.avg_reprojection_rms_px != null) blocks += calibGauge('Reproiezione img', Number(q.avg_reprojection_rms_px), 1.15, 'px', false, '');
       return '<div style="padding:8px 10px;border-radius:10px;background:' + headColor + ';font-weight:800;margin-bottom:6px">' + head
-        + ' <span style="font-weight:600;font-size:12px">· ' + nSamples + ' sample</span></div>' + blocks;
+        + ' <span style="font-weight:600;font-size:12px">· ' + nSamples + ' sample</span></div>' + renderCalibCoach(q) + blocks;
+    }
+
+    function renderCalibCoach(q) {
+      const nm = q && q.next_move;
+      if (!nm || !nm.text) return '';
+      const done = !!nm.done;
+      const bg = done ? '#0e3a24' : '#123a52';
+      let checklist = '';
+      if (Array.isArray(nm.checklist)) {
+        checklist = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + nm.checklist.map(function (c) {
+          const col = c.done ? '#6ef2a7' : '#ffce6b';
+          return '<span style="font-size:11px;padding:3px 7px;border-radius:999px;border:1px solid ' + col + ';color:' + col + '">' + (c.done ? '✓' : '•') + ' ' + c.label + ' (' + c.span_deg + '°)</span>';
+        }).join('') + '</div>';
+      }
+      return '<div style="padding:9px 11px;border-radius:10px;background:' + bg + ';margin-bottom:8px">'
+        + '<div style="font-size:11px;letter-spacing:.5px;color:#9fd6ff;font-weight:800">COACH · PROSSIMA MOSSA</div>'
+        + '<div style="font-size:14px;font-weight:800;margin-top:2px">' + nm.text + '</div>' + checklist + '</div>';
     }
 
     async function refreshCalibRefsState() {
@@ -1677,7 +1698,8 @@
       if (!quality || !quality.ok) return;
       const count = Number(quality.sample_count || 0);
       const progress = Number(quality.progress_percent || 0);
-      setKpi('calibProgress', progress + '% · ' + count + ' / 8');
+      const minS = Number(quality.min_samples || 6);
+      setKpi('calibProgress', progress + '% · ' + count + ' / ' + minS + ' sample');
       setKpi('calibResidualState', formatCalibResidual(quality));
       renderCalibrationDebugGraph(quality);
       const ready = !!quality.build_ready;

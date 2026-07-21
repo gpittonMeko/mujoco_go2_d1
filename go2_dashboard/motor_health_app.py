@@ -20,6 +20,11 @@ except ImportError:
     attach_thermal_protector = None  # type: ignore
     get_thermal_settings = None  # type: ignore
 
+try:
+    from go2_dashboard.go2_battery_protect import attach_battery_protector
+except ImportError:
+    attach_battery_protector = None  # type: ignore
+
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -95,6 +100,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <p class="meta">Topic DDS <code>rt/lowstate</code> · UI aggiornata ogni {{ poll_ms }} ms</p>
   <p id="conn" class="meta">Connessione…</p>
   <p id="thermal" class="meta"></p>
+  <p id="battery" class="meta"></p>
   <div class="sport-row">
     <button type="button" class="sport-btn" id="btnStand">Stand up</button>
     <button type="button" class="sport-btn secondary" id="btnCrouch">Crouch</button>
@@ -387,9 +393,30 @@ _INDEX_HTML = """<!DOCTYPE html>
         conn.innerHTML = badge(connCls, j.connected ? 'live' : 'stale') +
           ' messaggi=' + j.message_count + ' · età ' + (j.last_message_age_s ?? '?') + 's · domain ' + j.dds_domain;
         const tr = await fetch('/api/motor/thermal/status').then(r => r.json()).catch(() => null);
+        const br = await fetch('/api/motor/battery/status').then(r => r.json()).catch(() => null);
         const tp = document.getElementById('thermal');
+        const bp = document.getElementById('battery');
         const balanceC = th.balance_threshold_c;
         const crouchC = th.crouch_threshold_c;
+        if (bp) {
+          if (br && br.enabled) {
+            const crit = br.crit_soc_percent != null ? br.crit_soc_percent : 10;
+            const clear = br.clear_soc_percent != null ? br.clear_soc_percent : 18;
+            const lastSoc = br.last_soc_percent != null ? br.last_soc_percent : (d.bms && d.bms.soc_percent);
+            if (br.lock_active) {
+              bp.innerHTML = badge('critical', 'BATTERY LOCK') +
+                ' SOC ' + lastSoc + '% ≤ ' + crit + '% → braccio zero + crouch · sblocca ≥ ' + clear + '%';
+              if (br.last_trigger_at) {
+                bp.innerHTML += '<br>' + badge('critical', 'trigger') + ' ' + br.last_trigger_at;
+              }
+            } else {
+              bp.innerHTML = badge(Number(lastSoc) <= crit ? 'critical' : (Number(lastSoc) <= 15 ? 'warn' : 'ok'), 'batteria') +
+                ' SOC ' + lastSoc + '% · auto-shutdown ≤ ' + crit + '% (clear ≥ ' + clear + '%)';
+            }
+          } else {
+            bp.innerHTML = badge('off', 'protezione batteria OFF') + ' (GO2_BATTERY_PROTECT=1 sulla NX)';
+          }
+        }
         if (tr && tr.enabled) {
           const h = tr.threshold_hysteresis_c || 7;
           const balClear = tr.balance_clear_threshold_c != null ? tr.balance_clear_threshold_c : (tr.balance_threshold_c - h);
@@ -436,10 +463,17 @@ _INDEX_HTML = """<!DOCTYPE html>
           renderWeightPlan(null);
         }
         const tempCardCls = th.above_crouch_threshold ? 'critical' : (th.above_balance_threshold ? 'warn' : 'ok');
+        const soc = Number(d.bms.soc_percent);
+        let socCls = 'ok';
+        if (br && br.lock_active) socCls = 'critical';
+        else if (soc <= (br && br.crit_soc_percent != null ? br.crit_soc_percent : 10)) socCls = 'critical';
+        else if (soc <= (br && br.warn_soc_percent != null ? br.warn_soc_percent : 20)) socCls = 'warn';
+        let socLabel = soc + ' %';
+        if (br && br.lock_active) socLabel += ' · LOCK';
         document.getElementById('summary').innerHTML = [
           ['Temp max', th.max_temperature_c + ' °C (' + (th.max_temperature_motor || '—') + ')', tempCardCls],
-          ['SOC', d.bms.soc_percent + ' %', 'ok'],
-          ['Bus', d.power.voltage_v + ' V / ' + d.power.current_a + ' A', 'ok'],
+          ['SOC', socLabel, socCls],
+          ['Bus', d.power.voltage_v + ' V / ' + d.power.current_a + ' A', socCls === 'critical' ? 'critical' : 'ok'],
           ['Ventole', (th.fan_frequency_hz || []).join(', ') + ' Hz', th.above_balance_threshold ? 'warn' : 'ok'],
           ['NTC scheda', th.temperature_ntc1_c + ' / ' + th.temperature_ntc2_c + ' °C', 'ok'],
         ].map(function (row) {
@@ -469,6 +503,7 @@ def create_motor_health_app() -> Flask:
     poll_ms = int(os.environ.get("GO2_MOTOR_HEALTH_UI_POLL_MS", "2000"))
     store = get_lowstate_store()
     thermal = attach_thermal_protector(store.snapshot) if attach_thermal_protector else None
+    battery = attach_battery_protector(store.snapshot) if attach_battery_protector else None
 
     @app.route("/")
     def index() -> str:
@@ -487,6 +522,13 @@ def create_motor_health_app() -> Flask:
         if thermal is None:
             return jsonify({"ok": True, "enabled": False, "reason": "thermal module unavailable"})
         st = thermal.status()
+        return jsonify({"ok": True, **st})
+
+    @app.route("/api/motor/battery/status", methods=["GET"])
+    def api_motor_battery_status() -> Any:
+        if battery is None:
+            return jsonify({"ok": True, "enabled": False, "reason": "battery module unavailable"})
+        st = battery.status()
         return jsonify({"ok": True, **st})
 
     @app.route("/api/motor/thermal/settings", methods=["GET", "POST"])

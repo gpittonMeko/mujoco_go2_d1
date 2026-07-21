@@ -37,6 +37,7 @@ PUSH_FILES = [
     "go2_dashboard/go2_motor_event_log.py",
     "go2_dashboard/go2_motor_health.py",
     "go2_dashboard/go2_motor_sport.py",
+    "go2_dashboard/go2_battery_protect.py",
     "go2_dashboard/go2_thermal_protect.py",
     "go2_dashboard/go2_thermal_runtime.py",
     "go2_dashboard/go2_thermal_settings.py",

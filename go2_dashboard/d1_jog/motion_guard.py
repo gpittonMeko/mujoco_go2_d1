@@ -11,6 +11,8 @@ _plane: str = "idle"  # idle | joint | cartesian
 _safety_preempt: bool = False
 _safety_source: str | None = None
 _safety_started_at: float | None = None
+_battery_lock: bool = False
+_battery_lock_reason: str | None = None
 
 
 def status() -> dict[str, str | bool]:
@@ -24,6 +26,8 @@ def status() -> dict[str, str | bool]:
             "safety_preempt": _safety_preempt,
             "safety_source": _safety_source,
             "safety_started_at": _safety_started_at,
+            "battery_lock": _battery_lock,
+            "battery_lock_reason": _battery_lock_reason,
         }
 
 
@@ -52,12 +56,36 @@ def safety_preempt_active() -> bool:
         return bool(_safety_preempt)
 
 
+def set_battery_lock(reason: str) -> None:
+    """Blocca jog/programmi braccio finché la batteria non risale sopra la soglia clear."""
+    global _battery_lock, _battery_lock_reason, _kind, _plane
+    with _lock:
+        _battery_lock = True
+        _battery_lock_reason = reason
+        _kind = "idle"
+        _plane = "idle"
+
+
+def clear_battery_lock(*, reason: str | None = None) -> None:
+    global _battery_lock, _battery_lock_reason
+    with _lock:
+        _battery_lock = False
+        _battery_lock_reason = reason
+
+
+def battery_lock_active() -> bool:
+    with _lock:
+        return bool(_battery_lock)
+
+
 def claim_plane(plane: str) -> tuple[bool, str | None]:
     """Blocca l'altro piano di controllo (slider vs frecce TCP)."""
     global _plane
     if plane not in ("joint", "cartesian"):
         return False, "invalid_plane"
     with _lock:
+        if _battery_lock and plane in {"joint", "cartesian"}:
+            return False, f"battery_lock:{_battery_lock_reason or 'low_soc'}"
         if _plane not in ("idle", plane):
             return False, f"plane_busy:{_plane}"
         _plane = plane
@@ -77,6 +105,9 @@ def try_acquire(kind: str) -> tuple[bool, str | None]:
     if kind not in allowed:
         return False, "invalid_motion_kind"
     with _lock:
+        # In low-battery lock: solo hold/admin/zero (ripriega), niente jog/programmi.
+        if _battery_lock and kind not in {"hold", "admin", "zero"}:
+            return False, f"battery_lock:{_battery_lock_reason or 'low_soc'}"
         if _safety_preempt and kind not in {"hold", "admin"}:
             return False, f"motion_preempted:{_safety_source or 'safety'}"
         if _plane not in ("idle", kind):
