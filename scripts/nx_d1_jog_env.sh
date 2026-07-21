@@ -92,11 +92,13 @@ export D1_GRASP6D_AUTO_MOVE_DEG_PER_S="${D1_GRASP6D_AUTO_MOVE_DEG_PER_S:-5}"
 export D1_GRASP6D_AUTO_MOVE_MODE="${D1_GRASP6D_AUTO_MOVE_MODE:-1}"
 export D1_GRASP6D_AUTO_JOINT_STEP_DEG="${D1_GRASP6D_AUTO_JOINT_STEP_DEG:-1.5}"
 export D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS="${D1_GRASP6D_AUTO_WAYPOINT_DELAY_MS:-220}"
-export D1_GRASP6D_AUTO_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_DELTA_DEG:-16}"
+export D1_GRASP6D_AUTO_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_MAX_DELTA_DEG:-22}"
 # Ampiezza rotazione polso (J3/J4/J5) per la diversita' d'asse hand-eye.
-# 14 deg: abbastanza per assi diversi ma la piccola AprilGrid resta nel campo
-# della camera da polso ravvicinata (a 24 deg usciva -> step a 2-3 tag).
-export D1_GRASP6D_AUTO_ROT_AMPL_DEG="${D1_GRASP6D_AUTO_ROT_AMPL_DEG:-14}"
+# 20 deg: compromesso tra due vincoli opposti sulla camera da polso ravvicinata:
+#  - troppo piccolo (14) -> griglia quasi FRONTALE -> posa planare AMBIGUA -> scartata;
+#  - troppo grande (24)  -> griglia ESCE dal campo -> pochi tag.
+# 20 da' abbastanza inclinazione per rompere l'ambiguita' tenendo >=12 tag.
+export D1_GRASP6D_AUTO_ROT_AMPL_DEG="${D1_GRASP6D_AUTO_ROT_AMPL_DEG:-20}"
 export D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE="${D1_GRASP6D_AUTO_STUCK_OFFSET_SCALE:-1.2}"
 # Fase SEARCH: prima di orbitare, il braccio prova alcune viste molto diverse
 # (yaw ampio, piu' alto, polso meno puntato in basso) e sceglie quella con piu' tag.
