@@ -270,7 +270,7 @@ class D1RgbAndMotorUiTests(unittest.TestCase):
         self.assertIn("AUTO_STUCK_OFFSET_SCALE", env)
         self.assertIn("D1_GRASP6D_AUTO_MAX_REPROJ_PX", env)
         self.assertIn("D1_GRASP6D_AUTO_MEDIAN_FRAMES", env)
-        self.assertIn('D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-12}"', env)
+        self.assertIn('D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-8}"', env)
         self.assertIn('D1_GRASP6D_CALIB_MIN_NEW_TRANSLATION_M="${D1_GRASP6D_CALIB_MIN_NEW_TRANSLATION_M:-0.04}"', env)
         html = (ROOT / "templates" / "d1_jog_dashboard.html").read_text(encoding="utf-8", errors="replace")
         self.assertIn("max_samples: 16", html)
