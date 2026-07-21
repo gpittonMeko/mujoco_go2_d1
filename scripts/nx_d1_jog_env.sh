@@ -120,8 +120,11 @@ export D1_GRASP6D_AUTO_COLLECT_TARGET="${D1_GRASP6D_AUTO_COLLECT_TARGET:-12}"
 export D1_GRASP6D_REF_MAX_TRANS_ERR_M="${D1_GRASP6D_REF_MAX_TRANS_ERR_M:-0.03}"
 export D1_GRASP6D_REF_MAX_ROT_ERR_DEG="${D1_GRASP6D_REF_MAX_ROT_ERR_DEG:-8.0}"
 export D1_GRASP6D_AUTO_REF_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_REF_MAX_DELTA_DEG:-70}"
-# 12 tag bastano su AprilGrid 6x4 se la board e' centrata; 14 bloccava troppo spesso AUTO.
-export D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-12}"
+# 8 tag = 32 corner: PnP gia' stabile. Le viste INCLINATE (non ambigue) mostrano
+# meno tag perche' parte della griglia esce dal campo; a 12 venivano scartate
+# proprio le viste buone per la hand-eye. Reproiezione + anti-ambiguita' restano
+# come garanzie di qualita'.
+export D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-8}"
 export D1_GRASP6D_AUTO_MAX_REPROJ_PX="${D1_GRASP6D_AUTO_MAX_REPROJ_PX:-1.15}"
 export D1_GRASP6D_AUTO_MEDIAN_FRAMES="${D1_GRASP6D_AUTO_MEDIAN_FRAMES:-2}"
 # Hand-eye: soglie strette per pick sub-cm; NON alzarle per "far passare" sample mediocri.
