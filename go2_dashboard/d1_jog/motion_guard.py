@@ -13,6 +13,12 @@ _safety_source: str | None = None
 _safety_started_at: float | None = None
 _battery_lock: bool = False
 _battery_lock_reason: str | None = None
+_battery_override_until: float = 0.0
+_battery_override_reason: str | None = None
+
+
+def _battery_override_active_unlocked() -> bool:
+    return _battery_override_until > time.monotonic()
 
 
 def status() -> dict[str, str | bool]:
@@ -28,6 +34,8 @@ def status() -> dict[str, str | bool]:
             "safety_started_at": _safety_started_at,
             "battery_lock": _battery_lock,
             "battery_lock_reason": _battery_lock_reason,
+            "battery_override_active": _battery_override_active_unlocked(),
+            "battery_override_reason": _battery_override_reason,
         }
 
 
@@ -75,7 +83,22 @@ def clear_battery_lock(*, reason: str | None = None) -> None:
 
 def battery_lock_active() -> bool:
     with _lock:
-        return bool(_battery_lock)
+        return bool(_battery_lock and not _battery_override_active_unlocked())
+
+
+def begin_battery_override(*, reason: str, duration_s: float = 360.0) -> None:
+    """Eccezione esplicita e temporanea; il lock resta memorizzato e torna attivo alla fine."""
+    global _battery_override_until, _battery_override_reason
+    with _lock:
+        _battery_override_until = time.monotonic() + max(1.0, min(600.0, float(duration_s)))
+        _battery_override_reason = str(reason)
+
+
+def end_battery_override() -> None:
+    global _battery_override_until, _battery_override_reason
+    with _lock:
+        _battery_override_until = 0.0
+        _battery_override_reason = None
 
 
 def claim_plane(plane: str) -> tuple[bool, str | None]:
@@ -84,7 +107,7 @@ def claim_plane(plane: str) -> tuple[bool, str | None]:
     if plane not in ("joint", "cartesian"):
         return False, "invalid_plane"
     with _lock:
-        if _battery_lock and plane in {"joint", "cartesian"}:
+        if _battery_lock and not _battery_override_active_unlocked() and plane in {"joint", "cartesian"}:
             return False, f"battery_lock:{_battery_lock_reason or 'low_soc'}"
         if _plane not in ("idle", plane):
             return False, f"plane_busy:{_plane}"
@@ -106,7 +129,7 @@ def try_acquire(kind: str) -> tuple[bool, str | None]:
         return False, "invalid_motion_kind"
     with _lock:
         # In low-battery lock: solo hold/admin/zero (ripriega), niente jog/programmi.
-        if _battery_lock and kind not in {"hold", "admin", "zero"}:
+        if _battery_lock and not _battery_override_active_unlocked() and kind not in {"hold", "admin", "zero"}:
             return False, f"battery_lock:{_battery_lock_reason or 'low_soc'}"
         if _safety_preempt and kind not in {"hold", "admin"}:
             return False, f"motion_preempted:{_safety_source or 'safety'}"

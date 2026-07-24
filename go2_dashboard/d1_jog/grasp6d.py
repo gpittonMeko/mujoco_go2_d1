@@ -1758,7 +1758,10 @@ def prune_handeye_outliers(
 
 
 def _candidate_orientation(vertical: np.ndarray, closing: np.ndarray) -> np.ndarray:
-    x_axis = -vertical / max(float(np.linalg.norm(vertical)), 1e-12)  # tool +X approccia verso il basso
+    # Presa top-down: tool +X e' l'asse di approccio e tool +Y l'asse
+    # reale di chiusura delle chele. La dimensione corta viene selezionata
+    # separatamente nel ranking dei candidati.
+    x_axis = -vertical / max(float(np.linalg.norm(vertical)), 1e-12)
     y_axis = closing - x_axis * float(np.dot(closing, x_axis))
     y_axis /= max(float(np.linalg.norm(y_axis)), 1e-12)
     z_axis = np.cross(x_axis, y_axis)
@@ -1889,6 +1892,7 @@ def plan_grasp(
         return {
             "ok": False,
             "reason": "no_safe_6d_grasp_candidate",
+            "grasp_mode": "top_down_short_axis",
             "T_base_box": T_base_box.tolist(),
             "grasp_bias_base_m": grasp_bias.tolist(),
             "estimated_floor_z_base_m": float(
@@ -1898,11 +1902,21 @@ def plan_grasp(
             "gripper_max_aperture_m": aperture,
             "rejection_counts": rejected,
         }
-    candidates.sort(key=lambda item: float(item["score"]))
+    # La metrica IK da sola puo' preferire il lato lungo perche' richiede meno
+    # movimento articolare. Per una pinza parallela viene prima il lato corto:
+    # massimizza il margine rispetto all'apertura reale e impedisce la proposta
+    # fisicamente troppo larga osservata sul box (78.7 mm invece di 54.1 mm).
+    candidates.sort(
+        key=lambda item: (
+            float(item["closing_width_m"]),
+            float(item["score"]),
+        )
+    )
     best = candidates[0]
     return {
         "ok": True,
         "source": "rgbd_cuboid_6d",
+        "grasp_mode": "top_down_short_axis",
         "T_base_box": T_base_box.tolist(),
         "grasp_bias_base_m": grasp_bias.tolist(),
         "estimated_floor_z_base_m": float(

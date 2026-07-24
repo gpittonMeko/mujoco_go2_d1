@@ -18,6 +18,7 @@ from go2_dashboard.d1_jog import (
     cartesian,
     grasp6d,
     jog_stream,
+    motion_guard,
     orbbec_capture,
     pick_preset,
     pick_vision,
@@ -4411,7 +4412,20 @@ def create_d1_jog_app() -> Flask:
     def _reusable_pregrasp_plan() -> dict[str, Any] | None:
         loaded = _load_grasp6d_run()
         previous = loaded.get("run") if loaded.get("ok") else None
-        if not isinstance(previous, dict) or previous.get("mode") != "pregrasp_only" or not previous.get("ok"):
+        if not isinstance(previous, dict):
+            return None
+        resume_partial_approach = (
+            previous.get("mode") == "grasp6d"
+            and not previous.get("ok")
+            and previous.get("reason") == "position_timeout"
+            and any(
+                step.get("name") == "approach" and step.get("reason") == "position_timeout"
+                for step in (previous.get("steps") or [])
+                if isinstance(step, dict)
+            )
+        )
+        completed_pregrasp = previous.get("mode") == "pregrasp_only" and bool(previous.get("ok"))
+        if not completed_pregrasp and not resume_partial_approach:
             return None
         finished_at = float(previous.get("finished_at") or 0.0)
         max_age_s = float(os.environ.get("D1_GRASP6D_PREGRASP_PLAN_MAX_AGE_S", "300"))
@@ -4422,12 +4436,19 @@ def create_d1_jog_app() -> Flask:
             return None
         selected = ((frozen.get("plan") or {}).get("selected") or {})
         pre = ((selected.get("pregrasp") or {}).get("servo_deg"))
+        grasp = ((selected.get("grasp") or {}).get("servo_deg"))
         feedback = service.read_servo_deg(fast=True)
         current = feedback.get("servo_deg") if feedback.get("ok") else None
-        if not isinstance(pre, list) or not isinstance(current, list) or len(pre) < 6 or len(current) < 6:
+        expected = grasp if resume_partial_approach else pre
+        if not isinstance(expected, list) or not isinstance(current, list) or len(expected) < 6 or len(current) < 6:
             return None
-        tolerance_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_REUSE_TOL_DEG", "4.0"))
-        errors = [abs(float(current[i]) - float(pre[i])) for i in range(6)]
+        tolerance_deg = float(
+            os.environ.get(
+                "D1_GRASP6D_PARTIAL_APPROACH_REUSE_TOL_DEG" if resume_partial_approach else "D1_GRASP6D_PREGRASP_REUSE_TOL_DEG",
+                "10.0" if resume_partial_approach else "4.0",
+            )
+        )
+        errors = [abs(float(current[i]) - float(expected[i])) for i in range(6)]
         if max(errors) > tolerance_deg:
             return None
         frozen_bias = (frozen.get("plan") or {}).get("grasp_bias_base_m")
@@ -4448,6 +4469,7 @@ def create_d1_jog_app() -> Flask:
             "source_run_finished_at": finished_at,
             "pregrasp_error_deg": errors,
             "grasp_bias_base_m": current_bias,
+            "resume_stage": "partial_approach" if resume_partial_approach else "pregrasp",
         }
 
     def _execute_grasp6d_attempt(*, dry_run: bool = False, pregrasp_only: bool = False) -> dict[str, Any]:
@@ -4536,23 +4558,52 @@ def create_d1_jog_app() -> Flask:
         centers = np.stack([T[:3, 3] for T in target_ts])
         median_center = np.median(centers, axis=0)
         center_errors = np.linalg.norm(centers - median_center, axis=1)
-        inlier_indices = np.flatnonzero(center_errors <= max_view_spread_m)
-        medoid_index = int(np.argmin(center_errors))
-        spread_m = float(np.max(center_errors[inlier_indices])) if len(inlier_indices) else float("inf")
-        rotations = [target_ts[int(i)][:3, :3] for i in inlier_indices]
-        reference_R = target_ts[medoid_index][:3, :3]
+        position_inliers = [int(i) for i in np.flatnonzero(center_errors <= max_view_spread_m)]
         closing_symmetry = np.diag([1.0, -1.0, -1.0])
-        rot_spread_deg = 0.0
-        for R in rotations:
+
+        def equivalent_angle_deg(R: np.ndarray, reference_R: np.ndarray) -> float:
             # Una pinza parallela e' invariata ruotando di 180° attorno
             # all'asse di approccio (+X tool). La PCA del box puo' cambiare
             # segno tra frame e non deve trasformare una presa stabile in 180°.
-            angles = []
+            angles: list[float] = []
             for equivalent_R in (R, R @ closing_symmetry):
                 c = float(np.clip((np.trace(equivalent_R @ reference_R.T) - 1.0) * 0.5, -1.0, 1.0))
                 angles.append(math.degrees(math.acos(c)))
-            rot_spread_deg = max(rot_spread_deg, min(angles))
-        stable = len(inlier_indices) >= min_view_inliers and rot_spread_deg <= 7.0
+            return min(angles)
+
+        max_rot_spread_deg = float(os.environ.get("D1_GRASP6D_VIEW_MAX_ROT_SPREAD_DEG", "7.0"))
+        # Le dimensioni depth possono alternare asse lungo/corto e produrre due
+        # proposte a 90°. Seleziona il cluster rotazionale maggioritario, non
+        # usare il massimo globale (che rifiuterebbe anche 3 pose concordi).
+        rotational_inliers: list[int] = []
+        medoid_index = int(np.argmin(center_errors))
+        best_key: tuple[int, float] = (-1, float("-inf"))
+        for candidate_index in position_inliers:
+            reference_R = target_ts[candidate_index][:3, :3]
+            group = [
+                index
+                for index in position_inliers
+                if equivalent_angle_deg(target_ts[index][:3, :3], reference_R) <= max_rot_spread_deg
+            ]
+            angle_sum = sum(
+                equivalent_angle_deg(target_ts[index][:3, :3], reference_R)
+                for index in group
+            )
+            key = (len(group), -angle_sum)
+            if key > best_key:
+                best_key = key
+                rotational_inliers = group
+                medoid_index = candidate_index
+        reference_R = target_ts[medoid_index][:3, :3]
+        rot_spread_deg = max(
+            (
+                equivalent_angle_deg(target_ts[index][:3, :3], reference_R)
+                for index in rotational_inliers
+            ),
+            default=float("inf"),
+        )
+        spread_m = max((float(center_errors[index]) for index in rotational_inliers), default=float("inf"))
+        stable = len(rotational_inliers) >= min_view_inliers
         step(
             "view_stability_gate",
             {
@@ -4560,8 +4611,10 @@ def create_d1_jog_app() -> Flask:
                 "spread_m": spread_m,
                 "rotation_spread_deg": rot_spread_deg,
                 "valid_observations": len(observations),
-                "inlier_count": len(inlier_indices),
+                "position_inlier_count": len(position_inliers),
+                "inlier_count": len(rotational_inliers),
                 "required_inliers": min_view_inliers,
+                "orientation_medoid_index": medoid_index,
             },
         )
         if not stable:
@@ -4587,7 +4640,11 @@ def create_d1_jog_app() -> Flask:
                 {
                     "ok": True,
                     "skipped": True,
-                    "reason": "already_at_pregrasp_reusing_frozen_scan_plan",
+                    "reason": (
+                        "resume_partial_approach_reusing_frozen_scan_plan"
+                        if reusable.get("resume_stage") == "partial_approach"
+                        else "already_at_pregrasp_reusing_frozen_scan_plan"
+                    ),
                     "pregrasp_error_deg": reusable["pregrasp_error_deg"],
                 }
                 if reusable is not None
@@ -4816,7 +4873,15 @@ def create_d1_jog_app() -> Flask:
             _save_grasp_scan_pose(current)
             return jsonify(_grasp_scan_pose_status())
         if action == "goto":
-            out = _move_via_safe_transit(list(_load_grasp_scan_pose()["servo_deg"]))
+            override = body.get("battery_override_confirm") == "OVERRIDE_LOW_BATTERY_FOR_PREGRASP"
+            if override:
+                motion_guard.begin_battery_override(reason="explicit_one_shot_scan_for_pregrasp")
+            try:
+                out = _move_via_safe_transit(list(_load_grasp_scan_pose()["servo_deg"]))
+            finally:
+                if override:
+                    motion_guard.end_battery_override()
+            out["battery_override_used"] = override
             out["scan_pose"] = _grasp_scan_pose_status()
             return jsonify(out), (200 if out.get("ok") else 502)
         return jsonify({"ok": False, "reason": "invalid_scan_pose_action", "allowed": ["goto", "save_current"]}), 400
@@ -4977,7 +5042,15 @@ def create_d1_jog_app() -> Flask:
         bias_error = _validate_grasp_bias_confirmation(body)
         if bias_error is not None:
             return jsonify(bias_error), 409
-        out = _execute_grasp6d_attempt(pregrasp_only=True)
+        override = body.get("battery_override_confirm") == "OVERRIDE_LOW_BATTERY_FOR_PREGRASP"
+        if override:
+            motion_guard.begin_battery_override(reason="explicit_one_shot_pregrasp")
+        try:
+            out = _execute_grasp6d_attempt(pregrasp_only=True)
+        finally:
+            if override:
+                motion_guard.end_battery_override()
+        out["battery_override_used"] = override
         return jsonify(out), (200 if out.get("ok") else 422)
 
     @app.route("/api/pick/grasp6d/execute", methods=["POST"])

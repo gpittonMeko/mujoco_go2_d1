@@ -8,11 +8,19 @@ from unittest.mock import patch
 
 import numpy as np
 
-from go2_dashboard.d1_jog import grasp6d, pick_preset, pick_teach_model, program_store, service, wrist_rgbd
+from go2_dashboard.d1_jog import grasp6d, motion_guard, pick_preset, pick_teach_model, program_store, service, wrist_rgbd
 from go2_dashboard.d1_jog.app import create_d1_jog_app
 
 
 class Grasp6DMathTests(unittest.TestCase):
+    def test_top_down_grasp_closes_on_requested_short_axis(self) -> None:
+        vertical = np.asarray([0.0, 0.0, 1.0])
+        closing = np.asarray([0.0, 1.0, 0.0])
+        rotation = grasp6d._candidate_orientation(vertical, closing)
+        self.assertLess(float(np.dot(rotation[:, 0], vertical)), -0.999)
+        self.assertGreater(float(np.dot(rotation[:, 1], closing)), 0.999)
+        self.assertAlmostEqual(float(np.dot(rotation[:, 2], vertical)), 0.0, delta=1e-9)
+
     def test_aprilgrid_target_is_detected_from_multiple_tags(self) -> None:
         import cv2
 
@@ -408,6 +416,24 @@ class TeachCaptureTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 409, body)
         self.assertEqual(body.get("reason"), "explicit_grasp_bias_confirmation_required")
+
+    def test_battery_override_is_temporary_and_keeps_lock(self) -> None:
+        motion_guard.set_battery_lock("soc:10")
+        try:
+            allowed, reason = motion_guard.try_acquire("program")
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "battery_lock:soc:10")
+            motion_guard.begin_battery_override(reason="test", duration_s=10)
+            allowed, reason = motion_guard.try_acquire("program")
+            self.assertTrue(allowed, reason)
+            motion_guard.release("program")
+            motion_guard.end_battery_override()
+            allowed, reason = motion_guard.try_acquire("program")
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "battery_lock:soc:10")
+        finally:
+            motion_guard.end_battery_override()
+            motion_guard.clear_battery_lock(reason="test_cleanup")
 
     def test_absolute_grasp_bias_is_persisted(self) -> None:
         app = create_d1_jog_app()

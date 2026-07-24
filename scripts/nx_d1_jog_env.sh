@@ -203,7 +203,9 @@ export D1_GRASP6D_LIFT_STEP_DEG="${D1_GRASP6D_LIFT_STEP_DEG:-0.75}"
 export D1_GRASP6D_LIFT_DELAY_MS="${D1_GRASP6D_LIFT_DELAY_MS:-200}"
 export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-5}"
 export D1_GRASP6D_VIEW_MAX_SPREAD_M="${D1_GRASP6D_VIEW_MAX_SPREAD_M:-0.012}"
-export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-4}"
+# Tre inlier su cinque sono sufficienti se il gate metrico/rotazionale resta
+# stretto; sul box reale gli inlier erano 1.6 mm / 1.2°, con due depth outlier.
+export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-3}"
 # Non accettare target IK oltre 5 mm: sul lift un residuo ~11 mm e' stato
 # percepito come overshoot laterale e puo' trascinare l'oggetto.
 export D1_GRASP6D_IK_POS_TOL_M="${D1_GRASP6D_IK_POS_TOL_M:-0.005}"
