@@ -429,6 +429,17 @@
               <button id="btn6dPregrasp" class="warn" type="button" disabled>Prova pregrasp</button>
               <button id="btn6dExecute" class="danger" type="button" disabled>Grasp 6D completo</button>
             </div>
+            <div class="bias-editor">
+              <strong>CICLO AUTOMATICO · SCAN → PRENDI → RILASCIA → RIPETI</strong>
+              <p class="pick-primary-sub">Il rilascio usa la posa salvata; finché non ne salvi una, usa la SCAN come fallback.</p>
+              <div class="row" style="align-items:end">
+                <label>Cicli<input id="graspCycleCount" type="number" min="1" max="50" step="1" value="3"></label>
+                <button id="btnSaveReleasePose" class="neutral" type="button">Memorizza posa attuale come RILASCIO</button>
+                <button id="btnStartGraspCycle" class="danger" type="button">Avvia ciclo pick/drop</button>
+                <button id="btnStopGraspCycle" class="hold-fixed" type="button">STOP CICLO + HOLD</button>
+              </div>
+              <div id="graspCycleState" class="rt-json" style="margin-top:8px">Ciclo fermo.</div>
+            </div>
           </div>
           <div class="mode-grid" id="pickKpiGrid">
             <div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div>
@@ -1459,6 +1470,61 @@
         setStatus('Offset presa: ' + String(e), false);
       } finally {
         setBusy(false);
+      }
+    }
+
+    async function refreshGraspCycleStatus() {
+      try {
+        const state = await api('/api/pick/grasp6d/cycle/status', 'GET', undefined, 10000);
+        const target = q('graspCycleState');
+        if (target) {
+          target.textContent =
+            (state.running ? 'IN ESECUZIONE' : 'FERMO') +
+            ' · fase ' + (state.phase || 'idle') +
+            ' · ciclo ' + Number(state.iteration || 0) + '/' + Number(state.requested_cycles || 0) +
+            ' · riusciti ' + Number(state.successful_cycles || 0) +
+            (state.reason ? ' · ' + state.reason : '');
+        }
+        const start = q('btnStartGraspCycle');
+        if (start) start.disabled = !!state.running;
+      } catch (_) {}
+    }
+
+    async function startGraspCycle() {
+      const cycles = Math.max(1, Math.min(50, Number((q('graspCycleCount') || {}).value || 1)));
+      const accepted = window.confirm(
+        'Avviare ' + cycles + ' cicli automatici SCAN → presa → rilascio → SCAN? ' +
+        'Area completamente libera e mano pronta su STOP CICLO + HOLD.'
+      );
+      if (!accepted) return;
+      try {
+        await api(
+          '/api/pick/grasp6d/cycle/start',
+          'POST',
+          { confirm: 'RUN_GRASP6D_PICK_DROP_LOOP', cycles: cycles },
+          30000
+        );
+        await refreshGraspCycleStatus();
+      } catch (e) {
+        setStatus('Avvio ciclo: ' + String(e), false);
+      }
+    }
+
+    async function saveReleasePose() {
+      const accepted = window.confirm(
+        'Memorizzare la posa ATTUALE come posizione di rilascio? Il ciclo arriverà qui con oggetto e pinza chiusa.'
+      );
+      if (!accepted) return;
+      try {
+        const out = await api(
+          '/api/pick/grasp6d/release_pose',
+          'POST',
+          { action: 'save_current', confirm: 'SAVE_GRASP_RELEASE_POSE' },
+          30000
+        );
+        setStatus('Posa rilascio memorizzata: ' + compactNumbers(out.servo_deg, 1), true);
+      } catch (e) {
+        setStatus('Posa rilascio: ' + String(e), false);
       }
     }
 
@@ -2704,6 +2770,16 @@
     bindClick('btnGraspYPlus', () => adjustGraspBias('grasp_y_plus'));
     bindClick('btnGraspBiasReset', () => adjustGraspBias('reset_grasp_bias'));
     bindClick('btnSaveGraspBias', saveGraspBiasFromInputs);
+    bindClick('btnSaveReleasePose', saveReleasePose);
+    bindClick('btnStartGraspCycle', startGraspCycle);
+    bindClick('btnStopGraspCycle', async () => {
+      try {
+        await api('/api/pick/grasp6d/cycle/stop', 'POST', {}, 30000);
+        await refreshGraspCycleStatus();
+      } catch (e) {
+        setStatus('Stop ciclo: ' + String(e), false);
+      }
+    });
     bindClick('btnGotoGraspScan', async () => {
       const accepted = window.confirm('Muovere il braccio alla posa SCAN salvata passando dal transito sicuro? Area libera e braccio sostenuto.');
       if (!accepted) return;
@@ -2917,6 +2993,10 @@
     refreshGrasp6dStatus(false);
     refreshHandeyeCalibration().catch(function () { setAutoMotionUi(true); });
     refresh6dLogs();
+    refreshGraspCycleStatus();
+    setInterval(function () {
+      if (!document.hidden) refreshGraspCycleStatus();
+    }, 1000);
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) {
         stopRealtimeMonitor();

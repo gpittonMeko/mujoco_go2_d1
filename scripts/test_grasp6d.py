@@ -451,6 +451,25 @@ class TeachCaptureTests(unittest.TestCase):
         self.assertAlmostEqual(saved["grasp_bias_base_y_m"], -0.004)
         self.assertAlmostEqual(saved["grasp_bias_base_z_m"], 0.002)
 
+    def test_pick_drop_cycle_requires_explicit_confirmation(self) -> None:
+        app = create_d1_jog_app()
+        app.config.update(TESTING=True)
+        response = app.test_client().post("/api/pick/grasp6d/cycle/start", json={"cycles": 3})
+        body = response.get_json()
+        self.assertEqual(response.status_code, 409, body)
+        self.assertEqual(body.get("reason"), "explicit_pick_drop_loop_confirmation_required")
+
+    def test_release_pose_save_requires_explicit_confirmation(self) -> None:
+        app = create_d1_jog_app()
+        app.config.update(TESTING=True)
+        response = app.test_client().post(
+            "/api/pick/grasp6d/release_pose",
+            json={"action": "save_current"},
+        )
+        body = response.get_json()
+        self.assertEqual(response.status_code, 409, body)
+        self.assertEqual(body.get("reason"), "explicit_release_pose_confirmation_required")
+
     def test_handeye_target_pdf_is_downloadable(self) -> None:
         app = create_d1_jog_app()
         app.config.update(TESTING=True)

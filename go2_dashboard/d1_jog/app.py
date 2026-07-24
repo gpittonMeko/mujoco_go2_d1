@@ -46,6 +46,9 @@ _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
 _GRASP_SCAN_POSE_PATH = Path(
     os.environ.get("D1_GRASP6D_SCAN_POSE", str(PROJECT_ROOT / "data" / "d1_grasp6d_scan_pose.json"))
 )
+_GRASP_RELEASE_POSE_PATH = Path(
+    os.environ.get("D1_GRASP6D_RELEASE_POSE", str(PROJECT_ROOT / "data" / "d1_grasp6d_release_pose.json"))
+)
 # Posa indicata manualmente dall'utente come vista SCAN valida prima che un
 # restart facesse cedere la spalla. Il file runtime, quando presente, prevale.
 _VALIDATED_GRASP_SCAN_DEFAULT = [-78.4, -3.0, 5.3, -10.6, 90.2, 0.0, 5.5]
@@ -226,6 +229,36 @@ def create_d1_jog_app() -> Flask:
         "best_base": None,      # servo_deg della posa migliore
         "session_key": None,    # per resettare a nuova sessione
     }
+    grasp_cycle_lock = threading.Lock()
+    grasp_cycle_stop = threading.Event()
+    grasp_cycle_state: dict[str, Any] = {
+        "ok": True,
+        "running": False,
+        "phase": "idle",
+        "iteration": 0,
+        "requested_cycles": 0,
+        "successful_cycles": 0,
+        "failed_cycles": 0,
+        "reason": None,
+        "updated_at": None,
+        "history": [],
+    }
+
+    def _set_grasp_cycle_state(**fields: Any) -> None:
+        with grasp_cycle_lock:
+            grasp_cycle_state.update(fields)
+            grasp_cycle_state["updated_at"] = time.time()
+            phase = str(grasp_cycle_state.get("phase") or "")
+            history = list(grasp_cycle_state.get("history") or [])
+            history.append(
+                {
+                    "at": time.strftime("%H:%M:%S"),
+                    "phase": phase,
+                    "iteration": grasp_cycle_state.get("iteration"),
+                    "reason": grasp_cycle_state.get("reason"),
+                }
+            )
+            grasp_cycle_state["history"] = history[-80:]
 
     def _set_auto_progress(**fields: Any) -> None:
         with auto_calibration_progress_lock:
@@ -520,6 +553,40 @@ def create_d1_jog_app() -> Flask:
             "tolerance_deg": tolerance_deg,
             "aligned": aligned,
         }
+
+    def _load_grasp_release_pose() -> dict[str, Any]:
+        target = list(_load_grasp_scan_pose()["servo_deg"])
+        source = "scan_fallback"
+        saved_at = None
+        try:
+            raw = json.loads(_GRASP_RELEASE_POSE_PATH.read_text(encoding="utf-8"))
+            saved = raw.get("servo_deg") if isinstance(raw, dict) else None
+            if isinstance(saved, list) and len(saved) >= 7:
+                target = service.clamp_servo_deg([float(x) for x in saved[:7]])
+                source = "saved_runtime"
+                saved_at = raw.get("saved_at")
+        except (OSError, ValueError, TypeError):
+            pass
+        return {
+            "ok": True,
+            "servo_deg": target,
+            "source": source,
+            "saved_at": saved_at,
+            "path": str(_GRASP_RELEASE_POSE_PATH),
+        }
+
+    def _save_grasp_release_pose(servo_deg: list[float]) -> dict[str, Any]:
+        target = service.clamp_servo_deg([float(x) for x in servo_deg[:7]])
+        record = {
+            "version": 1,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "servo_deg": target,
+        }
+        _GRASP_RELEASE_POSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _GRASP_RELEASE_POSE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        tmp.replace(_GRASP_RELEASE_POSE_PATH)
+        return {"ok": True, **record, "path": str(_GRASP_RELEASE_POSE_PATH)}
 
     def _scan_side_target(side: str) -> list[float]:
         # Il mapping fisico va verificato sul robot: i riferimenti storici erano invertiti
@@ -2054,7 +2121,17 @@ def create_d1_jog_app() -> Flask:
                 },
             }
         center_camera = box.get("center_camera_m")
-        min_target_depth = float(os.environ.get("D1_GRASP6D_MIN_TARGET_DEPTH_M", "0.38"))
+        configured_min_target_depth = float(os.environ.get("D1_GRASP6D_MIN_TARGET_DEPTH_M", "0.38"))
+        high_fill_threshold = float(os.environ.get("D1_GRASP6D_HIGH_FILL_THRESHOLD", "0.50"))
+        high_fill_min_depth = float(os.environ.get("D1_GRASP6D_HIGH_FILL_MIN_TARGET_DEPTH_M", "0.34"))
+        # MinZ nominale e' conservativo. Se il frame reale ha almeno il 50%
+        # di depth valida, accettiamo la misura fino a 34 cm: nel test corrente
+        # a 35.7 cm la D456 fornisce il 73.8% di pixel depth validi.
+        min_target_depth = (
+            min(configured_min_target_depth, high_fill_min_depth)
+            if depth_valid >= high_fill_threshold
+            else configured_min_target_depth
+        )
         if isinstance(center_camera, list) and len(center_camera) >= 3:
             target_depth = float(center_camera[2])
             if target_depth < min_target_depth:
@@ -2071,6 +2148,9 @@ def create_d1_jog_app() -> Flask:
                         "ok": False,
                         "target_depth_m": target_depth,
                         "min_target_depth_m": min_target_depth,
+                        "configured_min_target_depth_m": configured_min_target_depth,
+                        "high_fill_override": depth_valid >= high_fill_threshold,
+                        "depth_valid_fraction": depth_valid,
                     },
                 }
         feedback = service.read_servo_deg(fast=True)
@@ -4778,6 +4858,96 @@ def create_d1_jog_app() -> Flask:
         _save_grasp6d_run(run)
         return run
 
+    def _run_grasp_pick_drop_cycle(cycles: int) -> None:
+        open_deg = pick_preset.gripper_open_j6_deg()
+        close_deg = pick_preset.gripper_close_j6_deg()
+        scan_pose = list(_load_grasp_scan_pose()["servo_deg"])
+        release_profile = _load_grasp_release_pose()
+        release_pose = list(release_profile["servo_deg"])
+        try:
+            program_runner.clear_stop_request()
+            _set_grasp_cycle_state(
+                running=True,
+                phase="goto_scan",
+                iteration=0,
+                requested_cycles=cycles,
+                successful_cycles=0,
+                failed_cycles=0,
+                reason=None,
+                release_pose_source=release_profile["source"],
+                history=[],
+            )
+            scan_pose[6] = open_deg
+            moved_scan = _move_via_safe_transit(scan_pose)
+            if not moved_scan.get("ok"):
+                raise RuntimeError(str(moved_scan.get("reason") or "goto_scan_failed"))
+            for index in range(cycles):
+                if grasp_cycle_stop.is_set():
+                    raise InterruptedError("cycle_stopped_by_user")
+                _set_grasp_cycle_state(phase="detect_pick_lift", iteration=index + 1, reason=None)
+                picked = _execute_grasp6d_attempt(pregrasp_only=False)
+                if not picked.get("ok"):
+                    raise RuntimeError(str(picked.get("reason") or "pick_failed"))
+                if grasp_cycle_stop.is_set():
+                    raise InterruptedError("cycle_stopped_by_user")
+
+                _set_grasp_cycle_state(phase="goto_release", iteration=index + 1)
+                release_closed = service.clamp_servo_deg(release_pose)
+                release_closed[6] = close_deg
+                moved_release = program_runner.move_to_servo_deg_smooth(
+                    release_closed,
+                    pin_joints={6: close_deg},
+                    max_step_deg=float(os.environ.get("D1_GRASP6D_LIFT_STEP_DEG", "0.75")),
+                    min_delay_ms=int(os.environ.get("D1_GRASP6D_LIFT_DELAY_MS", "200")),
+                )
+                if not moved_release.get("ok"):
+                    raise RuntimeError(str(moved_release.get("reason") or "goto_release_failed"))
+                if grasp_cycle_stop.is_set():
+                    raise InterruptedError("cycle_stopped_by_user")
+
+                _set_grasp_cycle_state(phase="drop", iteration=index + 1)
+                release_open = list(release_closed)
+                release_open[6] = open_deg
+                opened = program_runner.move_to_servo_deg_smooth(
+                    release_open,
+                    max_step_deg=0.75,
+                    min_delay_ms=180,
+                )
+                if not opened.get("ok"):
+                    raise RuntimeError(str(opened.get("reason") or "drop_open_failed"))
+                time.sleep(float(os.environ.get("D1_GRASP6D_DROP_SETTLE_S", "0.8")))
+
+                _set_grasp_cycle_state(phase="return_scan", iteration=index + 1)
+                returned = program_runner.move_to_servo_deg_smooth(
+                    scan_pose,
+                    pin_joints={6: open_deg},
+                    max_step_deg=1.0,
+                    min_delay_ms=180,
+                )
+                if not returned.get("ok"):
+                    raise RuntimeError(str(returned.get("reason") or "return_scan_failed"))
+                with grasp_cycle_lock:
+                    successful = int(grasp_cycle_state.get("successful_cycles") or 0) + 1
+                _set_grasp_cycle_state(successful_cycles=successful, phase="cycle_complete", iteration=index + 1)
+                time.sleep(float(os.environ.get("D1_GRASP6D_CYCLE_SETTLE_S", "1.0")))
+            _set_grasp_cycle_state(running=False, phase="completed", reason=None)
+        except InterruptedError as exc:
+            service.request_emergency_hold(reason="grasp_cycle_stop")
+            _set_grasp_cycle_state(running=False, phase="stopped", reason=str(exc))
+        except Exception as exc:
+            service.request_emergency_hold(reason="grasp_cycle_failed")
+            with grasp_cycle_lock:
+                failed = int(grasp_cycle_state.get("failed_cycles") or 0) + 1
+            _set_grasp_cycle_state(
+                running=False,
+                phase="failed",
+                reason=str(exc),
+                failed_cycles=failed,
+            )
+        finally:
+            grasp_cycle_stop.clear()
+            program_runner.clear_stop_request()
+
     @app.route("/api/pick/grasp/goto", methods=["POST"])
     def pick_grasp_goto() -> Response:
         body = request.get_json(silent=True) or {}
@@ -4885,6 +5055,25 @@ def create_d1_jog_app() -> Flask:
             out["scan_pose"] = _grasp_scan_pose_status()
             return jsonify(out), (200 if out.get("ok") else 502)
         return jsonify({"ok": False, "reason": "invalid_scan_pose_action", "allowed": ["goto", "save_current"]}), 400
+
+    @app.route("/api/pick/grasp6d/release_pose", methods=["GET", "POST"])
+    def pick_grasp6d_release_pose() -> Response:
+        if request.method == "GET":
+            return jsonify(_load_grasp_release_pose())
+        body = request.get_json(silent=True) or {}
+        if body.get("action") != "save_current" or body.get("confirm") != "SAVE_GRASP_RELEASE_POSE":
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "explicit_release_pose_confirmation_required",
+                    "required_confirm": "SAVE_GRASP_RELEASE_POSE",
+                }
+            ), 409
+        feedback = service.read_servo_deg(fast=True)
+        current = feedback.get("servo_deg") if feedback.get("ok") else None
+        if not isinstance(current, list) or len(current) < 7:
+            return jsonify({"ok": False, "reason": "release_pose_feedback_unavailable"}), 502
+        return jsonify(_save_grasp_release_pose(current))
 
     @app.route("/api/pick/grasp6d/tuning", methods=["GET", "POST"])
     def pick_grasp6d_tuning() -> Response:
@@ -5063,6 +5252,45 @@ def create_d1_jog_app() -> Flask:
             return jsonify(bias_error), 409
         out = _execute_grasp6d_attempt(pregrasp_only=False)
         return jsonify(out), (200 if out.get("ok") else 422)
+
+    @app.route("/api/pick/grasp6d/cycle/status", methods=["GET"])
+    def pick_grasp6d_cycle_status() -> Response:
+        with grasp_cycle_lock:
+            return jsonify(dict(grasp_cycle_state))
+
+    @app.route("/api/pick/grasp6d/cycle/start", methods=["POST"])
+    def pick_grasp6d_cycle_start() -> Response:
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "RUN_GRASP6D_PICK_DROP_LOOP":
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "explicit_pick_drop_loop_confirmation_required",
+                    "required_confirm": "RUN_GRASP6D_PICK_DROP_LOOP",
+                }
+            ), 409
+        cycles = max(1, min(50, int(body.get("cycles") or 1)))
+        with grasp_cycle_lock:
+            if grasp_cycle_state.get("running"):
+                return jsonify({"ok": False, "reason": "grasp_cycle_already_running", **grasp_cycle_state}), 409
+            grasp_cycle_state.update({"running": True, "phase": "starting", "requested_cycles": cycles})
+        grasp_cycle_stop.clear()
+        thread = threading.Thread(
+            target=_run_grasp_pick_drop_cycle,
+            args=(cycles,),
+            name="d1-grasp-pick-drop-cycle",
+            daemon=True,
+        )
+        thread.start()
+        return jsonify({"ok": True, "running": True, "cycles": cycles}), 202
+
+    @app.route("/api/pick/grasp6d/cycle/stop", methods=["POST"])
+    def pick_grasp6d_cycle_stop() -> Response:
+        grasp_cycle_stop.set()
+        program_runner.request_stop()
+        hold = service.request_emergency_hold(reason="grasp_cycle_stop_ui")
+        _set_grasp_cycle_state(phase="stopping", reason="stop_requested")
+        return jsonify({"ok": bool(hold.get("ok")), "hold": hold, "stop_requested": True})
 
     def _pick_gripper_move(j6_target: float, *, action: str) -> tuple[Response, int]:
         fb = service.read_servo_deg(fast=True)
