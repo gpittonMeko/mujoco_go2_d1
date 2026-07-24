@@ -49,9 +49,9 @@ _TUNING_DEFAULTS: dict[str, float] = {
     "min_box_height_floor_m": 0.008,
     "min_cluster_points": 35.0,
     "min_box_dim_m": 0.025,
-    "grasp_bias_base_x_m": 0.0,
-    "grasp_bias_base_y_m": 0.0,
-    "grasp_bias_base_z_m": 0.0,
+    "grasp_bias_base_x_m": 0.015,
+    "grasp_bias_base_y_m": -0.037,
+    "grasp_bias_base_z_m": -0.010,
 }
 _TUNING_LIMITS: dict[str, tuple[float, float]] = {
     "min_box_height_m": (0.006, 0.08),
@@ -162,10 +162,30 @@ def _servo_q_to_kinematic(q_rad: Iterable[float]) -> np.ndarray:
 
 
 def fk_tool_transform(q_rad: Iterable[float]) -> np.ndarray:
+    """Frame utensile storico usato dalla calibrazione hand-eye."""
     q = _servo_q_to_kinematic(q_rad)
     pos, R = kin.fk_full(q)
     tip = pos + R @ np.asarray(kin.TOOL_TIP_OFFSET, dtype=float)
     return _transform(R, tip)
+
+
+def grasp_tcp_offset_m() -> np.ndarray:
+    """Centro fisico delle chele, misurato con calibrazione pivot a 5 pose."""
+    return np.asarray(
+        [
+            float(os.environ.get("D1_GRASP6D_TCP_X_M", "0.10754")),
+            float(os.environ.get("D1_GRASP6D_TCP_Y_M", "0.00537")),
+            float(os.environ.get("D1_GRASP6D_TCP_Z_M", "-0.01226")),
+        ],
+        dtype=float,
+    )
+
+
+def fk_grasp_tcp_transform(q_rad: Iterable[float]) -> np.ndarray:
+    q = _servo_q_to_kinematic(q_rad)
+    pos, R = kin.fk_full(q)
+    tcp = pos + R @ grasp_tcp_offset_m()
+    return _transform(R, tcp)
 
 
 def _sample_base_tool_transform(sample: dict[str, Any]) -> np.ndarray:
@@ -198,7 +218,7 @@ def _pose_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
 
 
 def _numeric_pose_jacobian(q: np.ndarray, eps: float = 1e-5) -> np.ndarray:
-    base = fk_tool_transform(q)
+    base = fk_grasp_tcp_transform(q)
     J = np.zeros((6, 6), dtype=float)
     for i in range(6):
         q2 = q.copy()
@@ -209,7 +229,7 @@ def _numeric_pose_jacobian(q: np.ndarray, eps: float = 1e-5) -> np.ndarray:
         dq = q2[i] - q[i]
         if abs(dq) < 1e-12:
             continue
-        nxt = fk_tool_transform(q2)
+        nxt = fk_grasp_tcp_transform(q2)
         J[:3, i] = (nxt[:3, 3] - base[:3, 3]) / dq
         J[3:, i] = _rotation_vector(nxt[:3, :3] @ base[:3, :3].T) / dq
     return J
@@ -245,7 +265,7 @@ def ik_pose(
     for raw_seed in seeds:
         q = kin._clamp_q(raw_seed)
         for _ in range(max_iterations):
-            cur = fk_tool_transform(q)
+            cur = fk_grasp_tcp_transform(q)
             err = _pose_error(target, cur)
             pos_err = float(np.linalg.norm(err[:3]))
             rot_err = float(np.linalg.norm(err[3:]))
@@ -263,7 +283,7 @@ def ik_pose(
             if n > 0.12:
                 dq *= 0.12 / n
             q = kin._clamp_q(q + dq)
-        cur = fk_tool_transform(q)
+        cur = fk_grasp_tcp_transform(q)
         err = _pose_error(target, cur)
         result = {
             "q_rad": q.tolist(),
@@ -1758,9 +1778,8 @@ def prune_handeye_outliers(
 
 
 def _candidate_orientation(vertical: np.ndarray, closing: np.ndarray) -> np.ndarray:
-    # Presa top-down: tool +X e' l'asse di approccio e tool +Y l'asse
-    # reale di chiusura delle chele. La dimensione corta viene selezionata
-    # separatamente nel ranking dei candidati.
+    # Presa top-down: tool +X e' l'asse di approccio e tool +Y e' l'asse
+    # fisico di chiusura delle chele, verificato sulla presa reale.
     x_axis = -vertical / max(float(np.linalg.norm(vertical)), 1e-12)
     y_axis = closing - x_axis * float(np.dot(closing, x_axis))
     y_axis /= max(float(np.linalg.norm(y_axis)), 1e-12)
@@ -1855,7 +1874,11 @@ def plan_grasp(
         closing = Rb[:, int(axis_index)]
         for sign in (1.0, -1.0):
             R_tool = _candidate_orientation(vertical, closing * sign)
-            contact = T_base_box[:3, 3] + vertical * float(dims[2] * 0.20) + grasp_bias
+            # Il TCP pivot rappresenta il centro fisico della punta delle chele:
+            # per una presa laterale top-down deve raggiungere il centro in altezza
+            # del box. Il precedente +20% sommato al bias Z teneva la chiusura
+            # circa 25-30 mm troppo alta rispetto all'oggetto.
+            contact = T_base_box[:3, 3] + grasp_bias
             grasp_T = _transform(R_tool, contact)
             pre_T = grasp_T.copy()
             pre_T[:3, 3] -= R_tool[:, 0] * pregrasp_m
@@ -1893,6 +1916,7 @@ def plan_grasp(
             "ok": False,
             "reason": "no_safe_6d_grasp_candidate",
             "grasp_mode": "top_down_short_axis",
+            "physical_closing_tool_axis": "Y",
             "T_base_box": T_base_box.tolist(),
             "grasp_bias_base_m": grasp_bias.tolist(),
             "estimated_floor_z_base_m": float(
@@ -1917,6 +1941,7 @@ def plan_grasp(
         "ok": True,
         "source": "rgbd_cuboid_6d",
         "grasp_mode": "top_down_short_axis",
+        "physical_closing_tool_axis": "Y",
         "T_base_box": T_base_box.tolist(),
         "grasp_bias_base_m": grasp_bias.tolist(),
         "estimated_floor_z_base_m": float(

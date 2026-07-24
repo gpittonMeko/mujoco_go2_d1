@@ -536,7 +536,7 @@ def create_d1_jog_app() -> Flask:
         profile = _load_grasp_scan_pose()
         feedback = service.read_servo_deg(fast=True)
         current = feedback.get("servo_deg") if feedback.get("ok") else None
-        tolerance_deg = float(os.environ.get("D1_GRASP6D_SCAN_POSE_TOL_DEG", "4.0"))
+        tolerance_deg = float(os.environ.get("D1_GRASP6D_SCAN_POSE_TOL_DEG", "2.0"))
         errors = None
         aligned = False
         if isinstance(current, list) and len(current) >= 7:
@@ -4602,7 +4602,7 @@ def create_d1_jog_app() -> Flask:
             return run
 
         open_deg = pick_preset.gripper_open_j6_deg()
-        close_deg = pick_preset.gripper_close_j6_deg()
+        closed_empty_deg = pick_preset.gripper_close_j6_deg()
         pregrasp_step_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_STEP_DEG", "1.0"))
         pregrasp_delay_ms = int(os.environ.get("D1_GRASP6D_PREGRASP_DELAY_MS", "180"))
         contact_step_deg = float(os.environ.get("D1_GRASP6D_CONTACT_STEP_DEG", "0.5"))
@@ -4710,6 +4710,8 @@ def create_d1_jog_app() -> Flask:
         for attempt_index in range(1):
             run["attempt"] = attempt_index + 1
             selected = (latest.get("plan") or {}).get("selected") or {}
+            closing_width_m = float(selected.get("closing_width_m") or 0.0)
+            close_deg = pick_preset.gripper_grasp_j6_deg(closing_width_m)
             pre = ((selected.get("pregrasp") or {}).get("servo_deg"))
             if not isinstance(pre, list):
                 run["reason"] = "pregrasp_target_missing"
@@ -4769,7 +4771,16 @@ def create_d1_jog_app() -> Flask:
                 max_step_deg=contact_step_deg,
                 min_delay_ms=contact_delay_ms,
             )
-            step("close", {"attempt": attempt_index + 1, **closed})
+            step(
+                "close",
+                {
+                    "attempt": attempt_index + 1,
+                    "closing_width_m": closing_width_m,
+                    "commanded_gripper_deg": close_deg,
+                    "closed_empty_deg": closed_empty_deg,
+                    **closed,
+                },
+            )
             if not closed.get("ok"):
                 run["reason"] = closed.get("reason", "close_failed")
                 break
@@ -4800,6 +4811,7 @@ def create_d1_jog_app() -> Flask:
             gripper_blocked = actual_j6 is not None and actual_j6 > close_deg + float(
                 os.environ.get("D1_GRASP6D_GRIPPER_BLOCK_DELTA_DEG", "2.5")
             )
+            width_limited_command = close_deg > closed_empty_deg + 1.0
             post = _capture_grasp6d_plan()
             floor_absent = not post.get("ok") and post.get("reason") in {
                 "no_cluster_above_floor",
@@ -4813,12 +4825,14 @@ def create_d1_jog_app() -> Flask:
                 after_box = np.asarray((post.get("plan") or {}).get("T_base_box"), dtype=float)
                 if before_box.shape == (4, 4) and after_box.shape == (4, 4):
                     moved_with_lift = float(after_box[2, 3] - before_box[2, 3]) >= 0.04
-            verified = bool(gripper_blocked and (floor_absent or moved_with_lift))
+            verified = bool((gripper_blocked or width_limited_command) and (floor_absent or moved_with_lift))
             verify = {
                 "ok": verified,
                 "actual_gripper_deg": actual_j6,
-                "closed_empty_deg": close_deg,
+                "commanded_gripper_deg": close_deg,
+                "closed_empty_deg": closed_empty_deg,
                 "gripper_blocked": gripper_blocked,
+                "width_limited_command": width_limited_command,
                 "floor_position_absent": floor_absent,
                 "box_moved_with_lift": moved_with_lift,
             }
@@ -5178,7 +5192,7 @@ def create_d1_jog_app() -> Flask:
         if fb.get("ok") and isinstance(raw, list) and len(raw) >= 6:
             import numpy as np
 
-            T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
+            T_base_tool = grasp6d.fk_grasp_tcp_transform(np.radians(np.asarray(raw[:6], dtype=float)))
             live["T_base_tool"] = T_base_tool.tolist()
             run = out.get("run") if isinstance(out.get("run"), dict) else {}
             plan_capture = (

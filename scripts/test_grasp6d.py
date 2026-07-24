@@ -13,6 +13,21 @@ from go2_dashboard.d1_jog.app import create_d1_jog_app
 
 
 class Grasp6DMathTests(unittest.TestCase):
+    def test_gripper_command_tracks_object_width_without_full_close(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "D1_GRIPPER_OPEN_DEG": "49.7",
+                "D1_GRIPPER_CLOSED_DEG": "5",
+                "D1_GRIPPER_MAX_APERTURE_M": "0.085",
+                "D1_GRASP6D_GRIP_COMPRESSION_M": "0.005",
+            },
+        ):
+            target_deg = pick_preset.gripper_grasp_j6_deg(0.045)
+        self.assertGreater(target_deg, 5.0)
+        self.assertLess(target_deg, 49.7)
+        self.assertAlmostEqual(target_deg, 5.0 + 44.7 * (0.040 / 0.085), places=6)
+
     def test_top_down_grasp_closes_on_requested_short_axis(self) -> None:
         vertical = np.asarray([0.0, 0.0, 1.0])
         closing = np.asarray([0.0, 1.0, 0.0])
@@ -47,11 +62,26 @@ class Grasp6DMathTests(unittest.TestCase):
 
     def test_pose_ik_reconstructs_reachable_fk_pose(self) -> None:
         q = np.array([0.15, -1.0, 0.72, 0.18, 0.35, -0.2], dtype=float)
-        target = grasp6d.fk_tool_transform(q)
+        target = grasp6d.fk_grasp_tcp_transform(q)
         out = grasp6d.ik_pose(target, primary_seed=q + 0.03)
         self.assertTrue(out.get("ok"), out)
         self.assertLessEqual(float(out["position_error_m"]), 0.008)
         self.assertLessEqual(float(out["rotation_error_deg"]), 5.0)
+
+    def test_grasp_tcp_is_separate_from_handeye_tool_frame(self) -> None:
+        q = np.zeros(6, dtype=float)
+        handeye = grasp6d.fk_tool_transform(q)
+        grasp = grasp6d.fk_grasp_tcp_transform(q)
+        np.testing.assert_allclose(handeye[:3, :3], grasp[:3, :3], atol=1e-12)
+        expected_local_delta = grasp6d.grasp_tcp_offset_m() - np.asarray(
+            grasp6d.kin.TOOL_TIP_OFFSET,
+            dtype=float,
+        )
+        np.testing.assert_allclose(
+            handeye[:3, :3].T @ (grasp[:3, 3] - handeye[:3, 3]),
+            expected_local_delta,
+            atol=1e-12,
+        )
 
     def test_floor_plane_ransac(self) -> None:
         rng = np.random.default_rng(4)

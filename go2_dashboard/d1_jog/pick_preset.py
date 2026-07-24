@@ -640,6 +640,17 @@ def gripper_close_j6_deg(scan_servo_deg: list[float] | None = None, **_kw: Any) 
     return 5.0
 
 
+def gripper_grasp_j6_deg(closing_width_m: float) -> float:
+    """Chiusura proporzionale alla larghezza, con una piccola compressione."""
+    open_deg = gripper_open_j6_deg()
+    closed_deg = gripper_close_j6_deg()
+    max_aperture_m = max(1e-6, float(os.environ.get("D1_GRIPPER_MAX_APERTURE_M", "0.085")))
+    compression_m = max(0.0, float(os.environ.get("D1_GRASP6D_GRIP_COMPRESSION_M", "0.005")))
+    target_aperture_m = max(0.0, min(max_aperture_m, float(closing_width_m) - compression_m))
+    aperture_fraction = target_aperture_m / max_aperture_m
+    return float(closed_deg + (open_deg - closed_deg) * aperture_fraction)
+
+
 def grasp_servo_approach_from_scan(
     scan_servo_deg: list[float],
     *,

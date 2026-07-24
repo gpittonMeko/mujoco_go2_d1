@@ -179,7 +179,9 @@ export D1_WRIST_RS_SERIAL="${D1_WRIST_RS_SERIAL:-}"
 export D1_WRIST_RGBD_WIDTH="${D1_WRIST_RGBD_WIDTH:-640}"
 export D1_WRIST_RGBD_HEIGHT="${D1_WRIST_RGBD_HEIGHT:-480}"
 export D1_WRIST_RGBD_FPS="${D1_WRIST_RGBD_FPS:-15}"
-export D1_WRIST_RGBD_WARMUP="${D1_WRIST_RGBD_WARMUP:-10}"
+# Quattro frame bastano dopo l'handover UVC; dieci rendevano ogni osservazione
+# ~35 s e il ciclo restava apparentemente fermo per diversi minuti.
+export D1_WRIST_RGBD_WARMUP="${D1_WRIST_RGBD_WARMUP:-4}"
 # librealsense rs400_visual_preset: 4=High Density (1 era Default).
 export D1_WRIST_RS_VISUAL_PRESET="${D1_WRIST_RS_VISUAL_PRESET:-4}"
 export D1_WRIST_RS_EMITTER_ENABLED="${D1_WRIST_RS_EMITTER_ENABLED:-1}"
@@ -201,15 +203,20 @@ export D1_GRASP6D_CONTACT_STEP_DEG="${D1_GRASP6D_CONTACT_STEP_DEG:-0.5}"
 export D1_GRASP6D_CONTACT_DELAY_MS="${D1_GRASP6D_CONTACT_DELAY_MS:-250}"
 export D1_GRASP6D_LIFT_STEP_DEG="${D1_GRASP6D_LIFT_STEP_DEG:-0.75}"
 export D1_GRASP6D_LIFT_DELAY_MS="${D1_GRASP6D_LIFT_DELAY_MS:-200}"
-export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-5}"
+export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-3}"
 export D1_GRASP6D_VIEW_MAX_SPREAD_M="${D1_GRASP6D_VIEW_MAX_SPREAD_M:-0.012}"
-# Tre inlier su cinque sono sufficienti se il gate metrico/rotazionale resta
-# stretto; sul box reale gli inlier erano 1.6 mm / 1.2°, con due depth outlier.
+# Tre osservazioni concordi mantengono il gate metrico/rotazionale stretto
+# senza tre minuti di attesa prima di ogni movimento.
 export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-3}"
 # Non accettare target IK oltre 5 mm: sul lift un residuo ~11 mm e' stato
 # percepito come overshoot laterale e puo' trascinare l'oggetto.
 export D1_GRASP6D_IK_POS_TOL_M="${D1_GRASP6D_IK_POS_TOL_M:-0.005}"
 export D1_GRIPPER_MAX_APERTURE_M="${D1_GRIPPER_MAX_APERTURE_M:-0.085}"
+# Centro fisico chele da pivot calibration 5 pose, RMS 3.8 mm.
+# Separato dal frame tool storico da 70 mm usato dalla hand-eye esistente.
+export D1_GRASP6D_TCP_X_M="${D1_GRASP6D_TCP_X_M:-0.10754}"
+export D1_GRASP6D_TCP_Y_M="${D1_GRASP6D_TCP_Y_M:-0.00537}"
+export D1_GRASP6D_TCP_Z_M="${D1_GRASP6D_TCP_Z_M:--0.01226}"
 export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-4}"
 export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-4}"
 export D1_PICK_ALLOW_GENERIC_RGB_FALLBACK=1
@@ -267,6 +274,9 @@ export D1_PICK_SCAN_REFERENCE="${D1_PICK_SCAN_REFERENCE:-j90}"
 # Pinza J6 (D1: aperta ≈ 49.7°, chiusa ≈ 5° — NON usare J6 waypoint scansione come aperta)
 export D1_GRIPPER_OPEN_DEG="${D1_GRIPPER_OPEN_DEG:-49.7}"
 export D1_GRIPPER_CLOSED_DEG="${D1_GRIPPER_CLOSED_DEG:-5}"
+# Chiudi solo pochi millimetri oltre la larghezza 6D stimata: evita di
+# schiacciare inutilmente oggetti morbidi mantenendo una presa positiva.
+export D1_GRASP6D_GRIP_COMPRESSION_M="${D1_GRASP6D_GRIP_COMPRESSION_M:-0.005}"
 # Riconoscimento presa D1: SOLO scatoletta blu HSV + orientamento (mai YOLO su 5056)
 export D1_PICK_DETECT_BACKEND="${D1_PICK_DETECT_BACKEND:-color}"
 export D1_PICK_COLOR_ONLY="${D1_PICK_COLOR_ONLY:-1}"

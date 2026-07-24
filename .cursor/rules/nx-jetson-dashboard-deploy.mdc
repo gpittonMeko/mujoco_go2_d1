@@ -8,7 +8,7 @@ alwaysApply: true
 
 L’utente si aspetta che **l’agente** esegua il deploy, non che riceva solo istruzioni.
 
-- **Sicurezza braccio D1 (obbligatoria):** prima di qualunque deploy/restart sulla NX che possa toccare dashboard 5056, HOLD daemon o controllo D1, avvisa chiaramente l’utente che durante il restart il braccio può perdere coppia/cadere. Attendi una conferma esplicita che il braccio sia sostenuto e che si possa procedere. Non lanciare il deploy nello stesso momento dell’avviso se la conferma non è già presente nel messaggio corrente.
+- **Sicurezza braccio D1 (obbligatoria):** è vietato eseguire qualunque deploy/restart sulla NX che possa toccare dashboard 5056, HOLD daemon o controllo D1 finché l’utente non scrive esplicitamente nel messaggio corrente che il braccio è in HOLD ed è sostenuto. “Fai deploy/redeploy” da solo non è una conferma di sicurezza sufficiente. Avvisa che durante il restart il braccio può perdere coppia/cadere e attendi la conferma; non lanciare il deploy nello stesso momento dell’avviso.
 - Dopo il deploy comunica esplicitamente che è terminato e verifica/reportizza `hold_active`.
 
 - **Comando** (dalla root del repo, su PC con rete verso la Jetson):
