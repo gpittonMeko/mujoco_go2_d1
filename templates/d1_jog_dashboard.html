@@ -200,8 +200,23 @@
     .log-block { padding:10px 12px; border-radius:12px; background:rgba(12,57,83,.9); color:#dff8ff; border:1px solid rgba(22,118,167,.35); }
     .log-block h4 { margin:0 0 6px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#dff8ff; }
     .log-pre { margin:0; max-height:240px; overflow:auto; font:11px/1.45 Consolas,monospace; white-space:pre-wrap; }
+    #panelPickMode { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr); gap:12px; }
+    #panelPickMode.hide { display:none; }
+    #pickPanelDetect { grid-column:1 / -1; grid-row:1; }
+    #pickPanelExecute { grid-column:1 / -1; grid-row:2; }
+    #pickDebugPanel { grid-column:1; grid-row:3; margin-top:0 !important; }
+    #pickAlignmentPanel { grid-column:2; grid-row:3; margin-top:0 !important; }
+    #pickKpiGrid { grid-column:1 / -1; grid-row:4; }
+    #pickAdvancedPanel { grid-column:1 / -1; grid-row:5; }
+    .pick-primary-title { font-size:18px; color:#083f63; margin:0; }
+    .pick-primary-sub { margin:4px 0 0; color:#4a7188; font-size:12px; }
+    .bias-editor { margin-top:10px; padding:10px 12px; border-radius:12px; background:rgba(220,247,255,.7); border:1px solid rgba(25,130,175,.2); }
+    .bias-editor-grid { display:grid; grid-template-columns:repeat(3,minmax(90px,1fr)); gap:8px; margin:8px 0; }
+    .bias-editor label { display:block; color:#32677f; font-size:11px; font-weight:800; }
+    .bias-editor input[type=number] { width:100%; box-sizing:border-box; margin-top:3px; padding:8px; border-radius:8px; border:1px solid rgba(25,130,175,.35); background:#f5fcff; color:#083f63; font-weight:800; }
+    .bias-confirm { display:flex !important; align-items:center; gap:8px; margin:8px 0; color:#083f63 !important; }
     .hide { display: none; }
-    @media (max-width:900px) { .debug-grid,.calib-steps,.log-grid,.workflow-grid { grid-template-columns:1fr; } .workflow-card { position:relative; top:auto; } }
+    @media (max-width:900px) { .debug-grid,.calib-steps,.log-grid,.workflow-grid,#panelPickMode,.bias-editor-grid { grid-template-columns:1fr; } #pickPanelDetect,#pickPanelExecute,#pickDebugPanel,#pickAlignmentPanel,#pickKpiGrid,#pickAdvancedPanel { grid-column:1; grid-row:auto; } .workflow-card { position:relative; top:auto; } }
     @keyframes orbFloat {
       0%, 100% { transform:translateY(0) scale(1); opacity:.42; }
       50% { transform:translateY(-18px) scale(1.03); opacity:.64; }
@@ -244,6 +259,7 @@
       <button class="tabbtn" id="tabMoveBtn">Movimento</button>
       <button class="tabbtn" id="tabMotorBtn">Motori</button>
       <button class="tabbtn" id="tabHermesBtn">Hermes</button>
+      <button class="tabbtn" id="btnGotoPick">PRESA 6D</button>
       <button id="btnHoldNowFixed" class="hold-fixed" type="button">HOLD ORA</button>
     </div>
   </div>
@@ -276,8 +292,8 @@
         <h2 class="section-title">3. Flusso 6D · calibrazione e presa</h2>
         <div class="sub">Target preferito: AprilGrid 36h11 (6×4, ID 288–311). Fallback: ArUco 4×4 ID0 60 mm. L’oggetto 6D si stima dalla depth, non dal marker sulla scatola.</div>
         <div class="mode-switch">
-          <button id="btnModeCalib" class="warn active-mode" type="button">A · Calibra hand-eye</button>
-          <button id="btnModePick" class="neutral" type="button">B · Prendi oggetto</button>
+          <button id="btnModePick" class="good active-mode" type="button">PRESA 6D · feedback grafico</button>
+          <button id="btnModeCalib" class="neutral" type="button">Calibrazione avanzata ▾</button>
         </div>
         <div class="workflow-card">
           <div class="workflow-head"><strong>Prerequisiti presa 6D</strong><span id="workflowHint">Verifica automatica</span></div>
@@ -290,7 +306,7 @@
           </div>
         </div>
 
-        <div id="panelCalibMode">
+        <div id="panelCalibMode" class="hide">
           <div id="calibGuide" class="calib-guide">
             <strong id="calibGuideTitle">Passo attuale: attiva il controllo, poi calibra</strong>
             <p id="calibGuideBody">Per partire in automatico: premi il bottone arancione «AUTO CALIBRAZIONE 6D» qui sotto e conferma OK nel popup. «A · Calibra hand-eye» apre solo questo pannello, non avvia il braccio.</p>
@@ -366,10 +382,16 @@
           </details>
         </div>
 
-        <div id="panelPickMode" class="hide">
+        <div id="panelPickMode">
           <div class="step-panel" id="pickPanelDetect">
-            <h3>B1 · Riconosci oggetto (depth)</h3>
+            <h3 class="pick-primary-title">1 · PRESA ADESSO · riconosci e valida</h3>
+            <p class="pick-primary-sub">Genera proposta, controlla il feedback 3D e verifica la stabilità prima di muovere.</p>
             <p class="now-do" id="pickNowDo">Con hand-eye valida: rimetti il cuboide, poi riconosci e verifica stabilità prima del pregrasp.</p>
+            <div class="row" style="align-items:center">
+              <span class="control-pill" id="graspScanPoseState">SCAN: verifica posizione…</span>
+              <button id="btnGotoGraspScan" class="warn" type="button">Vai alla SCAN salvata</button>
+              <button id="btnSaveGraspScan" class="neutral" type="button">Memorizza posa attuale come SCAN</button>
+            </div>
             <div class="row">
               <button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button>
               <button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button>
@@ -388,26 +410,76 @@
             </div>
           </div>
           <div class="step-panel" id="pickPanelExecute">
-            <h3>B2 · Pregrasp e grasp</h3>
+            <h3 class="pick-primary-title">2 · ESEGUI SOLO SE VERDE</h3>
+            <p class="now-do" id="graspProposalBanner">NON ESEGUIRE · genera prima una proposta di presa valida.</p>
+            <div class="bias-editor">
+              <strong>OFFSET PRESA MEMORIZZATO</strong>
+              <div class="bias-editor-grid">
+                <label>X base · mm<input id="graspBiasXmm" type="number" min="-40" max="40" step="1" value="0"></label>
+                <label>Y base · mm<input id="graspBiasYmm" type="number" min="-40" max="40" step="1" value="0"></label>
+                <label>Z base · mm<input id="graspBiasZmm" type="number" min="-30" max="30" step="1" value="0"></label>
+              </div>
+              <label class="bias-confirm"><input id="graspBiasConfirmFlag" type="checkbox" checked> Prima di pregrasp/presa chiedimi di confermare esplicitamente questo offset.</label>
+              <div class="row">
+                <button id="btnSaveGraspBias" class="good" type="button">Memorizza offset e rigenera proposta</button>
+                <span id="graspBiasSavedState" class="control-pill">offset caricato: —</span>
+              </div>
+            </div>
             <div class="row">
               <button id="btn6dPregrasp" class="warn" type="button" disabled>Prova pregrasp</button>
               <button id="btn6dExecute" class="danger" type="button" disabled>Grasp 6D completo</button>
             </div>
           </div>
-          <div class="mode-grid">
+          <div class="mode-grid" id="pickKpiGrid">
             <div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div>
             <div class="mode-kpi"><small>Centro camera XYZ</small><strong id="grasp6dCenter">—</strong></div>
             <div class="mode-kpi"><small>Dimensioni XYZ</small><strong id="grasp6dDimensions">—</strong></div>
             <div class="mode-kpi"><small>Punti cluster</small><strong id="grasp6dPointCount">—</strong></div>
             <div class="mode-kpi"><small>Depth valida</small><strong id="grasp6dDepthValid">—</strong></div>
+            <div class="mode-kpi"><small>Proposta presa</small><strong id="grasp6dProposal">—</strong></div>
+            <div class="mode-kpi"><small>Apertura richiesta</small><strong id="grasp6dClosingWidth">—</strong></div>
+            <div class="mode-kpi"><small>Target grasp · base XYZ</small><strong id="grasp6dTargetBase">—</strong></div>
+            <div class="mode-kpi"><small>Correzione TCP presa XYZ</small><strong id="grasp6dBiasBase">—</strong></div>
+            <div class="mode-kpi"><small>Centro box · base XYZ</small><strong id="grasp6dBoxBase">—</strong></div>
+            <div class="mode-kpi"><small>Tool live · base XYZ</small><strong id="grasp6dToolBase">—</strong></div>
+            <div class="mode-kpi"><small>Tool − target XYZ</small><strong id="grasp6dToolError">—</strong></div>
+            <div class="mode-kpi"><small>Pavimento · base Z</small><strong id="grasp6dFloorBase">—</strong></div>
+            <div class="mode-kpi"><small>Gate / rifiuti</small><strong id="grasp6dRejections">—</strong></div>
             <div class="mode-kpi"><small>Stabilità cluster</small><strong id="grasp6dClusterStability">—</strong></div>
             <div class="mode-kpi"><small>Hand-eye</small><strong id="grasp6dCalib">—</strong></div>
+          </div>
+          <div class="auto-live-panel" id="pickAlignmentPanel" style="margin-top:12px">
+            <strong>MAPPA XY · box, target e tool</strong>
+            <div class="sub" style="color:rgba(223,248,255,.8);margin-top:4px">Croce ciano = centro box · cerchio verde = target grasp · punto arancio = tool live. Griglia: 1 cm.</div>
+            <svg id="graspOffsetMap" viewBox="0 0 320 180" style="width:100%;max-height:240px;margin-top:8px;background:#0a1218;border:1px solid rgba(110,190,220,.35);border-radius:8px">
+              <defs>
+                <pattern id="graspGridCm" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(120,180,205,.18)" stroke-width="1"/>
+                </pattern>
+              </defs>
+              <rect width="320" height="180" fill="url(#graspGridCm)"/>
+              <line x1="160" y1="12" x2="160" y2="168" stroke="rgba(120,210,240,.45)"/>
+              <line x1="18" y1="90" x2="302" y2="90" stroke="rgba(120,210,240,.45)"/>
+              <path d="M151 90 H169 M160 81 V99" stroke="#58d9ff" stroke-width="3"/>
+              <circle id="graspMapTarget" cx="160" cy="90" r="7" fill="none" stroke="#50ec8d" stroke-width="3"/>
+              <circle id="graspMapTool" cx="160" cy="90" r="5" fill="#ff9f43" stroke="#ffe0b0" stroke-width="1.5"/>
+              <text x="8" y="16" fill="#9edcf0" font-size="11">+Y ↑</text>
+              <text x="278" y="104" fill="#9edcf0" font-size="11">+X →</text>
+            </svg>
+            <div class="rt-json" id="graspOffsetText" style="margin-top:8px">Genera una preview per mostrare box, target e tool.</div>
+            <div class="row" style="margin-top:8px">
+              <button id="btnGraspXMinus" class="neutral" type="button">Target −X 5 mm</button>
+              <button id="btnGraspXPlus" class="neutral" type="button">Target +X 5 mm</button>
+              <button id="btnGraspYMinus" class="neutral" type="button">Target −Y 5 mm</button>
+              <button id="btnGraspYPlus" class="neutral" type="button">Target +Y 5 mm</button>
+              <button id="btnGraspBiasReset" class="warn" type="button">Azzera correzione</button>
+            </div>
           </div>
           <div class="auto-live-panel" id="pickDebugPanel" style="margin-top:12px">
             <div class="auto-live-head">
               <div>
-                <strong>Debug visivo 6D · cluster e punti di presa</strong>
-                <div class="sub" style="color:rgba(223,248,255,.8);margin-top:4px">Verde stella = grasp · ciano X = pregrasp · viola = punti sopra pavimento · box colorati = cluster</div>
+                <strong>FEEDBACK 3D · RGB + HEATMAP + POINT CLOUD + PROPOSTA</strong>
+                <div class="sub" style="color:rgba(223,248,255,.8);margin-top:4px">Verde stella = grasp eseguibile · ciano X = pregrasp · arancio X = solo centro box, NON presa · viola/verde = punti sopra pavimento</div>
               </div>
               <div class="row">
                 <button id="btnPickDebugRefresh" class="neutral" type="button">Aggiorna debug</button>
@@ -418,7 +490,7 @@
             <div class="rt-row" style="margin-top:8px"><span id="rtCoupled" class="rt-badge">coupled: —</span><span id="rtHold" class="rt-badge">hold: —</span><span id="rtDaemon" class="rt-badge">daemon: —</span><span id="rtMotion" class="rt-badge">motion: —</span><span id="rtDepth" class="rt-badge">depth: —</span><span id="rt6dReason" class="rt-badge">6d: —</span></div>
             <div class="rt-json" id="rtFeedback" style="margin-top:8px">Premi «Riconosci oggetto» o «Aggiorna debug» per vedere box 6D e punti grasp/pregrasp.</div>
           </div>
-          <details class="ops-section">
+          <details class="ops-section" id="pickAdvancedPanel">
             <summary>Slider giunti · soglie · log</summary>
             <div class="ops-body">
               <div class="sl" aria-label="Slider giunti D1">
@@ -561,7 +633,9 @@
     let grasp6dDetectionOk = false;
     let armControlOk = false;
     let autoMotionEnabled = false;
-    let uiMode = 'calib';
+    let uiMode = 'pick';
+    let graspBiasBaseM = [0, 0, 0];
+    let graspScanAligned = false;
     let pendingTeachVision = null;
     let pendingTeachScenario = null;
     async function api(path, method, body, timeoutMs) {
@@ -753,8 +827,8 @@
       setStep('flowExecute', executable, executable ? 'Pregrasp e grasp abilitati' : 'Comandi bloccati', grasp6dCalibrationOk && grasp6dDetectionOk && !executable);
       const pre = q('btn6dPregrasp');
       const ex = q('btn6dExecute');
-      if (pre) pre.disabled = !grasp6dCalibrationOk;
-      if (ex) ex.disabled = !grasp6dCalibrationOk;
+      if (pre) pre.disabled = !executable || !graspScanAligned;
+      if (ex) ex.disabled = !executable;
       q('workflowHint').textContent = !camerasOk
         ? 'Attendi gli stream RGB'
         : !armControlOk
@@ -767,7 +841,9 @@
         pickDo.textContent = !grasp6dCalibrationOk
           ? 'Hand-eye assente: torna a modo A e completa i 5 passi (o AUTO).'
           : grasp6dDetectionOk
-            ? 'Cluster stabile: puoi fare pregrasp, poi grasp con conferma.'
+            ? (graspScanAligned
+              ? 'Cluster stabile e SCAN allineata: puoi fare pregrasp, poi grasp con conferma.'
+              : 'Cluster valido ma posa SCAN non allineata: premi “Vai alla SCAN salvata”.')
             : 'Rimetti il cuboide, premi Riconosci oggetto, poi Verifica stabilità cluster.';
       }
     }
@@ -1257,6 +1333,9 @@
         q('rtDepth').className = 'rt-badge ' + ((rgbd.depth_valid_fraction || 0) >= 0.20 ? 'good' : 'bad');
         q('rt6dReason').className = 'rt-badge ' + (d.ok ? 'good' : 'bad');
         apply6dPreviewKpis(d);
+        try {
+          apply6dLiveFeedback(await api('/api/pick/grasp6d/last_run', 'GET', undefined, 15000));
+        } catch (_) {}
         q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=0&t=' + Date.now();
       } catch (e) {
         q('rt6dReason').textContent = '6d: err';
@@ -1312,6 +1391,77 @@
       if (await releaseArm()) startDepthMonitor();
     }
 
+    function applyGraspBiasTuning(tuning) {
+      const values = (tuning && tuning.values) || {};
+      graspBiasBaseM = [
+        Number(values.grasp_bias_base_x_m || 0),
+        Number(values.grasp_bias_base_y_m || 0),
+        Number(values.grasp_bias_base_z_m || 0),
+      ];
+      [['graspBiasXmm', 0], ['graspBiasYmm', 1], ['graspBiasZmm', 2]].forEach(function (entry) {
+        const el = q(entry[0]);
+        if (el && document.activeElement !== el) el.value = (graspBiasBaseM[entry[1]] * 1000).toFixed(0);
+      });
+      setKpi('grasp6dBiasBase', compactNumbers(graspBiasBaseM.map(function (v) { return v * 1000; }), 1) + ' mm');
+      const state = q('graspBiasSavedState');
+      if (state) state.textContent = 'memorizzato: ' + compactNumbers(graspBiasBaseM.map(function (v) { return v * 1000; }), 1) + ' mm';
+    }
+
+    function applyGraspScanStatus(scan) {
+      graspScanAligned = !!(scan && scan.aligned);
+      const state = q('graspScanPoseState');
+      if (!state) return;
+      const err = scan && scan.max_arm_error_deg;
+      state.textContent = graspScanAligned
+        ? 'SCAN OK · errore max ' + Number(err || 0).toFixed(1) + '°'
+        : 'NON IN SCAN · errore max ' + (err == null ? '—' : Number(err).toFixed(1) + '°');
+      state.style.borderColor = graspScanAligned ? 'rgba(68,220,145,.75)' : 'rgba(255,130,70,.8)';
+      state.style.color = graspScanAligned ? '#17633b' : '#8c3d16';
+      update6dWorkflow();
+    }
+
+    function graspBiasMotionPayload() {
+      const required = !!(q('graspBiasConfirmFlag') && q('graspBiasConfirmFlag').checked);
+      return {
+        require_offset_confirmation: required,
+        offset_confirm: required ? 'CONFIRM_GRASP_BIAS' : null,
+        expected_grasp_bias_base_m: graspBiasBaseM.slice(),
+      };
+    }
+
+    function confirmGraspBiasForMotion(actionLabel) {
+      const required = !!(q('graspBiasConfirmFlag') && q('graspBiasConfirmFlag').checked);
+      if (!required) return true;
+      const mm = graspBiasBaseM.map(function (v) { return (v * 1000).toFixed(1); });
+      return window.confirm(
+        actionLabel + '\n\nOffset presa memorizzato:\nX ' + mm[0] + ' mm · Y ' + mm[1] + ' mm · Z ' + mm[2] +
+        ' mm\n\nConfermi esplicitamente questo offset?'
+      );
+    }
+
+    async function saveGraspBiasFromInputs() {
+      const valuesM = ['graspBiasXmm', 'graspBiasYmm', 'graspBiasZmm'].map(function (id) {
+        return Number((q(id) && q(id).value) || 0) / 1000;
+      });
+      setBusy(true, 'Memorizzo offset presa');
+      try {
+        const tuning = await api(
+          '/api/pick/grasp6d/tuning',
+          'POST',
+          { action: 'set_grasp_bias', grasp_bias_base_m: valuesM },
+          30000
+        );
+        applyGraspBiasTuning(tuning);
+        const preview = await api('/api/pick/grasp6d/preview', 'POST', {}, 120000);
+        apply6dPreviewKpis(preview);
+        setStatus('Offset presa memorizzato e proposta rigenerata.', true);
+      } catch (e) {
+        setStatus('Offset presa: ' + String(e), false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
     async function refreshGrasp6dStatus(capture) {
       try {
         if (capture) {
@@ -1321,6 +1471,8 @@
         const cal = st.calibration || {};
         const rgbd = st.rgbd || {};
         grasp6dCalibrationOk = !!cal.ok;
+        applyGraspBiasTuning(st.tuning || {});
+        applyGraspScanStatus(st.scan_pose || {});
         update6dWorkflow();
         setKpi('grasp6dCalib', cal.ok ? 'OK' : (cal.reason || 'mancante'));
         setDiag('Stato 6D', st);
@@ -2141,9 +2293,52 @@
       q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=0&t=' + Date.now();
     }
 
+    let graspMapState = { boxBase: null, targetBase: null, toolBase: null };
+
+    function updateGraspOffsetMap() {
+      const box = graspMapState.boxBase;
+      const target = graspMapState.targetBase;
+      const tool = graspMapState.toolBase;
+      const scale = 2000; // 20 px/cm
+      function place(id, point) {
+        const el = q(id);
+        if (!el || !box || !point) {
+          if (el) el.style.opacity = '0';
+          return;
+        }
+        const x = Math.max(18, Math.min(302, 160 + (Number(point[0]) - Number(box[0])) * scale));
+        const y = Math.max(12, Math.min(168, 90 - (Number(point[1]) - Number(box[1])) * scale));
+        el.setAttribute('cx', x.toFixed(1));
+        el.setAttribute('cy', y.toFixed(1));
+        el.style.opacity = '1';
+      }
+      place('graspMapTarget', target);
+      place('graspMapTool', tool);
+      const text = q('graspOffsetText');
+      if (text) {
+        const targetDelta = box && target ? target.map(function (v, i) { return (Number(v) - Number(box[i])) * 1000; }) : null;
+        const toolError = target && tool ? tool.map(function (v, i) { return (Number(v) - Number(target[i])) * 1000; }) : null;
+        text.textContent =
+          'target−box: ' + (targetDelta ? compactNumbers(targetDelta, 1) + ' mm' : '—') +
+          ' · tool−target: ' + (toolError ? compactNumbers(toolError, 1) + ' mm' : '—');
+      }
+    }
+
+    function apply6dLiveFeedback(lastRun) {
+      const live = (lastRun && lastRun.live) || {};
+      const tool = live.tool_position_base_m;
+      const err = live.tool_minus_grasp_m;
+      setKpi('grasp6dToolBase', Array.isArray(tool) ? compactNumbers(tool, 3) + ' m' : '—');
+      setKpi('grasp6dToolError', Array.isArray(err) ? compactNumbers(err.map(function (v) { return Number(v) * 1000; }), 1) + ' mm' : '—');
+      graspMapState.toolBase = Array.isArray(tool) ? tool : null;
+      updateGraspOffsetMap();
+    }
+
     function apply6dPreviewKpis(d) {
       const rgbd = (d && d.rgbd) || {};
       const box = (d && d.box) || {};
+      const plan = (d && d.plan) || {};
+      const selected = plan.selected || {};
       const source = box.source ? (' · ' + box.source) : '';
       const heightSource = box.height_source ? (' · h=' + box.height_source) : '';
       setKpi('grasp6dReason', (d && d.reason ? String(d.reason) : 'OK') + source + heightSource);
@@ -2153,7 +2348,43 @@
       const pts = box.point_count == null ? '—' : String(box.point_count);
       const above = box.points_above_floor == null ? '' : (' · sopra piano ' + box.points_above_floor);
       setKpi('grasp6dPointCount', pts + above);
-      grasp6dDetectionOk = !!(box && box.ok);
+      const proposalOk = !!(d && d.ok && plan.ok && selected.T_base_grasp);
+      const rejection = plan.rejection_counts || {};
+      const rejectionText = Object.keys(rejection).map(function (key) {
+        return key + '=' + rejection[key];
+      }).join(' · ');
+      const graspT = selected.T_base_grasp;
+      const targetBase = Array.isArray(graspT) && graspT.length >= 3
+        ? [graspT[0][3], graspT[1][3], graspT[2][3]]
+        : null;
+      const boxT = plan.T_base_box;
+      const boxBase = Array.isArray(boxT) && boxT.length >= 3
+        ? [boxT[0][3], boxT[1][3], boxT[2][3]]
+        : null;
+      setKpi('grasp6dProposal', proposalOk ? 'ESEGUIBILE' : ('NON ESEGUIRE · ' + (plan.reason || (d && d.reason) || 'nessun piano')));
+      setKpi('grasp6dClosingWidth', selected.closing_width_m == null ? '—' : (Number(selected.closing_width_m) * 100).toFixed(1) + ' cm / max 8.5');
+      setKpi('grasp6dTargetBase', targetBase ? compactNumbers(targetBase, 3) + ' m' : '—');
+      setKpi(
+        'grasp6dBiasBase',
+        Array.isArray(plan.grasp_bias_base_m)
+          ? compactNumbers(plan.grasp_bias_base_m.map(function (v) { return Number(v) * 1000; }), 1) + ' mm'
+          : '—'
+      );
+      setKpi('grasp6dBoxBase', boxBase ? compactNumbers(boxBase, 3) + ' m' : '—');
+      setKpi('grasp6dFloorBase', plan.estimated_floor_z_base_m == null ? '—' : Number(plan.estimated_floor_z_base_m).toFixed(3) + ' m');
+      setKpi('grasp6dRejections', rejectionText || '—');
+      graspMapState.boxBase = boxBase;
+      graspMapState.targetBase = targetBase;
+      updateGraspOffsetMap();
+      const banner = q('graspProposalBanner');
+      if (banner) {
+        banner.textContent = proposalOk
+          ? 'PROPOSTA ESEGUIBILE · pregrasp e grasp disponibili dopo verifica stabilità.'
+          : 'NON ESEGUIRE · ' + (plan.reason || (d && d.reason) || 'nessuna proposta valida');
+        banner.style.borderColor = proposalOk ? 'rgba(68,220,145,.75)' : 'rgba(255,130,70,.8)';
+        banner.style.color = proposalOk ? '#bfffdc' : '#ffd0b0';
+      }
+      grasp6dDetectionOk = proposalOk;
       update6dWorkflow();
     }
 
@@ -2191,6 +2422,23 @@
       }
     }
 
+    async function adjustGraspBias(action) {
+      setBusy(true, 'Correzione TCP');
+      try {
+        const tuning = await api('/api/pick/grasp6d/tuning', 'POST', { action: action }, 30000);
+        applyGraspBiasTuning(tuning);
+        const preview = await api('/api/pick/grasp6d/preview', 'POST', {}, 120000);
+        apply6dPreviewKpis(preview);
+        refresh6dDebugImages();
+        setDiag('Correzione TCP presa', { tuning: tuning, preview: preview });
+        setStatus('Correzione TCP aggiornata e preview ricalcolata.', !!preview.ok);
+      } catch (e) {
+        setStatus('Correzione TCP: ' + String(e), false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
     async function adjust6dThreshold(action, reset) {
       const d = await callAndShow('Soglie 6D', '/api/pick/grasp6d/tuning', 'POST', reset ? { reset: true } : { action: action });
       if (d && d.ok) startDepthMonitor();
@@ -2212,6 +2460,35 @@
         setStatus(summarizeResult('Diagnostica 6D', preview), !!preview.ok);
       } catch (e) {
         setStatus('Diagnostica 6D: ' + String(e), false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function refreshPickDebugOnce() {
+      if (depthRunning) {
+        stopDepthMonitor();
+        if (q('btnPickDebugLive')) q('btnPickDebugLive').textContent = 'Live debug ON';
+      }
+      setBusy(true, 'Acquisizione debug 3D');
+      const feedback = q('rtFeedback');
+      if (feedback) feedback.textContent = 'ACQUISIZIONE IN CORSO · una sola cattura RGB-D…';
+      try {
+        const preview = await api('/api/pick/grasp6d/debug?capture=1', 'GET', undefined, 45000);
+        apply6dPreviewKpis(preview);
+        refresh6dDebugImages();
+        if (feedback) {
+          feedback.textContent = preview.ok
+            ? 'DEBUG AGGIORNATO · proposta e point cloud provengono dalla stessa cattura.'
+            : 'DEBUG AGGIORNATO · nessuna presa: ' + (preview.reason || 'piano non valido');
+        }
+        setStatus(
+          preview.ok ? 'Debug 3D aggiornato.' : 'Debug aggiornato, ma proposta non eseguibile: ' + (preview.reason || 'errore'),
+          !!preview.ok
+        );
+      } catch (e) {
+        if (feedback) feedback.textContent = 'DEBUG NON AGGIORNATO · ' + String(e);
+        setStatus('Aggiorna debug: ' + String(e), false);
       } finally {
         setBusy(false);
       }
@@ -2245,6 +2522,7 @@
         q('holdRuntimeLog').textContent = JSON.stringify(runtime, null, 2);
         q('graspLastRunLog').textContent = lastRun && lastRun.ok ? JSON.stringify(lastRun.run, null, 2) : JSON.stringify(lastRun, null, 2);
         q('commandDaemonLog').textContent = daemonLog && daemonLog.ok ? (daemonLog.tail || '(log vuoto)') : JSON.stringify(daemonLog, null, 2);
+        apply6dLiveFeedback(lastRun);
         const errs = [];
         if (runtime && runtime.command_daemon && runtime.command_daemon.last_error) errs.push('daemon: ' + runtime.command_daemon.last_error);
         if (lastRun && lastRun.run && lastRun.run.reason) errs.push('ultimo_run: ' + lastRun.run.reason);
@@ -2340,6 +2618,11 @@
     bindClick('btnCtrlRefresh', refreshFixedSafetyState);
     bindClick('btnModeCalib', () => setUiMode('calib'));
     bindClick('btnModePick', () => setUiMode('pick'));
+    bindClick('btnGotoPick', () => {
+      setUiMode('pick');
+      const panel = q('pickPanelDetect');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
     bindClick('btnFixedRefresh6d', run6dDebug);
     bindClick('btnFixedStartDepth', startDepthMonitor);
     bindClick('btnReadPoseSliders', readPoseToSliders);
@@ -2415,20 +2698,39 @@
       }
     });
     bindClick('btn6dClusterProbe', run6dClusterProbe);
-    bindClick('btn6dPregrasp', async () => {
-      const accepted = window.confirm('Muovere il braccio solo fino al pregrasp 6D? Verifica che il volume sia libero.');
-      if (accepted) await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', {}, 300000);
+    bindClick('btnGraspXMinus', () => adjustGraspBias('grasp_x_minus'));
+    bindClick('btnGraspXPlus', () => adjustGraspBias('grasp_x_plus'));
+    bindClick('btnGraspYMinus', () => adjustGraspBias('grasp_y_minus'));
+    bindClick('btnGraspYPlus', () => adjustGraspBias('grasp_y_plus'));
+    bindClick('btnGraspBiasReset', () => adjustGraspBias('reset_grasp_bias'));
+    bindClick('btnSaveGraspBias', saveGraspBiasFromInputs);
+    bindClick('btnGotoGraspScan', async () => {
+      const accepted = window.confirm('Muovere il braccio alla posa SCAN salvata passando dal transito sicuro? Area libera e braccio sostenuto.');
+      if (!accepted) return;
+      const out = await callAndShow('Posa SCAN salvata', '/api/pick/grasp6d/scan_pose', 'POST', { action: 'goto' }, 300000);
+      if (out && out.scan_pose) applyGraspScanStatus(out.scan_pose);
     });
-    bindClick('btn6dDebugGraphic', run6dDebug);
-    bindClick('btnPickDebugRefresh', async () => {
-      setBusy(true, 'Debug 6D');
-      try {
-        await run6dDebug();
-        if (q('rtDepthPreview')) q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=1&t=' + Date.now();
-      } finally {
-        setBusy(false);
+    bindClick('btnSaveGraspScan', async () => {
+      const accepted = window.confirm('ATTENZIONE: memorizzare la posa fisica ATTUALE come nuova SCAN 6D? Fallo solo se il cuboide è ben visibile e questa è davvero la vista corretta.');
+      if (!accepted) return;
+      const out = await callAndShow(
+        'Memorizza posa SCAN',
+        '/api/pick/grasp6d/scan_pose',
+        'POST',
+        { action: 'save_current', confirm: 'SAVE_GRASP_SCAN_POSE' },
+        30000
+      );
+      if (out) applyGraspScanStatus(out);
+    });
+    bindClick('btn6dPregrasp', async () => {
+      if (!confirmGraspBiasForMotion('Muovere il braccio solo fino al pregrasp 6D?')) return;
+      const accepted = window.confirm('Conferma movimento pregrasp: posa SCAN allineata e volume libero?');
+      if (accepted) {
+        await callAndShow('Pregrasp 6D', '/api/pick/grasp6d/pregrasp', 'POST', graspBiasMotionPayload(), 300000);
       }
     });
+    bindClick('btn6dDebugGraphic', run6dDebug);
+    bindClick('btnPickDebugRefresh', refreshPickDebugOnce);
     bindClick('btnPickDebugLive', () => {
       if (depthRunning) {
         stopDepthMonitor();
@@ -2439,8 +2741,17 @@
       }
     });
     bindClick('btn6dExecute', async () => {
-      const accepted = window.confirm('Eseguire la presa 6D completa? Area libera e box correttamente evidenziato nella point cloud?');
-      if (accepted) await callAndShow('Grasp 6D', '/api/pick/grasp6d/execute', 'POST', { confirm: 'EXECUTE_GRASP6D' }, 300000);
+      if (!confirmGraspBiasForMotion('Eseguire la presa 6D completa?')) return;
+      const accepted = window.confirm('Conferma finale: area libera, box evidenziato e proposta verde?');
+      if (accepted) {
+        await callAndShow(
+          'Grasp 6D',
+          '/api/pick/grasp6d/execute',
+          'POST',
+          Object.assign({ confirm: 'EXECUTE_GRASP6D' }, graspBiasMotionPayload()),
+          300000
+        );
+      }
     });
     bindClick('btnRefresh6dLogs', refresh6dLogs);
     bindClick('btnLowerHeight', () => adjust6dThreshold('lower_height', false));
@@ -2600,7 +2911,7 @@
       });
       await refreshThermal();
     });
-    setUiMode('calib');
+    setUiMode('pick');
     setAutoMotionUi(true); // non lasciare AUTO "morta" in attesa del GET; refresh aggiorna il flag reale
     refreshFixedSafetyState();
     refreshGrasp6dStatus(false);

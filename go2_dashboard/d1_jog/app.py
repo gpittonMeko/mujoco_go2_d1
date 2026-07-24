@@ -42,6 +42,12 @@ THERMAL_SETTINGS: dict[str, Any] = {
 }
 
 _PROCESS_STARTED = datetime.now().isoformat(timespec="seconds")
+_GRASP_SCAN_POSE_PATH = Path(
+    os.environ.get("D1_GRASP6D_SCAN_POSE", str(PROJECT_ROOT / "data" / "d1_grasp6d_scan_pose.json"))
+)
+# Posa indicata manualmente dall'utente come vista SCAN valida prima che un
+# restart facesse cedere la spalla. Il file runtime, quando presente, prevale.
+_VALIDATED_GRASP_SCAN_DEFAULT = [-78.4, -3.0, 5.3, -10.6, 90.2, 0.0, 5.5]
 _GO2_HERO_CANDIDATES = (
     PROJECT_ROOT / "data" / "unitree_robot_main.png",
 )
@@ -458,13 +464,68 @@ def create_d1_jog_app() -> Flask:
             return service.clamp_servo_deg(default_vals)
         return service.clamp_servo_deg(vals[:7])
 
+    def _load_grasp_scan_pose() -> dict[str, Any]:
+        target = _parse_servo_env("D1_GRASP6D_SCAN_POSE_DEG", _VALIDATED_GRASP_SCAN_DEFAULT)
+        source = "validated_default"
+        saved_at = None
+        try:
+            raw = json.loads(_GRASP_SCAN_POSE_PATH.read_text(encoding="utf-8"))
+            saved = raw.get("servo_deg") if isinstance(raw, dict) else None
+            if isinstance(saved, list) and len(saved) >= 7:
+                target = service.clamp_servo_deg([float(x) for x in saved[:7]])
+                source = "saved_runtime"
+                saved_at = raw.get("saved_at")
+        except (OSError, ValueError, TypeError):
+            pass
+        return {
+            "ok": True,
+            "servo_deg": target,
+            "source": source,
+            "saved_at": saved_at,
+            "path": str(_GRASP_SCAN_POSE_PATH),
+        }
+
+    def _save_grasp_scan_pose(servo_deg: list[float]) -> dict[str, Any]:
+        target = service.clamp_servo_deg([float(x) for x in servo_deg[:7]])
+        record = {
+            "version": 1,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "servo_deg": target,
+        }
+        _GRASP_SCAN_POSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _GRASP_SCAN_POSE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        tmp.replace(_GRASP_SCAN_POSE_PATH)
+        return {"ok": True, **record, "path": str(_GRASP_SCAN_POSE_PATH)}
+
+    def _grasp_scan_pose_status() -> dict[str, Any]:
+        profile = _load_grasp_scan_pose()
+        feedback = service.read_servo_deg(fast=True)
+        current = feedback.get("servo_deg") if feedback.get("ok") else None
+        tolerance_deg = float(os.environ.get("D1_GRASP6D_SCAN_POSE_TOL_DEG", "4.0"))
+        errors = None
+        aligned = False
+        if isinstance(current, list) and len(current) >= 7:
+            errors = [
+                round(abs(float(current[i]) - float(profile["servo_deg"][i])), 2)
+                for i in range(7)
+            ]
+            aligned = max(errors[:6]) <= tolerance_deg
+        return {
+            **profile,
+            "current_servo_deg": current[:7] if isinstance(current, list) else None,
+            "error_deg": errors,
+            "max_arm_error_deg": max(errors[:6]) if errors else None,
+            "tolerance_deg": tolerance_deg,
+            "aligned": aligned,
+        }
+
     def _scan_side_target(side: str) -> list[float]:
         # Il mapping fisico va verificato sul robot: i riferimenti storici erano invertiti
         # rispetto ai pulsanti UI, quindi li teniamo espliciti qui.
-        left_default = [-90.0, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
         right_default = [90.0, 19.2, 26.0, 0.1, 37.8, 0.4, 5.0]
         if side == "left":
-            return _parse_servo_env("D1_SCAN_LEFT_DEG", left_default)
+            return list(_load_grasp_scan_pose()["servo_deg"])
         return _parse_servo_env("D1_SCAN_RIGHT_DEG", right_default)
 
     def _safe_transit_target() -> list[float] | None:
@@ -1972,6 +2033,45 @@ def create_d1_jog_app() -> Flask:
         public_box = _public_box6d(box)
         if not box.get("ok"):
             return {"ok": False, "reason": box.get("reason"), "rgbd": frame.public_info(), "box": public_box}
+        frame_info = frame.public_info()
+        depth_valid = float(frame_info.get("depth_valid_fraction") or 0.0)
+        min_depth_valid = float(os.environ.get("D1_GRASP6D_MIN_DEPTH_VALID_FRACTION", "0.15"))
+        if depth_valid < min_depth_valid:
+            return {
+                "ok": False,
+                "reason": "depth_fill_too_low_for_grasp",
+                "hint": (
+                    f"Depth valida {depth_valid:.1%}, minimo {min_depth_valid:.1%}: "
+                    "allontana la D456 oltre MinZ o migliora preset/esposizione IR."
+                ),
+                "rgbd": frame_info,
+                "box": public_box,
+                "depth_gate": {
+                    "ok": False,
+                    "valid_fraction": depth_valid,
+                    "min_valid_fraction": min_depth_valid,
+                },
+            }
+        center_camera = box.get("center_camera_m")
+        min_target_depth = float(os.environ.get("D1_GRASP6D_MIN_TARGET_DEPTH_M", "0.38"))
+        if isinstance(center_camera, list) and len(center_camera) >= 3:
+            target_depth = float(center_camera[2])
+            if target_depth < min_target_depth:
+                return {
+                    "ok": False,
+                    "reason": "target_below_realsense_min_z",
+                    "hint": (
+                        f"Target a {target_depth:.3f} m, minimo sicuro {min_target_depth:.3f} m "
+                        "per D455/D456: arretra la camera prima del pregrasp."
+                    ),
+                    "rgbd": frame_info,
+                    "box": public_box,
+                    "range_gate": {
+                        "ok": False,
+                        "target_depth_m": target_depth,
+                        "min_target_depth_m": min_target_depth,
+                    },
+                }
         feedback = service.read_servo_deg(fast=True)
         if not feedback.get("ok") or not isinstance(feedback.get("servo_deg"), list):
             return {"ok": False, "reason": "arm_feedback_unavailable", "feedback": feedback, "box": public_box}
@@ -1980,7 +2080,7 @@ def create_d1_jog_app() -> Flask:
             "ok": bool(plan.get("ok")),
             "reason": plan.get("reason"),
             "source": "rgbd_cuboid_6d",
-            "rgbd": frame.public_info(),
+            "rgbd": frame_info,
             "box": public_box,
             "plan": plan,
             "feedback": feedback,
@@ -2265,10 +2365,41 @@ def create_d1_jog_app() -> Flask:
             fb = service.read_servo_deg(fast=True)
             if fb.get("ok") and isinstance(fb.get("servo_deg"), list):
                 plan_out = grasp6d.plan_grasp(box, current_servo_deg=fb.get("servo_deg")[:7])
-        if plan_out and plan_out.get("ok"):
+        plan_ok = bool(plan_out and plan_out.get("ok"))
+        plan_reason = None if plan_ok else ((plan_out or {}).get("reason") or "no_executable_grasp_plan")
+        plan_color = (50, 220, 80) if plan_ok else (0, 120, 255)
+        cv2.rectangle(canvas, (8, 80), (min(w - 8, 520), 112), (10, 18, 24), -1)
+        cv2.putText(
+            canvas,
+            "PLAN ESEGUIBILE" if plan_ok else f"NON ESEGUIRE: {plan_reason}",
+            (14, 103),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            plan_color,
+            2,
+            cv2.LINE_AA,
+        )
+        if plan_ok:
             selected = (plan_out.get("selected") or {})
             grasp_T = np.asarray(selected.get("T_base_grasp"), dtype=float)
             pre_T = np.asarray(selected.get("T_base_pregrasp"), dtype=float)
+            box_T = np.asarray(plan_out.get("T_base_box"), dtype=float)
+            if grasp_T.shape == (4, 4) and box_T.shape == (4, 4):
+                delta_mm = (grasp_T[:3, 3] - box_T[:3, 3]) * 1000.0
+                cv2.rectangle(canvas, (8, 116), (min(w - 8, 620), 146), (10, 18, 24), -1)
+                cv2.putText(
+                    canvas,
+                    (
+                        f"BOX base {box_T[0,3]:+.3f} {box_T[1,3]:+.3f} {box_T[2,3]:+.3f}m  "
+                        f"grasp-box {delta_mm[0]:+.1f} {delta_mm[1]:+.1f} {delta_mm[2]:+.1f}mm"
+                    ),
+                    (14, 137),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.46,
+                    (210, 245, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
             cal = grasp6d.load_calibration()
             fb = service.read_servo_deg(fast=True)
             if cal.get("ok") and fb.get("ok") and isinstance(fb.get("servo_deg"), list):
@@ -2292,6 +2423,10 @@ def create_d1_jog_app() -> Flask:
 
                 gp = _proj(grasp_T)
                 pp = _proj(pre_T)
+                bp = _proj(box_T)
+                if bp is not None:
+                    cv2.drawMarker(canvas, bp, (255, 220, 60), markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
+                    cv2.putText(canvas, "box", (bp[0] + 6, bp[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 220, 60), 1, cv2.LINE_AA)
                 if pp is not None:
                     cv2.drawMarker(canvas, pp, (0, 220, 255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=18, thickness=2)
                     cv2.putText(canvas, "pre", (pp[0] + 6, pp[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
@@ -2300,6 +2435,8 @@ def create_d1_jog_app() -> Flask:
                     cv2.putText(canvas, "grasp", (gp[0] + 6, gp[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 80), 1, cv2.LINE_AA)
                 if gp is not None and pp is not None:
                     cv2.line(canvas, pp, gp, (100, 240, 255), 1, cv2.LINE_AA)
+                if gp is not None and bp is not None:
+                    cv2.line(canvas, bp, gp, (80, 255, 150), 1, cv2.LINE_AA)
 
         plane = box.get("plane") if isinstance(box.get("plane"), dict) else {}
         depth_valid = float(frame.public_info().get("depth_valid_fraction") or 0.0)
@@ -2358,9 +2495,12 @@ def create_d1_jog_app() -> Flask:
                 cx, cy, cz = map(float, center[:3])
                 top_p = (_sx(cx), _sz(cz, 58, mid - 10))
                 side_p = (int(np.clip(18 + (cz - z_lo) / (z_hi - z_lo) * (w - 36), 4, w - 5)), _sy(cy))
-                cv2.drawMarker(cloud, top_p, (0, 255, 255), cv2.MARKER_STAR, 18, 2)
-                cv2.drawMarker(cloud, side_p, (0, 255, 255), cv2.MARKER_STAR, 18, 2)
-                cv2.putText(cloud, "box/grasp", (top_p[0] + 7, top_p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
+                marker = cv2.MARKER_STAR if plan_ok else cv2.MARKER_TILTED_CROSS
+                marker_color = (0, 255, 80) if plan_ok else (0, 140, 255)
+                cv2.drawMarker(cloud, top_p, marker_color, marker, 18, 2)
+                cv2.drawMarker(cloud, side_p, marker_color, marker, 18, 2)
+                label = "GRASP ESEGUIBILE" if plan_ok else "BOX ONLY - NO GRASP"
+                cv2.putText(cloud, label, (top_p[0] + 7, top_p[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.42, marker_color, 1, cv2.LINE_AA)
         else:
             cv2.putText(cloud, "Nessun punto depth valido", (14, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (70, 150, 255), 2, cv2.LINE_AA)
         canvas = np.hstack([canvas, cloud])
@@ -2376,6 +2516,9 @@ def create_d1_jog_app() -> Flask:
             "components_count": len(components),
             "debug_points": debug_points,
             "plan": plan_out,
+            "plan_ok": plan_ok,
+            "plan_reason": plan_reason,
+            "execution_ready": plan_ok,
         }
         return bytes(buf), meta
 
@@ -4265,9 +4408,52 @@ def create_d1_jog_app() -> Flask:
             pass
         return out, (200 if out.get("ok") else 502)
 
+    def _reusable_pregrasp_plan() -> dict[str, Any] | None:
+        loaded = _load_grasp6d_run()
+        previous = loaded.get("run") if loaded.get("ok") else None
+        if not isinstance(previous, dict) or previous.get("mode") != "pregrasp_only" or not previous.get("ok"):
+            return None
+        finished_at = float(previous.get("finished_at") or 0.0)
+        max_age_s = float(os.environ.get("D1_GRASP6D_PREGRASP_PLAN_MAX_AGE_S", "300"))
+        if finished_at <= 0.0 or time.time() - finished_at > max_age_s:
+            return None
+        frozen = previous.get("frozen_plan")
+        if not isinstance(frozen, dict):
+            return None
+        selected = ((frozen.get("plan") or {}).get("selected") or {})
+        pre = ((selected.get("pregrasp") or {}).get("servo_deg"))
+        feedback = service.read_servo_deg(fast=True)
+        current = feedback.get("servo_deg") if feedback.get("ok") else None
+        if not isinstance(pre, list) or not isinstance(current, list) or len(pre) < 6 or len(current) < 6:
+            return None
+        tolerance_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_REUSE_TOL_DEG", "4.0"))
+        errors = [abs(float(current[i]) - float(pre[i])) for i in range(6)]
+        if max(errors) > tolerance_deg:
+            return None
+        frozen_bias = (frozen.get("plan") or {}).get("grasp_bias_base_m")
+        current_values = grasp6d.tuning_info()["values"]
+        current_bias = [
+            float(current_values["grasp_bias_base_x_m"]),
+            float(current_values["grasp_bias_base_y_m"]),
+            float(current_values["grasp_bias_base_z_m"]),
+        ]
+        if (
+            not isinstance(frozen_bias, list)
+            or len(frozen_bias) < 3
+            or max(abs(float(frozen_bias[i]) - current_bias[i]) for i in range(3)) > 1e-6
+        ):
+            return None
+        return {
+            "frozen_plan": frozen,
+            "source_run_finished_at": finished_at,
+            "pregrasp_error_deg": errors,
+            "grasp_bias_base_m": current_bias,
+        }
+
     def _execute_grasp6d_attempt(*, dry_run: bool = False, pregrasp_only: bool = False) -> dict[str, Any]:
         import numpy as np
 
+        reusable = None if (dry_run or pregrasp_only) else _reusable_pregrasp_plan()
         run: dict[str, Any] = {
             "ok": False,
             "mode": "dry_run" if dry_run else ("pregrasp_only" if pregrasp_only else "grasp6d"),
@@ -4278,15 +4464,28 @@ def create_d1_jog_app() -> Flask:
 
         def step(name: str, payload: dict[str, Any]) -> None:
             run["steps"].append({"name": name, **payload})
+            run["updated_at"] = time.time()
+            _save_grasp6d_run(run)
 
-        initial = _capture_grasp6d_plan()
+        scan_status = _grasp_scan_pose_status()
+        run["scan_pose"] = scan_status
+        if not dry_run and reusable is None and not scan_status.get("aligned"):
+            run["reason"] = "not_in_saved_scan_pose"
+            run["hint"] = "Vai prima alla posa SCAN salvata; il pregrasp non parte dalla posa corrente casuale."
+            run["finished_at"] = time.time()
+            _save_grasp6d_run(run)
+            return run
+
+        initial = reusable["frozen_plan"] if reusable is not None else _capture_grasp6d_plan()
+        if reusable is not None:
+            run["reused_pregrasp_plan"] = reusable
+        run["plan"] = initial
         step("plan", initial)
         if not initial.get("ok"):
             run["reason"] = initial.get("reason", "plan_failed")
             run["finished_at"] = time.time()
             _save_grasp6d_run(run)
             return run
-        run["plan"] = initial
         if dry_run:
             run.update({"ok": True, "finished_at": time.time()})
             _save_grasp6d_run(run)
@@ -4302,8 +4501,80 @@ def create_d1_jog_app() -> Flask:
 
         open_deg = pick_preset.gripper_open_j6_deg()
         close_deg = pick_preset.gripper_close_j6_deg()
-        latest = initial
-        for attempt_index in range(2):
+        pregrasp_step_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_STEP_DEG", "1.0"))
+        pregrasp_delay_ms = int(os.environ.get("D1_GRASP6D_PREGRASP_DELAY_MS", "180"))
+        contact_step_deg = float(os.environ.get("D1_GRASP6D_CONTACT_STEP_DEG", "0.5"))
+        contact_delay_ms = int(os.environ.get("D1_GRASP6D_CONTACT_DELAY_MS", "250"))
+        lift_step_deg = float(os.environ.get("D1_GRASP6D_LIFT_STEP_DEG", "0.75"))
+        lift_delay_ms = int(os.environ.get("D1_GRASP6D_LIFT_DELAY_MS", "200"))
+        # La D456 e' eye-in-hand: quando il polso assume l'orientamento di presa
+        # il box puo' uscire dal FOV. Stabilizziamo quindi il piano PRIMA di
+        # muovere e lo congeliamo per pregrasp/grasp; ricatturare dal pregrasp
+        # produce falsi cluster lontani e rende impossibile il realign.
+        view_count = 1 if reusable is not None else max(3, int(os.environ.get("D1_GRASP6D_VIEW_OBSERVATIONS", "5")))
+        max_view_spread_m = float(os.environ.get("D1_GRASP6D_VIEW_MAX_SPREAD_M", "0.012"))
+        min_view_inliers = (
+            1
+            if reusable is not None
+            else max(3, min(view_count, int(os.environ.get("D1_GRASP6D_VIEW_MIN_INLIERS", "4"))))
+        )
+        observations: list[dict[str, Any]] = [initial]
+        for _ in range(view_count - 1):
+            obs = _capture_grasp6d_plan()
+            step("view_observation", {"ok": obs.get("ok"), "reason": obs.get("reason")})
+            if obs.get("ok"):
+                observations.append(obs)
+        if len(observations) < min_view_inliers:
+            run["reason"] = "view_plan_not_stable"
+            run["finished_at"] = time.time()
+            _save_grasp6d_run(run)
+            return run
+        target_ts = [
+            np.asarray((((o.get("plan") or {}).get("selected") or {}).get("T_base_grasp")), dtype=float)
+            for o in observations
+        ]
+        centers = np.stack([T[:3, 3] for T in target_ts])
+        median_center = np.median(centers, axis=0)
+        center_errors = np.linalg.norm(centers - median_center, axis=1)
+        inlier_indices = np.flatnonzero(center_errors <= max_view_spread_m)
+        medoid_index = int(np.argmin(center_errors))
+        spread_m = float(np.max(center_errors[inlier_indices])) if len(inlier_indices) else float("inf")
+        rotations = [target_ts[int(i)][:3, :3] for i in inlier_indices]
+        reference_R = target_ts[medoid_index][:3, :3]
+        closing_symmetry = np.diag([1.0, -1.0, -1.0])
+        rot_spread_deg = 0.0
+        for R in rotations:
+            # Una pinza parallela e' invariata ruotando di 180° attorno
+            # all'asse di approccio (+X tool). La PCA del box puo' cambiare
+            # segno tra frame e non deve trasformare una presa stabile in 180°.
+            angles = []
+            for equivalent_R in (R, R @ closing_symmetry):
+                c = float(np.clip((np.trace(equivalent_R @ reference_R.T) - 1.0) * 0.5, -1.0, 1.0))
+                angles.append(math.degrees(math.acos(c)))
+            rot_spread_deg = max(rot_spread_deg, min(angles))
+        stable = len(inlier_indices) >= min_view_inliers and rot_spread_deg <= 7.0
+        step(
+            "view_stability_gate",
+            {
+                "ok": stable,
+                "spread_m": spread_m,
+                "rotation_spread_deg": rot_spread_deg,
+                "valid_observations": len(observations),
+                "inlier_count": len(inlier_indices),
+                "required_inliers": min_view_inliers,
+            },
+        )
+        if not stable:
+            run["reason"] = "view_plan_not_stable"
+            run["finished_at"] = time.time()
+            _save_grasp6d_run(run)
+            return run
+
+        latest = observations[medoid_index]
+        run["frozen_plan"] = latest
+        run["updated_at"] = time.time()
+        _save_grasp6d_run(run)
+        for attempt_index in range(1):
             run["attempt"] = attempt_index + 1
             selected = (latest.get("plan") or {}).get("selected") or {}
             pre = ((selected.get("pregrasp") or {}).get("servo_deg"))
@@ -4312,46 +4583,26 @@ def create_d1_jog_app() -> Flask:
                 break
             pre = service.clamp_servo_deg([float(x) for x in pre[:7]])
             pre[6] = open_deg
-            moved = program_runner.move_to_servo_deg_smooth(pre, pin_joints={6: open_deg})
+            moved = (
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "already_at_pregrasp_reusing_frozen_scan_plan",
+                    "pregrasp_error_deg": reusable["pregrasp_error_deg"],
+                }
+                if reusable is not None
+                else program_runner.move_to_servo_deg_smooth(
+                    pre,
+                    pin_joints={6: open_deg},
+                    max_step_deg=pregrasp_step_deg,
+                    min_delay_ms=pregrasp_delay_ms,
+                )
+            )
             step("pregrasp", {"attempt": attempt_index + 1, **moved})
             if not moved.get("ok"):
                 run["reason"] = moved.get("reason", "pregrasp_failed")
                 break
 
-            # Tre osservazioni consecutive: nessun movimento finale se la posa oscilla.
-            observations: list[dict[str, Any]] = []
-            for _ in range(3):
-                obs = _capture_grasp6d_plan()
-                step("realign_observation", {"attempt": attempt_index + 1, "ok": obs.get("ok"), "reason": obs.get("reason")})
-                if not obs.get("ok"):
-                    observations = []
-                    break
-                observations.append(obs)
-            if len(observations) != 3:
-                run["reason"] = "realign_not_stable"
-                latest = _capture_grasp6d_plan()
-                continue
-            target_ts = [
-                np.asarray((((o.get("plan") or {}).get("selected") or {}).get("T_base_grasp")), dtype=float)
-                for o in observations
-            ]
-            centers = np.stack([T[:3, 3] for T in target_ts])
-            spread_m = float(np.max(np.linalg.norm(centers - np.mean(centers, axis=0), axis=1)))
-            rotations = [T[:3, :3] for T in target_ts]
-            rot_spread_deg = 0.0
-            for R in rotations[1:]:
-                c = float(np.clip((np.trace(R @ rotations[0].T) - 1.0) * 0.5, -1.0, 1.0))
-                rot_spread_deg = max(rot_spread_deg, math.degrees(math.acos(c)))
-            stable = spread_m <= 0.008 and rot_spread_deg <= 5.0
-            step(
-                "realign_gate",
-                {"attempt": attempt_index + 1, "ok": stable, "spread_m": spread_m, "rotation_spread_deg": rot_spread_deg},
-            )
-            if not stable:
-                run["reason"] = "realign_not_stable"
-                latest = observations[-1]
-                continue
-            latest = observations[-1]
             if pregrasp_only:
                 run.update({"ok": True, "reason": None, "finished_at": time.time()})
                 _save_grasp6d_run(run)
@@ -4363,7 +4614,12 @@ def create_d1_jog_app() -> Flask:
                 break
             grasp_target = service.clamp_servo_deg([float(x) for x in grasp_target[:7]])
             grasp_target[6] = open_deg
-            approached = program_runner.move_to_servo_deg_smooth(grasp_target, pin_joints={6: open_deg})
+            approached = program_runner.move_to_servo_deg_smooth(
+                grasp_target,
+                pin_joints={6: open_deg},
+                max_step_deg=contact_step_deg,
+                min_delay_ms=contact_delay_ms,
+            )
             step("approach", {"attempt": attempt_index + 1, **approached})
             if not approached.get("ok"):
                 run["reason"] = approached.get("reason", "approach_failed")
@@ -4371,7 +4627,11 @@ def create_d1_jog_app() -> Flask:
 
             closed_target = list(grasp_target)
             closed_target[6] = close_deg
-            closed = program_runner.move_to_servo_deg_smooth(closed_target)
+            closed = program_runner.move_to_servo_deg_smooth(
+                closed_target,
+                max_step_deg=contact_step_deg,
+                min_delay_ms=contact_delay_ms,
+            )
             step("close", {"attempt": attempt_index + 1, **closed})
             if not closed.get("ok"):
                 run["reason"] = closed.get("reason", "close_failed")
@@ -4387,7 +4647,12 @@ def create_d1_jog_app() -> Flask:
                 break
             lift_target = service.clamp_servo_deg(list(lift_ik["servo_deg"]))
             lift_target[6] = close_deg
-            lifted = program_runner.move_to_servo_deg_smooth(lift_target, pin_joints={6: close_deg})
+            lifted = program_runner.move_to_servo_deg_smooth(
+                lift_target,
+                pin_joints={6: close_deg},
+                max_step_deg=lift_step_deg,
+                min_delay_ms=lift_delay_ms,
+            )
             step("lift", {"attempt": attempt_index + 1, **lifted})
             if not lifted.get("ok"):
                 run["reason"] = lifted.get("reason", "lift_failed")
@@ -4428,13 +4693,22 @@ def create_d1_jog_app() -> Flask:
 
             run["reason"] = "grasp_not_verified"
             # Recovery controllato: torna al pregrasp e riapre, senza mai fare release.
-            recovered = program_runner.move_to_servo_deg_smooth(pre, pin_joints={6: close_deg})
+            recovered = program_runner.move_to_servo_deg_smooth(
+                pre,
+                pin_joints={6: close_deg},
+                max_step_deg=lift_step_deg,
+                min_delay_ms=lift_delay_ms,
+            )
             step("retract", {"attempt": attempt_index + 1, **recovered})
             if not recovered.get("ok"):
                 break
             opened = list(pre)
             opened[6] = open_deg
-            opened_out = program_runner.move_to_servo_deg_smooth(opened)
+            opened_out = program_runner.move_to_servo_deg_smooth(
+                opened,
+                max_step_deg=contact_step_deg,
+                min_delay_ms=contact_delay_ms,
+            )
             step("reopen", {"attempt": attempt_index + 1, **opened_out})
             latest = _capture_grasp6d_plan()
             if not latest.get("ok"):
@@ -4516,8 +4790,36 @@ def create_d1_jog_app() -> Flask:
             "sample_count": len(grasp6d.list_handeye_samples()),
             "calibration": cal,
             "tuning": grasp6d.tuning_info(),
+            "scan_pose": _grasp_scan_pose_status(),
         }
         return jsonify(out)
+
+    @app.route("/api/pick/grasp6d/scan_pose", methods=["GET", "POST"])
+    def pick_grasp6d_scan_pose() -> Response:
+        if request.method == "GET":
+            return jsonify(_grasp_scan_pose_status())
+        body = request.get_json(silent=True) or {}
+        action = str(body.get("action") or "")
+        if action == "save_current":
+            if body.get("confirm") != "SAVE_GRASP_SCAN_POSE":
+                return jsonify(
+                    {
+                        "ok": False,
+                        "reason": "explicit_scan_pose_confirmation_required",
+                        "required_confirm": "SAVE_GRASP_SCAN_POSE",
+                    }
+                ), 409
+            feedback = service.read_servo_deg(fast=True)
+            current = feedback.get("servo_deg") if feedback.get("ok") else None
+            if not isinstance(current, list) or len(current) < 7:
+                return jsonify({"ok": False, "reason": "scan_pose_feedback_unavailable"}), 502
+            _save_grasp_scan_pose(current)
+            return jsonify(_grasp_scan_pose_status())
+        if action == "goto":
+            out = _move_via_safe_transit(list(_load_grasp_scan_pose()["servo_deg"]))
+            out["scan_pose"] = _grasp_scan_pose_status()
+            return jsonify(out), (200 if out.get("ok") else 502)
+        return jsonify({"ok": False, "reason": "invalid_scan_pose_action", "allowed": ["goto", "save_current"]}), 400
 
     @app.route("/api/pick/grasp6d/tuning", methods=["GET", "POST"])
     def pick_grasp6d_tuning() -> Response:
@@ -4525,14 +4827,50 @@ def create_d1_jog_app() -> Flask:
             return jsonify(grasp6d.tuning_info())
         body = request.get_json(silent=True) or {}
         if body.get("reset"):
-            return jsonify(grasp6d.update_tuning(reset=True))
+            before = grasp6d.tuning_info()["values"]
+            grasp6d.update_tuning(reset=True)
+            return jsonify(
+                grasp6d.update_tuning(
+                    {
+                        "grasp_bias_base_x_m": before["grasp_bias_base_x_m"],
+                        "grasp_bias_base_y_m": before["grasp_bias_base_y_m"],
+                        "grasp_bias_base_z_m": before["grasp_bias_base_z_m"],
+                    }
+                )
+            )
         current = dict(grasp6d.tuning_info()["values"])
         action = str(body.get("action") or "")
+        if action == "set_grasp_bias":
+            requested = body.get("grasp_bias_base_m")
+            if not isinstance(requested, list) or len(requested) < 3:
+                return jsonify({"ok": False, "reason": "grasp_bias_base_m_required"}), 400
+            return jsonify(
+                grasp6d.update_tuning(
+                    {
+                        "grasp_bias_base_x_m": float(requested[0]),
+                        "grasp_bias_base_y_m": float(requested[1]),
+                        "grasp_bias_base_z_m": float(requested[2]),
+                    }
+                )
+            )
         steps = {
             "lower_height": ("min_box_height_m", -0.003),
             "lower_cluster": ("min_cluster_points", -5.0),
             "lower_dimension": ("min_box_dim_m", -0.003),
+            "grasp_x_plus": ("grasp_bias_base_x_m", 0.005),
+            "grasp_x_minus": ("grasp_bias_base_x_m", -0.005),
+            "grasp_y_plus": ("grasp_bias_base_y_m", 0.005),
+            "grasp_y_minus": ("grasp_bias_base_y_m", -0.005),
         }
+        if action == "reset_grasp_bias":
+            current.update(
+                {
+                    "grasp_bias_base_x_m": 0.0,
+                    "grasp_bias_base_y_m": 0.0,
+                    "grasp_bias_base_z_m": 0.0,
+                }
+            )
+            return jsonify(grasp6d.update_tuning(current))
         if action not in steps:
             return jsonify({"ok": False, "reason": "invalid_tuning_action", "allowed": sorted(steps)}), 400
         key, delta = steps[action]
@@ -4555,12 +4893,24 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/pick/grasp6d/debug", methods=["GET"])
     def pick_grasp6d_debug() -> Response:
-        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=request.args.get("capture", "1") not in {"0", "false", "no"})
+        capture_new = request.args.get("capture", "1") not in {"0", "false", "no"}
+        if capture_new and wrist_rgbd.capture_active():
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": "rgbd_capture_busy",
+                    "hint": "Attendi la cattura corrente o ferma Live debug, poi riprova.",
+                }
+            ), 409
+        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=capture_new)
         return jsonify(meta), (200 if meta.get("ok") else 422)
 
     @app.route("/api/pick/grasp6d/debug.jpg", methods=["GET"])
     def pick_grasp6d_debug_jpg() -> Response:
-        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=request.args.get("capture", "1") not in {"0", "false", "no"})
+        capture_new = request.args.get("capture", "1") not in {"0", "false", "no"}
+        if capture_new and wrist_rgbd.capture_active():
+            return jsonify({"ok": False, "reason": "rgbd_capture_busy"}), 409
+        out_jpg, meta = _grasp6d_debug_jpeg(capture_new=capture_new)
         if out_jpg is None:
             return jsonify(meta), 422
         return Response(out_jpg, mimetype="image/jpeg")
@@ -4568,10 +4918,65 @@ def create_d1_jog_app() -> Flask:
     @app.route("/api/pick/grasp6d/last_run", methods=["GET"])
     def pick_grasp6d_last_run() -> Response:
         out = _load_grasp6d_run()
+        fb = service.read_servo_deg(fast=True)
+        live: dict[str, Any] = {"feedback": fb}
+        raw = fb.get("servo_deg") if isinstance(fb, dict) else None
+        if fb.get("ok") and isinstance(raw, list) and len(raw) >= 6:
+            import numpy as np
+
+            T_base_tool = grasp6d.fk_tool_transform(np.radians(np.asarray(raw[:6], dtype=float)))
+            live["T_base_tool"] = T_base_tool.tolist()
+            run = out.get("run") if isinstance(out.get("run"), dict) else {}
+            plan_capture = (
+                run.get("frozen_plan")
+                if isinstance(run.get("frozen_plan"), dict)
+                else (run.get("plan") if isinstance(run.get("plan"), dict) else {})
+            )
+            plan = plan_capture.get("plan") if isinstance(plan_capture.get("plan"), dict) else {}
+            selected = plan.get("selected") if isinstance(plan.get("selected"), dict) else {}
+            target = np.asarray(selected.get("T_base_grasp"), dtype=float)
+            if target.shape == (4, 4):
+                live["grasp_target_base_m"] = target[:3, 3].tolist()
+                live["tool_position_base_m"] = T_base_tool[:3, 3].tolist()
+                live["tool_minus_grasp_m"] = (T_base_tool[:3, 3] - target[:3, 3]).tolist()
+        out["live"] = live
         return jsonify(out), (200 if out.get("ok") else 404)
+
+    def _validate_grasp_bias_confirmation(body: dict[str, Any]) -> dict[str, Any] | None:
+        if not bool(body.get("require_offset_confirmation")):
+            return None
+        values = grasp6d.tuning_info()["values"]
+        current = [
+            float(values["grasp_bias_base_x_m"]),
+            float(values["grasp_bias_base_y_m"]),
+            float(values["grasp_bias_base_z_m"]),
+        ]
+        expected = body.get("expected_grasp_bias_base_m")
+        if body.get("offset_confirm") != "CONFIRM_GRASP_BIAS":
+            return {
+                "ok": False,
+                "reason": "explicit_grasp_bias_confirmation_required",
+                "required_confirm": "CONFIRM_GRASP_BIAS",
+                "grasp_bias_base_m": current,
+            }
+        if (
+            not isinstance(expected, list)
+            or len(expected) < 3
+            or max(abs(float(expected[i]) - current[i]) for i in range(3)) > 1e-6
+        ):
+            return {
+                "ok": False,
+                "reason": "grasp_bias_changed_after_confirmation",
+                "grasp_bias_base_m": current,
+            }
+        return None
 
     @app.route("/api/pick/grasp6d/pregrasp", methods=["POST"])
     def pick_grasp6d_pregrasp() -> Response:
+        body = request.get_json(silent=True) or {}
+        bias_error = _validate_grasp_bias_confirmation(body)
+        if bias_error is not None:
+            return jsonify(bias_error), 409
         out = _execute_grasp6d_attempt(pregrasp_only=True)
         return jsonify(out), (200 if out.get("ok") else 422)
 
@@ -4580,6 +4985,9 @@ def create_d1_jog_app() -> Flask:
         body = request.get_json(silent=True) or {}
         if body.get("confirm") != "EXECUTE_GRASP6D":
             return jsonify({"ok": False, "reason": "explicit_grasp6d_confirmation_required", "required_confirm": "EXECUTE_GRASP6D"}), 409
+        bias_error = _validate_grasp_bias_confirmation(body)
+        if bias_error is not None:
+            return jsonify(bias_error), 409
         out = _execute_grasp6d_attempt(pregrasp_only=False)
         return jsonify(out), (200 if out.get("ok") else 422)
 

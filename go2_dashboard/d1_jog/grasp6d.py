@@ -22,6 +22,12 @@ ensure_d1_scripts_on_sys_path()
 import arm_kinematics_d1_template as kin  # noqa: E402
 
 
+# Gli encoder DDS di J4/J6 hanno verso opposto agli assi URDF/MJCF. La vecchia
+# FK usava direttamente i gradi servo: il solver hand-eye compensava l'errore
+# con una extrinseca camera-polso impossibile (23.6 cm) pur mostrando RMS basso.
+SERVO_TO_KINEMATIC_SIGNS = np.asarray([1.0, 1.0, 1.0, -1.0, 1.0, -1.0], dtype=float)
+
+
 CALIBRATION_PATH = Path(
     os.environ.get("D1_GRASP6D_CALIBRATION", str(PROJECT_ROOT / "data" / "d1_grasp6d_calibration.json"))
 )
@@ -43,12 +49,18 @@ _TUNING_DEFAULTS: dict[str, float] = {
     "min_box_height_floor_m": 0.008,
     "min_cluster_points": 35.0,
     "min_box_dim_m": 0.025,
+    "grasp_bias_base_x_m": 0.0,
+    "grasp_bias_base_y_m": 0.0,
+    "grasp_bias_base_z_m": 0.0,
 }
 _TUNING_LIMITS: dict[str, tuple[float, float]] = {
     "min_box_height_m": (0.006, 0.08),
     "min_box_height_floor_m": (0.004, 0.04),
     "min_cluster_points": (8.0, 300.0),
     "min_box_dim_m": (0.008, 0.10),
+    "grasp_bias_base_x_m": (-0.04, 0.04),
+    "grasp_bias_base_y_m": (-0.04, 0.04),
+    "grasp_bias_base_z_m": (-0.03, 0.03),
 }
 
 
@@ -145,11 +157,35 @@ def _rotation_vector(R: np.ndarray) -> np.ndarray:
     return axis / max(n, 1e-12) * angle
 
 
+def _servo_q_to_kinematic(q_rad: Iterable[float]) -> np.ndarray:
+    return np.asarray(list(q_rad), dtype=float).reshape(6) * SERVO_TO_KINEMATIC_SIGNS
+
+
 def fk_tool_transform(q_rad: Iterable[float]) -> np.ndarray:
-    q = np.asarray(list(q_rad), dtype=float).reshape(6)
+    q = _servo_q_to_kinematic(q_rad)
     pos, R = kin.fk_full(q)
     tip = pos + R @ np.asarray(kin.TOOL_TIP_OFFSET, dtype=float)
     return _transform(R, tip)
+
+
+def _sample_base_tool_transform(sample: dict[str, Any]) -> np.ndarray:
+    """Ricalcola la FK dai raw encoder, migrando anche i sample legacy."""
+    servo_deg = sample.get("servo_deg")
+    if isinstance(servo_deg, list) and len(servo_deg) >= 6:
+        return fk_tool_transform(np.radians(np.asarray(servo_deg[:6], dtype=float)))
+    return np.asarray(sample.get("T_base_tool"), dtype=float)
+
+
+def _nominal_tool_camera_transform() -> np.ndarray:
+    """Prior meccanico D1: D456 vicino al polso, frame ottico OpenCV."""
+    r_mjcf = kin._mjcf_fixed_camera_rotation(0.0, -math.pi / 2.0, -math.pi / 2.0)
+    r_opencv = r_mjcf @ np.diag([1.0, -1.0, -1.0])
+    offset = [
+        float(os.environ.get("D1_WRIST_CAMERA_TOOL_DX_M", "-0.05")),
+        float(os.environ.get("D1_WRIST_CAMERA_TOOL_DY_M", "0.0")),
+        float(os.environ.get("D1_WRIST_CAMERA_TOOL_DZ_M", "0.0")),
+    ]
+    return _transform(r_opencv, offset)
 
 
 def _pose_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
@@ -201,7 +237,7 @@ def ik_pose(
             [-0.6, -1.0, 0.7, 0.0, -0.4, 0.0],
         ]
     )
-    pos_tol = float(os.environ.get("D1_GRASP6D_IK_POS_TOL_M", "0.008"))
+    pos_tol = float(os.environ.get("D1_GRASP6D_IK_POS_TOL_M", "0.005"))
     rot_tol = math.radians(float(os.environ.get("D1_GRASP6D_IK_ROT_TOL_DEG", "5")))
     damping = float(os.environ.get("D1_GRASP6D_IK_DAMPING", "0.008"))
     orientation_weight = float(os.environ.get("D1_GRASP6D_IK_ORIENT_WEIGHT", "0.35"))
@@ -563,29 +599,6 @@ def estimate_box_pose_rgb_guided(
             "rgb_detection": detection,
         }
 
-    def _pixel_at_depth(u: float, v: float, z: float) -> np.ndarray:
-        return np.asarray(
-            [
-                (float(u) - float(intrinsics["ppx"])) * z / float(intrinsics["fx"]),
-                (float(v) - float(intrinsics["ppy"])) * z / float(intrinsics["fy"]),
-                z,
-            ],
-            dtype=float,
-        )
-
-    footprint_corners = np.asarray([_pixel_at_depth(float(u), float(v), z_ref) for u, v in footprint_px], dtype=float)
-    edges = [footprint_corners[(i + 1) % 4] - footprint_corners[i] for i in range(4)]
-    edge_lengths = [float(np.linalg.norm(e)) for e in edges]
-    long_i = int(np.argmax(edge_lengths))
-    h0 = edges[long_i] - normal * float(np.dot(edges[long_i], normal))
-    h0 /= max(float(np.linalg.norm(h0)), 1e-12)
-    h1 = np.cross(normal, h0)
-    h1 /= max(float(np.linalg.norm(h1)), 1e-12)
-
-    long_len = edge_lengths[long_i]
-    adjacent = [edge_lengths[(long_i - 1) % 4], edge_lengths[(long_i + 1) % 4]]
-    short_len = float(np.median(adjacent))
-    dims_xy = np.asarray([long_len, short_len], dtype=float)
     signed = roi_points @ normal + d
     min_h_floor = _tuning_value("min_box_height_floor_m", "D1_GRASP6D_MIN_BOX_HEIGHT_FLOOR_M")
     max_h = float(os.environ.get("D1_GRASP6D_MAX_BOX_HEIGHT_M", "0.45"))
@@ -598,6 +611,46 @@ def estimate_box_pose_rgb_guided(
         height_source = "assumed_env"
     height = min(max(height, min_h_floor), max_h)
 
+    def _pixel_on_top_plane(u: float, v: float) -> np.ndarray:
+        """Interseca il raggio pixel con la faccia superiore del cuboide.
+
+        Usare una profondita' Z costante (prima: mediana della ROI) sovrastima
+        il footprint quando la camera guarda il piano obliquamente e la depth
+        dell'oggetto e' rada: la mediana appartiene quasi sempre al pavimento.
+        Il piano superiore soddisfa normal @ point + d == height.
+        """
+        ray = np.asarray(
+            [
+                (float(u) - float(intrinsics["ppx"])) / float(intrinsics["fx"]),
+                (float(v) - float(intrinsics["ppy"])) / float(intrinsics["fy"]),
+                1.0,
+            ],
+            dtype=float,
+        )
+        denominator = float(np.dot(normal, ray))
+        if abs(denominator) < 1e-9:
+            return ray * z_ref
+        distance = float((height - d) / denominator)
+        if not np.isfinite(distance) or distance <= 0.0:
+            return ray * z_ref
+        return ray * distance
+
+    footprint_corners = np.asarray(
+        [_pixel_on_top_plane(float(u), float(v)) for u, v in footprint_px],
+        dtype=float,
+    )
+    edges = [footprint_corners[(i + 1) % 4] - footprint_corners[i] for i in range(4)]
+    edge_lengths = [float(np.linalg.norm(e)) for e in edges]
+    long_i = int(np.argmax(edge_lengths))
+    h0 = edges[long_i] - normal * float(np.dot(edges[long_i], normal))
+    h0 /= max(float(np.linalg.norm(h0)), 1e-12)
+    h1 = np.cross(normal, h0)
+    h1 /= max(float(np.linalg.norm(h1)), 1e-12)
+
+    long_len = edge_lengths[long_i]
+    adjacent = [edge_lengths[(long_i - 1) % 4], edge_lengths[(long_i + 1) % 4]]
+    short_len = float(np.median(adjacent))
+    dims_xy = np.asarray([long_len, short_len], dtype=float)
     min_dim = _tuning_value("min_box_dim_m", "D1_GRASP6D_MIN_BOX_DIM_M")
     max_dim = float(os.environ.get("D1_GRASP6D_MAX_BOX_DIM_M", "0.45"))
     if bool(np.any(dims_xy < min_dim) or np.any(dims_xy > max_dim)):
@@ -643,6 +696,14 @@ def load_calibration() -> dict[str, Any]:
     T = data.get("T_tool_camera")
     if not isinstance(T, list) or len(T) != 4:
         return {"ok": False, "reason": "handeye_calibration_invalid", "path": str(CALIBRATION_PATH)}
+    expected_signs = SERVO_TO_KINEMATIC_SIGNS.astype(int).tolist()
+    if data.get("kinematic_servo_signs") != expected_signs:
+        return {
+            "ok": False,
+            "reason": "handeye_calibration_stale_kinematic_mapping",
+            "path": str(CALIBRATION_PATH),
+            "expected_kinematic_servo_signs": expected_signs,
+        }
     return {"ok": True, **data, "T_tool_camera_np": np.asarray(T, dtype=float)}
 
 
@@ -700,7 +761,7 @@ def _solve_handeye_calibration_impl(samples: list[dict[str, Any]]) -> dict[str, 
     Tg_rows: list[np.ndarray] = []
     Tc_rows: list[np.ndarray] = []
     for sample in samples:
-        Tg = np.asarray(sample.get("T_base_tool"), dtype=float)
+        Tg = _sample_base_tool_transform(sample)
         Tc = np.asarray(sample.get("T_camera_target"), dtype=float)
         if Tg.shape != (4, 4) or Tc.shape != (4, 4):
             return {"ok": False, "reason": "invalid_sample_transform"}
@@ -806,10 +867,54 @@ def _solve_handeye_calibration_impl(samples: list[dict[str, Any]]) -> dict[str, 
             "detail": "; ".join(solver_errors[-4:]),
             "sample_count": len(samples),
         }
-    best = min(candidates, key=lambda row: float(row["score"]))
+    real_d1_samples = all(isinstance(sample.get("servo_deg"), list) for sample in samples)
+    nominal = _nominal_tool_camera_transform()
+    max_mount_m = float(os.environ.get("D1_GRASP6D_MAX_TOOL_CAMERA_OFFSET_M", "0.15"))
+    max_nominal_rot_deg = float(os.environ.get("D1_GRASP6D_MAX_CAMERA_MOUNT_ROT_ERROR_DEG", "35.0"))
+    for row in candidates:
+        X_eval = np.asarray(row["T_tool_camera"], dtype=float)
+        mount_offset_m = float(np.linalg.norm(X_eval[:3, 3]))
+        nominal_rot_error_deg = math.degrees(
+            float(np.linalg.norm(_rotation_vector(X_eval[:3, :3] @ nominal[:3, :3].T)))
+        )
+        row["mount_offset_m"] = mount_offset_m
+        row["nominal_mount_rotation_error_deg"] = nominal_rot_error_deg
+        row["physically_plausible"] = bool(
+            row["solver_variant"] == "base_tool__camera_target"
+            and not row["candidate_inverted"]
+            and mount_offset_m <= max_mount_m
+            and nominal_rot_error_deg <= max_nominal_rot_deg
+        )
+    selectable = [row for row in candidates if row["physically_plausible"]] if real_d1_samples else candidates
+    if not selectable:
+        diagnostic = sorted(candidates, key=lambda row: float(row["score"]))[:8]
+        return {
+            "ok": False,
+            "reason": "handeye_solution_physically_implausible",
+            "sample_count": len(samples),
+            "max_tool_camera_offset_m": max_mount_m,
+            "max_camera_mount_rotation_error_deg": max_nominal_rot_deg,
+            "solver_diagnostic": [
+                {
+                    key: row[key]
+                    for key in (
+                        "solver_variant",
+                        "solver_method",
+                        "candidate_inverted",
+                        "translation_rms_m",
+                        "rotation_rms_deg",
+                        "mount_offset_m",
+                        "nominal_mount_rotation_error_deg",
+                        "physically_plausible",
+                    )
+                }
+                for row in diagnostic
+            ],
+        }
+    best = min(selectable, key=lambda row: float(row["score"]))
     diagnostic = sorted(candidates, key=lambda row: float(row["score"]))[:8]
     record = {
-        "version": 1,
+        "version": 2,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "sample_count": len(samples),
         "T_tool_camera": np.asarray(best["T_tool_camera"]).tolist(),
@@ -821,6 +926,10 @@ def _solve_handeye_calibration_impl(samples: list[dict[str, Any]]) -> dict[str, 
         "solver_variant": best["solver_variant"],
         "solver_method": best["solver_method"],
         "candidate_inverted": best["candidate_inverted"],
+        "kinematic_servo_signs": SERVO_TO_KINEMATIC_SIGNS.astype(int).tolist(),
+        "mount_offset_m": best["mount_offset_m"],
+        "nominal_mount_rotation_error_deg": best["nominal_mount_rotation_error_deg"],
+        "physically_plausible": best["physically_plausible"],
         "solver_diagnostic": [
             {
                 "solver_variant": row["solver_variant"],
@@ -829,6 +938,9 @@ def _solve_handeye_calibration_impl(samples: list[dict[str, Any]]) -> dict[str, 
                 "translation_rms_m": row["translation_rms_m"],
                 "rotation_rms_deg": row["rotation_rms_deg"],
                 "score": row["score"],
+                "mount_offset_m": row["mount_offset_m"],
+                "nominal_mount_rotation_error_deg": row["nominal_mount_rotation_error_deg"],
+                "physically_plausible": row["physically_plausible"],
             }
             for row in diagnostic
         ],
@@ -968,7 +1080,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     count = len(samples)
     valid_samples = []
     for sample in samples:
-        Tg = np.asarray(sample.get("T_base_tool"), dtype=float)
+        Tg = _sample_base_tool_transform(sample)
         Tc = np.asarray(sample.get("T_camera_target"), dtype=float)
         if (
             Tg.shape == (4, 4)
@@ -980,7 +1092,7 @@ def handeye_quality_report(samples: list[dict[str, Any]]) -> dict[str, Any]:
     translations = []
     rotations = []
     for sample in valid_samples:
-        T = np.asarray(sample["T_base_tool"], dtype=float)
+        T = _sample_base_tool_transform(sample)
         translations.append(T[:3, 3])
         rotations.append(T[:3, :3])
     trans_span = 0.0
@@ -1654,10 +1766,11 @@ def _candidate_orientation(vertical: np.ndarray, closing: np.ndarray) -> np.ndar
     return _project_rotation(np.column_stack([x_axis, y_axis, z_axis]))
 
 
-def _floor_clearance_ok(q_rad: Iterable[float]) -> bool:
-    floor_z = float(os.environ.get("D1_GRASP6D_FLOOR_Z_ARM_M", "0.0"))
+def _floor_clearance_ok(q_rad: Iterable[float], *, floor_z: float | None = None) -> bool:
+    if floor_z is None:
+        floor_z = float(os.environ.get("D1_GRASP6D_FLOOR_Z_ARM_M", "0.0"))
     margin = float(os.environ.get("D1_GRASP6D_LINK_FLOOR_MARGIN_M", "0.015"))
-    pts = np.asarray(kin.fk_chain_positions(list(q_rad)), dtype=float)
+    pts = np.asarray(kin.fk_chain_positions(_servo_q_to_kinematic(q_rad)), dtype=float)
     # Il mount e i primi link sono sul robot; controlliamo la parte distale.
     return bool(np.all(pts[3:, 2] >= floor_z + margin))
 
@@ -1673,14 +1786,17 @@ def _trajectory_collision_free(
     qb = np.asarray(list(q_end), dtype=float)
     R = T_base_box[:3, :3]
     center = T_base_box[:3, 3]
+    # Il frame FK parte dal mount sul Go2, quindi il pavimento non coincide con
+    # z=0. Ricaviamo la quota dalla faccia inferiore dell'OBB osservato.
+    floor_z = float(center[2] - np.sum(np.abs(R[2, :]) * np.asarray(dimensions_m, dtype=float) * 0.5))
     half = np.asarray(dimensions_m, dtype=float) * 0.5 + float(
         os.environ.get("D1_GRASP6D_COLLISION_MARGIN_M", "0.025")
     )
     for alpha in np.linspace(0.0, 1.0, 9):
         q = kin._clamp_q(qa * (1.0 - alpha) + qb * alpha)
-        if not _floor_clearance_ok(q):
+        if not _floor_clearance_ok(q, floor_z=floor_z):
             return False
-        chain = np.asarray(kin.fk_chain_positions(q), dtype=float)
+        chain = np.asarray(kin.fk_chain_positions(_servo_q_to_kinematic(q)), dtype=float)
         # Esclude polso/tool: devono raggiungere il punto di contatto.
         for i in range(max(0, len(chain) - 3)):
             a, b = chain[i], chain[i + 1]
@@ -1712,25 +1828,44 @@ def plan_grasp(
     horizontal_dims = dims[:2]
     aperture = float(os.environ.get("D1_GRIPPER_MAX_APERTURE_M", "0.085"))
     pregrasp_m = float(os.environ.get("D1_GRASP6D_PREGRASP_M", "0.10"))
+    tuning = tuning_info()["values"]
+    grasp_bias = np.asarray(
+        [
+            tuning["grasp_bias_base_x_m"],
+            tuning["grasp_bias_base_y_m"],
+            tuning["grasp_bias_base_z_m"],
+        ],
+        dtype=float,
+    )
     candidates: list[dict[str, Any]] = []
+    rejected = {
+        "width_over_aperture": 0,
+        "pregrasp_ik": 0,
+        "grasp_ik": 0,
+        "trajectory_collision": 0,
+    }
     for axis_index in np.argsort(horizontal_dims):
         width = float(horizontal_dims[axis_index])
         if width > aperture:
+            rejected["width_over_aperture"] += 2
             continue
         closing = Rb[:, int(axis_index)]
         for sign in (1.0, -1.0):
             R_tool = _candidate_orientation(vertical, closing * sign)
-            contact = T_base_box[:3, 3] + vertical * float(dims[2] * 0.20)
+            contact = T_base_box[:3, 3] + vertical * float(dims[2] * 0.20) + grasp_bias
             grasp_T = _transform(R_tool, contact)
             pre_T = grasp_T.copy()
             pre_T[:3, 3] -= R_tool[:, 0] * pregrasp_m
             pre_ik = ik_pose(pre_T, primary_seed=q_now)
             if not pre_ik.get("ok"):
+                rejected["pregrasp_ik"] += 1
                 continue
             grasp_ik = ik_pose(grasp_T, primary_seed=pre_ik["q_rad"])
-            if not grasp_ik.get("ok") or not _trajectory_collision_free(
-                pre_ik["q_rad"], grasp_ik["q_rad"], T_base_box, dims
-            ):
+            if not grasp_ik.get("ok"):
+                rejected["grasp_ik"] += 1
+                continue
+            if not _trajectory_collision_free(pre_ik["q_rad"], grasp_ik["q_rad"], T_base_box, dims):
+                rejected["trajectory_collision"] += 1
                 continue
             joint_motion = float(np.linalg.norm(np.asarray(grasp_ik["q_rad"]) - q_now))
             score = (
@@ -1754,8 +1889,14 @@ def plan_grasp(
         return {
             "ok": False,
             "reason": "no_safe_6d_grasp_candidate",
+            "T_base_box": T_base_box.tolist(),
+            "grasp_bias_base_m": grasp_bias.tolist(),
+            "estimated_floor_z_base_m": float(
+                T_base_box[2, 3] - np.sum(np.abs(T_base_box[2, :3]) * dims * 0.5)
+            ),
             "box_dimensions_m": dims.tolist(),
             "gripper_max_aperture_m": aperture,
+            "rejection_counts": rejected,
         }
     candidates.sort(key=lambda item: float(item["score"]))
     best = candidates[0]
@@ -1763,7 +1904,12 @@ def plan_grasp(
         "ok": True,
         "source": "rgbd_cuboid_6d",
         "T_base_box": T_base_box.tolist(),
+        "grasp_bias_base_m": grasp_bias.tolist(),
+        "estimated_floor_z_base_m": float(
+            T_base_box[2, 3] - np.sum(np.abs(T_base_box[2, :3]) * dims * 0.5)
+        ),
         "box_dimensions_m": dims.tolist(),
         "candidate_count": len(candidates),
+        "rejection_counts": rejected,
         "selected": best,
     }

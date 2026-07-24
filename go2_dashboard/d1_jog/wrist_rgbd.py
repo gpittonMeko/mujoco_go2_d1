@@ -116,7 +116,8 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
             # La scatola stampata assorbe molto IR: High Density + laser massimo
             # aumenta il supporto senza applicare hole-filling geometrico.
             option_values = (
-                (rs.option.visual_preset, float(os.environ.get("D1_WRIST_RS_VISUAL_PRESET", "1"))),
+                # rs400_visual_preset: 1=Default, 4=High Density.
+                (rs.option.visual_preset, float(os.environ.get("D1_WRIST_RS_VISUAL_PRESET", "4"))),
                 (rs.option.emitter_enabled, float(os.environ.get("D1_WRIST_RS_EMITTER_ENABLED", "1"))),
             )
             for option, value in option_values:

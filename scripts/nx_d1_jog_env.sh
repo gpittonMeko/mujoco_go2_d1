@@ -180,15 +180,33 @@ export D1_WRIST_RGBD_WIDTH="${D1_WRIST_RGBD_WIDTH:-640}"
 export D1_WRIST_RGBD_HEIGHT="${D1_WRIST_RGBD_HEIGHT:-480}"
 export D1_WRIST_RGBD_FPS="${D1_WRIST_RGBD_FPS:-15}"
 export D1_WRIST_RGBD_WARMUP="${D1_WRIST_RGBD_WARMUP:-10}"
-export D1_WRIST_RS_VISUAL_PRESET="${D1_WRIST_RS_VISUAL_PRESET:-1}"
+# librealsense rs400_visual_preset: 4=High Density (1 era Default).
+export D1_WRIST_RS_VISUAL_PRESET="${D1_WRIST_RS_VISUAL_PRESET:-4}"
 export D1_WRIST_RS_EMITTER_ENABLED="${D1_WRIST_RS_EMITTER_ENABLED:-1}"
 export D1_WRIST_RS_LASER_POWER="${D1_WRIST_RS_LASER_POWER:-360}"
+export D1_GRASP6D_MIN_DEPTH_VALID_FRACTION="${D1_GRASP6D_MIN_DEPTH_VALID_FRACTION:-0.15}"
 export D1_GRASP6D_MAX_DEPTH_M="${D1_GRASP6D_MAX_DEPTH_M:-1.2}"
 # Oggetti lucidi/scuri danno pochi pixel depth: usa tutti i pixel validi per il cuboide 6D.
 export D1_GRASP6D_DEPTH_STRIDE="${D1_GRASP6D_DEPTH_STRIDE:-1}"
 export D1_GRASP6D_MIN_CLUSTER_POINTS="${D1_GRASP6D_MIN_CLUSTER_POINTS:-35}"
-export D1_GRASP6D_PREGRASP_M="${D1_GRASP6D_PREGRASP_M:-0.10}"
+# Dalla posa manuale validata il pregrasp a 10 cm e' fuori workspace IK;
+# 6 cm mantiene margine dall'oggetto e resta verificato dal collision checker.
+export D1_GRASP6D_PREGRASP_M="${D1_GRASP6D_PREGRASP_M:-0.06}"
 export D1_GRASP6D_LIFT_M="${D1_GRASP6D_LIFT_M:-0.09}"
+# Tratto di contatto volutamente lento: il default programmi (12 deg/s) ha
+# causato un contatto leggero prima della chiusura.
+export D1_GRASP6D_PREGRASP_STEP_DEG="${D1_GRASP6D_PREGRASP_STEP_DEG:-1.0}"
+export D1_GRASP6D_PREGRASP_DELAY_MS="${D1_GRASP6D_PREGRASP_DELAY_MS:-180}"
+export D1_GRASP6D_CONTACT_STEP_DEG="${D1_GRASP6D_CONTACT_STEP_DEG:-0.5}"
+export D1_GRASP6D_CONTACT_DELAY_MS="${D1_GRASP6D_CONTACT_DELAY_MS:-250}"
+export D1_GRASP6D_LIFT_STEP_DEG="${D1_GRASP6D_LIFT_STEP_DEG:-0.75}"
+export D1_GRASP6D_LIFT_DELAY_MS="${D1_GRASP6D_LIFT_DELAY_MS:-200}"
+export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-5}"
+export D1_GRASP6D_VIEW_MAX_SPREAD_M="${D1_GRASP6D_VIEW_MAX_SPREAD_M:-0.012}"
+export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-4}"
+# Non accettare target IK oltre 5 mm: sul lift un residuo ~11 mm e' stato
+# percepito come overshoot laterale e puo' trascinare l'oggetto.
+export D1_GRASP6D_IK_POS_TOL_M="${D1_GRASP6D_IK_POS_TOL_M:-0.005}"
 export D1_GRIPPER_MAX_APERTURE_M="${D1_GRIPPER_MAX_APERTURE_M:-0.085}"
 export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-4}"
 export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-4}"
@@ -254,7 +272,12 @@ export D1_COLOR_BOX_H_MIN="${D1_COLOR_BOX_H_MIN:-95}"
 export D1_COLOR_BOX_H_MAX="${D1_COLOR_BOX_H_MAX:-130}"
 export D1_COLOR_BOX_S_MIN="${D1_COLOR_BOX_S_MIN:-45}"
 export D1_COLOR_BOX_V_MIN="${D1_COLOR_BOX_V_MIN:-35}"
-export D1_COLOR_BOX_MIN_AREA_FRAC="${D1_COLOR_BOX_MIN_AREA_FRAC:-0.012}"
+# La confezione SICK ha il blu diviso tra bordi/estremita': con 1.2% i blob
+# restano separati e 9 frame su 10 vengono scartati. La chiusura 9x9 li unisce;
+# depth metrica + tre osservazioni stabili restano il gate di sicurezza finale.
+export D1_COLOR_BOX_MORPH_K="${D1_COLOR_BOX_MORPH_K:-9}"
+export D1_COLOR_BOX_MIN_AREA_FRAC="${D1_COLOR_BOX_MIN_AREA_FRAC:-0.0015}"
+export D1_COLOR_BOX_MIN_SOLIDITY="${D1_COLOR_BOX_MIN_SOLIDITY:-0.45}"
 export D1_COLOR_BOX_Y_TARGET_FRAC="${D1_COLOR_BOX_Y_TARGET_FRAC:-0.62}"
 export GO2_BOX_MAX_AREA_RATIO="${GO2_BOX_MAX_AREA_RATIO:-1.0}"
 unset GO2_YOLO_MODEL

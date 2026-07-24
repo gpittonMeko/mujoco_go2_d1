@@ -102,19 +102,38 @@ class Grasp6DMathTests(unittest.TestCase):
             z = floor_y * fy / (v - ppy)
             if 0.2 < z < 1.2:
                 depth[v, :] = z
-        depth[130:145, 140:158] = 0.54
+        top_y = 0.12
+        for v in range(91, height):
+            z = top_y * fy / (v - ppy)
+            if not 0.45 <= z <= 0.65:
+                continue
+            u0 = int(round(ppx - 0.08 * fx / z))
+            u1 = int(round(ppx + 0.08 * fx / z))
+            depth[v, max(0, u0) : min(width, u1 + 1)] = z
         intr = {"fx": fx, "fy": fy, "ppx": ppx, "ppy": ppy}
+        top_corners_xyz = [
+            (-0.08, top_y, 0.45),
+            (0.08, top_y, 0.45),
+            (0.08, top_y, 0.65),
+            (-0.08, top_y, 0.65),
+        ]
+        orient_box_px = [
+            [ppx + x * fx / z, ppy + y * fy / z]
+            for x, y, z in top_corners_xyz
+        ]
         det = {
             "ok": True,
             "bbox_xyxy": [125.0, 118.0, 195.0, 170.0],
             "bbox_center_px": [160.0, 144.0],
+            "orient_box_px": orient_box_px,
             "backend": "test_rgb",
         }
         with patch.dict("os.environ", {"D1_GRASP6D_DEPTH_STRIDE": "1"}):
             out = grasp6d.estimate_box_pose_rgb_guided(depth, intr, det)
         self.assertTrue(out.get("ok"), out)
         self.assertEqual(out.get("source"), "rgb_guided_depth_sparse")
-        self.assertGreater(float(out["dimensions_m"][0]), 0.05)
+        self.assertAlmostEqual(float(out["dimensions_m"][0]), 0.20, delta=0.03)
+        self.assertAlmostEqual(float(out["dimensions_m"][1]), 0.16, delta=0.03)
         self.assertGreater(int(out["point_count"]), 1000)
 
     def test_handeye_solver_recovers_consistent_transform(self) -> None:
@@ -148,6 +167,38 @@ class Grasp6DMathTests(unittest.TestCase):
         ):
             out = grasp6d.build_handeye_calibration(samples)
         self.assertTrue(out.get("ok"), out)
+        recovered = np.asarray(out["T_tool_camera"], dtype=float)
+        self.assertLess(float(np.linalg.norm(recovered[:3, 3] - X[:3, 3])), 0.005)
+
+    def test_handeye_recomputes_legacy_fk_with_d1_encoder_signs(self) -> None:
+        X = grasp6d._nominal_tool_camera_transform()
+        base_target = np.eye(4)
+        base_target[:3, 3] = [0.34, -0.22, 0.02]
+        servo_poses_deg = [
+            [-80, 10, 30, -20, 15, -25],
+            [-65, 22, 18, 25, 38, 20],
+            [-95, -5, 42, 12, -18, 35],
+            [-50, 35, -8, -32, 26, -12],
+            [-110, 18, 5, 38, -32, 28],
+            [-72, -20, 35, 5, 45, -38],
+        ]
+        samples = []
+        for servo_deg in servo_poses_deg:
+            Tg = grasp6d.fk_tool_transform(np.radians(servo_deg))
+            Tc = np.linalg.inv(X) @ np.linalg.inv(Tg) @ base_target
+            samples.append(
+                {
+                    # Simula il T_base_tool legacy errato: deve essere ignorato
+                    # quando sono disponibili gli encoder raw.
+                    "T_base_tool": np.eye(4).tolist(),
+                    "T_camera_target": Tc.tolist(),
+                    "servo_deg": servo_deg + [5.0],
+                }
+            )
+        out = grasp6d.solve_handeye_calibration(samples)
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out.get("kinematic_servo_signs"), [1, 1, 1, -1, 1, -1])
+        self.assertTrue(out.get("physically_plausible"), out)
         recovered = np.asarray(out["T_tool_camera"], dtype=float)
         self.assertLess(float(np.linalg.norm(recovered[:3, 3] - X[:3, 3])), 0.005)
 
@@ -323,6 +374,56 @@ class TeachCaptureTests(unittest.TestCase):
         self.assertTrue(body.get("ok"), body)
         self.assertEqual(atomic_hold.call_count, 2)
         self.assertEqual(body["target_servo_deg"][1], -39.5)
+
+    def test_pregrasp_rejects_motion_outside_saved_scan_pose(self) -> None:
+        app = create_d1_jog_app()
+        app.config.update(TESTING=True)
+        fallen_pose = {"ok": True, "servo_deg": [-78.4, 21.4, 6.9, -10.3, 88.9, 0.0, 5.4]}
+        with tempfile.TemporaryDirectory(prefix="scan-pose-") as tmp, patch(
+            "go2_dashboard.d1_jog.app._GRASP_SCAN_POSE_PATH", Path(tmp) / "scan.json"
+        ), patch.object(service, "read_servo_deg", return_value=fallen_pose):
+            response = app.test_client().post(
+                "/api/pick/grasp6d/pregrasp",
+                json={"require_offset_confirmation": False},
+            )
+        body = response.get_json()
+        self.assertEqual(response.status_code, 422, body)
+        self.assertEqual(body.get("reason"), "not_in_saved_scan_pose")
+        self.assertFalse(body["scan_pose"]["aligned"])
+
+    def test_execute_requires_selected_offset_confirmation(self) -> None:
+        app = create_d1_jog_app()
+        app.config.update(TESTING=True)
+        with tempfile.TemporaryDirectory(prefix="grasp-bias-") as tmp, patch.object(
+            grasp6d, "TUNING_PATH", Path(tmp) / "tuning.json"
+        ):
+            response = app.test_client().post(
+                "/api/pick/grasp6d/execute",
+                json={
+                    "confirm": "EXECUTE_GRASP6D",
+                    "require_offset_confirmation": True,
+                    "expected_grasp_bias_base_m": [0.0, 0.0, 0.0],
+                },
+            )
+        body = response.get_json()
+        self.assertEqual(response.status_code, 409, body)
+        self.assertEqual(body.get("reason"), "explicit_grasp_bias_confirmation_required")
+
+    def test_absolute_grasp_bias_is_persisted(self) -> None:
+        app = create_d1_jog_app()
+        app.config.update(TESTING=True)
+        with tempfile.TemporaryDirectory(prefix="grasp-bias-") as tmp, patch.object(
+            grasp6d, "TUNING_PATH", Path(tmp) / "tuning.json"
+        ):
+            response = app.test_client().post(
+                "/api/pick/grasp6d/tuning",
+                json={"action": "set_grasp_bias", "grasp_bias_base_m": [0.01, -0.004, 0.002]},
+            )
+            saved = grasp6d.tuning_info()["values"]
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertAlmostEqual(saved["grasp_bias_base_x_m"], 0.01)
+        self.assertAlmostEqual(saved["grasp_bias_base_y_m"], -0.004)
+        self.assertAlmostEqual(saved["grasp_bias_base_z_m"], 0.002)
 
     def test_handeye_target_pdf_is_downloadable(self) -> None:
         app = create_d1_jog_app()
