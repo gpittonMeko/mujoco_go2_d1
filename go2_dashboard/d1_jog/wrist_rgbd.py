@@ -134,7 +134,7 @@ def capture_aligned(*, warmup_frames: int | None = None, median_frames: int = 3)
             except Exception:
                 pass
             depth_scale = float(depth_sensor.get_depth_scale())
-            warm = max(3, int(warmup_frames or os.environ.get("D1_WRIST_RGBD_WARMUP", "10")))
+            warm = max(2, int(warmup_frames or os.environ.get("D1_WRIST_RGBD_WARMUP", "2")))
             for _ in range(warm):
                 pipe.wait_for_frames(8000)
 

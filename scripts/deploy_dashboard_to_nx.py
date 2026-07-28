@@ -59,6 +59,24 @@ REMOTE_PUSH_FILES = [
     "go2_dashboard/operator_stack.py",
     "go2_dashboard/operator_scene.py",
     "go2_dashboard/grasp_assessment.py",
+    "go2_dashboard/d1_jog/__init__.py",
+    "go2_dashboard/d1_jog/app.py",
+    "go2_dashboard/d1_jog/cartesian.py",
+    "go2_dashboard/d1_jog/grasp6d.py",
+    "go2_dashboard/d1_jog/jog_stream.py",
+    "go2_dashboard/d1_jog/motion_guard.py",
+    "go2_dashboard/d1_jog/motion_profile.py",
+    "go2_dashboard/d1_jog/orbbec_capture.py",
+    "go2_dashboard/d1_jog/pick_preset.py",
+    "go2_dashboard/d1_jog/pick_teach_model.py",
+    "go2_dashboard/d1_jog/pick_vision.py",
+    "go2_dashboard/d1_jog/pick_vision_crop.py",
+    "go2_dashboard/d1_jog/program_runner.py",
+    "go2_dashboard/d1_jog/program_store.py",
+    "go2_dashboard/d1_jog/service.py",
+    "go2_dashboard/d1_jog/tcp_motion.py",
+    "go2_dashboard/d1_jog/viz.py",
+    "go2_dashboard/d1_jog/wrist_rgbd.py",
     "go2_dashboard/blueprints/__init__.py",
     "go2_dashboard/blueprints/meta.py",
     "go2_dashboard/blueprints/grasp.py",
@@ -77,6 +95,10 @@ REMOTE_PUSH_FILES = [
     f"{_REL_D1_SCR}/fetch_d1_550_from_jeewantha_github.py",
     "scripts/serve_dashboard_modular.py",
     "scripts/serve_dashboard_lite.py",
+    "scripts/serve_d1_jog_dashboard.py",
+    "scripts/nx_d1_jog_env.sh",
+    "scripts/nx_serve_foreground_d1_jog.sh",
+    "scripts/nx_d1_jog_supervise.sh",
     "scripts/nx_serve_foreground.sh",
     "scripts/nx_dashboard_supervise.sh",
     "scripts/nx_machine_diag.sh",
@@ -90,6 +112,7 @@ REMOTE_PUSH_FILES = [
     "scripts/go2-visual-dashboard.service",
     "templates/dashboard.html",
     "templates/dashboard_operators.html",
+    "templates/d1_jog_dashboard.html",
     "templates/_always_cam_strip.html",
     "templates/_calibration_panel.html",
     "static/css/operators.css",
@@ -277,15 +300,25 @@ pkill -f nx_dashboard_supervise.sh 2>/dev/null || true
 pkill -f diagnostics_dashboard 2>/dev/null || true
 pkill -f serve_dashboard_modular 2>/dev/null || true
 pkill -f serve_dashboard_lite 2>/dev/null || true
+pkill -f nx_d1_jog_supervise.sh 2>/dev/null || true
+pkill -f serve_d1_jog_dashboard.py 2>/dev/null || true
 sleep 1
 python3 -c "import diagnostics_dashboard as d; print('legacy_module_ok', d.GO2_LOCAL, d.GO2_DASHBOARD_BIND)"
 nohup bash scripts/nx_dashboard_supervise.sh >> dashboard_supervise.log 2>&1 &
 echo $! > dashboard.pid
+nohup bash scripts/nx_d1_jog_supervise.sh >> d1_jog_supervise.log 2>&1 &
+echo $! > d1_jog_dashboard.pid
 sleep 4
 python3 -c "import os,urllib.request; p=os.environ.get('GO2_DASHBOARD_PORT','5052'); urllib.request.urlopen('http://127.0.0.1:'+p+'/api/health', timeout=10); print('HTTP_HEALTH_OK')" || (
   echo HTTP_HEALTH_FAIL
   tail -40 dashboard_run.log
   tail -20 dashboard_supervise.log 2>/dev/null || true
+  exit 1
+)
+python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:5056/api/daemon/status', timeout=15)); assert (d.get('command_daemon') or {{}}).get('hold_active'); print('D1_JOG_5056_HOLD_OK')" || (
+  echo D1_JOG_5056_HEALTH_FAIL
+  tail -40 d1_jog_run.log 2>/dev/null || true
+  tail -20 d1_jog_supervise.log 2>/dev/null || true
   exit 1
 )
 echo "Remote checks done (full smoke: run on PC: python scripts/test_dashboard_smoke.py)"
@@ -496,6 +529,7 @@ def main() -> None:
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/meshes "
         f"{REMOTE_BASE}/unitree_mujoco/unitree_robots/go2_d1/d1_550_description/urdf "
         f"{REMOTE_BASE}/go2_dashboard/blueprints "
+        f"{REMOTE_BASE}/go2_dashboard/d1_jog "
         f"{REMOTE_BASE}/msg "
         f"{REMOTE_BASE}/templates "
         f"{REMOTE_BASE}/static/css "
@@ -540,6 +574,28 @@ def main() -> None:
         remote_path = f"{REMOTE_BASE}/{remote_rel}"
         sftp.put(str(loc), remote_path)
         print("pushed", rel, "->", remote_rel)
+    # Questi file controllano direttamente il D1. Copia e verifica sempre:
+    # un deploy non puo' dichiararsi riuscito lasciando attivo il modulo vecchio.
+    critical_d1_files = (
+        "go2_dashboard/d1_jog/app.py",
+        "go2_dashboard/d1_jog/grasp6d.py",
+        "go2_dashboard/d1_jog/pick_preset.py",
+        "go2_dashboard/d1_jog/wrist_rgbd.py",
+        "scripts/nx_d1_jog_env.sh",
+        "templates/d1_jog_dashboard.html",
+    )
+    for rel in critical_d1_files:
+        loc = REPO_ROOT / rel
+        if not loc.is_file():
+            raise FileNotFoundError(f"critical deploy file missing: {loc}")
+        remote_path = f"{REMOTE_BASE}/{rel}"
+        sftp.put(str(loc), remote_path)
+        with sftp.open(remote_path, "rb") as remote_file:
+            remote_bytes = remote_file.read()
+        local_bytes = loc.read_bytes()
+        if remote_bytes != local_bytes:
+            raise RuntimeError(f"critical deploy verification failed: {rel}")
+        print("verified critical", rel)
     loc_pr = REPO_ROOT / rel_presets
     if loc_pr.is_file():
         if force_presets or not remote_presets_exist:
@@ -590,6 +646,8 @@ def main() -> None:
 
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_serve_foreground.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_dashboard_supervise.sh", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/nx_serve_foreground_d1_jog.sh", 0o755)
+    sftp.chmod(f"{REMOTE_BASE}/scripts/nx_d1_jog_supervise.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_machine_diag.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_peripheral_probe.sh", 0o755)
     sftp.chmod(f"{REMOTE_BASE}/scripts/nx_print_cyclone_diag.sh", 0o755)

@@ -31,6 +31,8 @@ docs/             indice in docs/README.md
 
 [indice docs/](docs/README.md)
 
+**Passaggio di consegne (presa 6D D1):** [docs/HANDOFF_SANDY.md](docs/HANDOFF_SANDY.md) — porta **5056**, deploy `deploy_d1_jog_to_nx.py`, sicurezza folded + hold.
+
 ## Licenza
 
 Componenti upstream (unitree_mujoco, sdk, go2_deploy): licenze rispettive. Codice aggiunto: BSD-3-Clause.

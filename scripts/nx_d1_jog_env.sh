@@ -127,6 +127,12 @@ export D1_GRASP6D_AUTO_REF_MAX_DELTA_DEG="${D1_GRASP6D_AUTO_REF_MAX_DELTA_DEG:-7
 export D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS="${D1_GRASP6D_AUTO_MIN_VISIBLE_TAGS:-8}"
 export D1_GRASP6D_AUTO_MAX_REPROJ_PX="${D1_GRASP6D_AUTO_MAX_REPROJ_PX:-1.15}"
 export D1_GRASP6D_AUTO_MEDIAN_FRAMES="${D1_GRASP6D_AUTO_MEDIAN_FRAMES:-2}"
+# Foglio lab: AprilTag 36h11 6x4 @ 30 mm, ID consecutivi 312..335 (non 288..311).
+export D1_GRASP6D_APRILGRID_FIRST_ID="${D1_GRASP6D_APRILGRID_FIRST_ID:-312}"
+export D1_GRASP6D_APRILGRID_COLS="${D1_GRASP6D_APRILGRID_COLS:-6}"
+export D1_GRASP6D_APRILGRID_ROWS="${D1_GRASP6D_APRILGRID_ROWS:-4}"
+export D1_GRASP6D_APRILGRID_TAG_SIZE_M="${D1_GRASP6D_APRILGRID_TAG_SIZE_M:-0.030}"
+export D1_GRASP6D_APRILGRID_GAP_M="${D1_GRASP6D_APRILGRID_GAP_M:-0.015}"
 # Hand-eye: soglie strette per pick sub-cm; NON alzarle per "far passare" sample mediocri.
 # 5: con un target piccolo visibile solo quasi-frontale da un lato, 5 pose molto
 # coerenti (verificate: |diff| tool-vs-camera < 2 deg) danno gia' una hand-eye
@@ -179,43 +185,61 @@ export D1_WRIST_RS_SERIAL="${D1_WRIST_RS_SERIAL:-}"
 export D1_WRIST_RGBD_WIDTH="${D1_WRIST_RGBD_WIDTH:-640}"
 export D1_WRIST_RGBD_HEIGHT="${D1_WRIST_RGBD_HEIGHT:-480}"
 export D1_WRIST_RGBD_FPS="${D1_WRIST_RGBD_FPS:-15}"
-# Quattro frame bastano dopo l'handover UVC; dieci rendevano ogni osservazione
-# ~35 s e il ciclo restava apparentemente fermo per diversi minuti.
-export D1_WRIST_RGBD_WARMUP="${D1_WRIST_RGBD_WARMUP:-4}"
+# Due frame bastano dopo l'handover UVC e riducono la latenza del ciclo.
+export D1_WRIST_RGBD_WARMUP="${D1_WRIST_RGBD_WARMUP:-2}"
 # librealsense rs400_visual_preset: 4=High Density (1 era Default).
 export D1_WRIST_RS_VISUAL_PRESET="${D1_WRIST_RS_VISUAL_PRESET:-4}"
 export D1_WRIST_RS_EMITTER_ENABLED="${D1_WRIST_RS_EMITTER_ENABLED:-1}"
 export D1_WRIST_RS_LASER_POWER="${D1_WRIST_RS_LASER_POWER:-360}"
 export D1_GRASP6D_MIN_DEPTH_VALID_FRACTION="${D1_GRASP6D_MIN_DEPTH_VALID_FRACTION:-0.15}"
 export D1_GRASP6D_MAX_DEPTH_M="${D1_GRASP6D_MAX_DEPTH_M:-1.2}"
+# Centro: depth dims + centro RGB (anti-bias laterale). RGB-cuboid pieno solo se pack-like.
+# AprilGrid plane OFF sul grasp (con marker esplodeva a ~34x21x43cm).
+export D1_GRASP6D_PREFER_RGB_GUIDED="${D1_GRASP6D_PREFER_RGB_GUIDED:-1}"
+export D1_GRASP6D_USE_APRILGRID_PLANE="${D1_GRASP6D_USE_APRILGRID_PLANE:-0}"
+export D1_GRASP6D_RGB_GUIDED_FALLBACK="${D1_GRASP6D_RGB_GUIDED_FALLBACK:-1}"
+export D1_GRASP6D_RGB_MAX_CENTER_DELTA_M="${D1_GRASP6D_RGB_MAX_CENTER_DELTA_M:-0.05}"
+export D1_GRASP6D_RGB_CENTER_MAX_SHIFT_M="${D1_GRASP6D_RGB_CENTER_MAX_SHIFT_M:-0.04}"
+export D1_GRASP6D_PACK_MAX_LONG_M="${D1_GRASP6D_PACK_MAX_LONG_M:-0.18}"
+export D1_GRASP6D_PACK_MAX_HEIGHT_M="${D1_GRASP6D_PACK_MAX_HEIGHT_M:-0.08}"
 # Oggetti lucidi/scuri danno pochi pixel depth: usa tutti i pixel validi per il cuboide 6D.
 export D1_GRASP6D_DEPTH_STRIDE="${D1_GRASP6D_DEPTH_STRIDE:-1}"
 export D1_GRASP6D_MIN_CLUSTER_POINTS="${D1_GRASP6D_MIN_CLUSTER_POINTS:-35}"
 # Dalla posa manuale validata il pregrasp a 10 cm e' fuori workspace IK;
 # 6 cm mantiene margine dall'oggetto e resta verificato dal collision checker.
 export D1_GRASP6D_PREGRASP_M="${D1_GRASP6D_PREGRASP_M:-0.06}"
-export D1_GRASP6D_LIFT_M="${D1_GRASP6D_LIFT_M:-0.09}"
+# Dodici centimetri danno al rilascio dal lift energia sufficiente per
+# riposizionare l'oggetto prima dell'osservazione successiva.
+export D1_GRASP6D_LIFT_M="${D1_GRASP6D_LIFT_M:-0.12}"
+# Contatto: niente tuffo ultimo cm (bias Z alto + stop_short lungo approccio).
+export D1_GRASP6D_FORCE_BIAS_Z_M="${D1_GRASP6D_FORCE_BIAS_Z_M:-0.010}"
+export D1_GRASP6D_CONTACT_STOP_SHORT_M="${D1_GRASP6D_CONTACT_STOP_SHORT_M:-0.000}"
 # Tratto di contatto volutamente lento: il default programmi (12 deg/s) ha
 # causato un contatto leggero prima della chiusura.
-export D1_GRASP6D_PREGRASP_STEP_DEG="${D1_GRASP6D_PREGRASP_STEP_DEG:-1.0}"
-export D1_GRASP6D_PREGRASP_DELAY_MS="${D1_GRASP6D_PREGRASP_DELAY_MS:-180}"
+export D1_GRASP6D_PREGRASP_STEP_DEG="${D1_GRASP6D_PREGRASP_STEP_DEG:-1.5}"
+export D1_GRASP6D_PREGRASP_DELAY_MS="${D1_GRASP6D_PREGRASP_DELAY_MS:-120}"
 export D1_GRASP6D_CONTACT_STEP_DEG="${D1_GRASP6D_CONTACT_STEP_DEG:-0.5}"
-export D1_GRASP6D_CONTACT_DELAY_MS="${D1_GRASP6D_CONTACT_DELAY_MS:-250}"
-export D1_GRASP6D_LIFT_STEP_DEG="${D1_GRASP6D_LIFT_STEP_DEG:-0.75}"
-export D1_GRASP6D_LIFT_DELAY_MS="${D1_GRASP6D_LIFT_DELAY_MS:-200}"
-export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-3}"
+export D1_GRASP6D_CONTACT_DELAY_MS="${D1_GRASP6D_CONTACT_DELAY_MS:-220}"
+export D1_GRASP6D_LIFT_STEP_DEG="${D1_GRASP6D_LIFT_STEP_DEG:-1.25}"
+export D1_GRASP6D_LIFT_DELAY_MS="${D1_GRASP6D_LIFT_DELAY_MS:-140}"
+export D1_GRASP6D_VIEW_OBSERVATIONS="${D1_GRASP6D_VIEW_OBSERVATIONS:-2}"
 export D1_GRASP6D_VIEW_MAX_SPREAD_M="${D1_GRASP6D_VIEW_MAX_SPREAD_M:-0.012}"
-# Tre osservazioni concordi mantengono il gate metrico/rotazionale stretto
-# senza tre minuti di attesa prima di ogni movimento.
-export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-3}"
+# Due osservazioni concordi mantengono il gate senza triplicare la cattura.
+export D1_GRASP6D_VIEW_MIN_INLIERS="${D1_GRASP6D_VIEW_MIN_INLIERS:-2}"
 # Non accettare target IK oltre 5 mm: sul lift un residuo ~11 mm e' stato
 # percepito come overshoot laterale e puo' trascinare l'oggetto.
 export D1_GRASP6D_IK_POS_TOL_M="${D1_GRASP6D_IK_POS_TOL_M:-0.005}"
 export D1_GRIPPER_MAX_APERTURE_M="${D1_GRIPPER_MAX_APERTURE_M:-0.085}"
-# Centro fisico chele da pivot calibration 5 pose, RMS 3.8 mm.
-# Separato dal frame tool storico da 70 mm usato dalla hand-eye esistente.
+# Chiusura ferma sul Tempo: J6 non resta a meta' (prima ~50=quasi aperto).
+export D1_GRASP6D_GRIP_COMPRESSION_M="${D1_GRASP6D_GRIP_COMPRESSION_M:-0.012}"
+export D1_GRASP6D_FIRM_CLOSE_MAX_DEG="${D1_GRASP6D_FIRM_CLOSE_MAX_DEG:-15}"
+export D1_GRASP6D_DROP_EXTRA_UP_M="${D1_GRASP6D_DROP_EXTRA_UP_M:-0.08}"
+
+# Centro fisico chele: pivot 5 pose più correzione locale empirica sull'asse di chiusura.
+# La correzione locale ruota con la pinza; non usare un bias XY base valido
+# soltanto per una posizione dell'oggetto.
 export D1_GRASP6D_TCP_X_M="${D1_GRASP6D_TCP_X_M:-0.10754}"
-export D1_GRASP6D_TCP_Y_M="${D1_GRASP6D_TCP_Y_M:-0.00537}"
+export D1_GRASP6D_TCP_Y_M="${D1_GRASP6D_TCP_Y_M:-0.05000}"
 export D1_GRASP6D_TCP_Z_M="${D1_GRASP6D_TCP_Z_M:--0.01226}"
 export D1_ORBBEC_RGB_V4L_INDEX="${D1_ORBBEC_RGB_V4L_INDEX:-4}"
 export D1_ORBBEC_LIVE_V4L_INDEX="${D1_ORBBEC_LIVE_V4L_INDEX:-4}"
@@ -271,8 +295,8 @@ export D1_PICK_TEACH_NN_MAX="${D1_PICK_TEACH_NN_MAX:-7.5}"
 export D1_PICK_TEACH_J5_POS_MARGIN="${D1_PICK_TEACH_J5_POS_MARGIN:-2.5}"
 # Presa/foto: riferimento «Punto SCANSIONE 90»; pulsanti vanno ai due waypoint in programma
 export D1_PICK_SCAN_REFERENCE="${D1_PICK_SCAN_REFERENCE:-j90}"
-# Pinza J6 (D1: aperta ≈ 49.7°, chiusa ≈ 5° — NON usare J6 waypoint scansione come aperta)
-export D1_GRIPPER_OPEN_DEG="${D1_GRIPPER_OPEN_DEG:-49.7}"
+# Pinza J6: 85° usa quasi tutta la corsa lasciando 5° dal fine corsa software.
+export D1_GRIPPER_OPEN_DEG="${D1_GRIPPER_OPEN_DEG:-85}"
 export D1_GRIPPER_CLOSED_DEG="${D1_GRIPPER_CLOSED_DEG:-5}"
 # Chiudi solo pochi millimetri oltre la larghezza 6D stimata: evita di
 # schiacciare inutilmente oggetti morbidi mantenendo una presa positiva.

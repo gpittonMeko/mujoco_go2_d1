@@ -2060,32 +2060,153 @@ def create_d1_jog_app() -> Flask:
         raise RuntimeError(str(last_exc) if last_exc else "wrist_rgbd_capture_failed")
 
     def _estimate_grasp6d_box(frame: Any) -> dict[str, Any]:
+        """Stima cuboide con selezione anti-blob.
+
+        RGB-guided serve solo se le dimensioni sembrano un pack (~5-18 cm,
+        altezza < 8 cm). Altrimenti (es. foglio ArUco / piano sbagliato che
+        esplode a 30x40 cm) si tiene il cluster depth. Piano AprilGrid OFF di
+        default sul grasp: usarlo come floor ha prodotto height ~40 cm.
+        """
         depth_box = grasp6d.estimate_box_pose(frame.depth_m, frame.intrinsics)
-        if depth_box.get("ok"):
+        prefer_rgb = os.environ.get("D1_GRASP6D_PREFER_RGB_GUIDED", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        fallback_rgb = os.environ.get("D1_GRASP6D_RGB_GUIDED_FALLBACK", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if depth_box.get("ok") and not prefer_rgb:
+            out = dict(depth_box)
+            out["selection"] = "depth_only_prefer_disabled"
+            return out
+        if not depth_box.get("ok") and not fallback_rgb:
             return depth_box
-        if os.environ.get("D1_GRASP6D_RGB_GUIDED_FALLBACK", "1").strip().lower() in {"0", "false", "no", "off"}:
-            return depth_box
+
+        # Default OFF: il piano marker + footprint RGB ha generato cuboidi enormi.
+        plane_hint = depth_box.get("plane") if isinstance(depth_box.get("plane"), dict) else None
+        marker_plane: dict[str, Any] | None = None
+        if os.environ.get("D1_GRASP6D_USE_APRILGRID_PLANE", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            try:
+                marker = grasp6d.detect_calibration_marker(frame.color_bgr, frame.intrinsics)
+                marker_plane = grasp6d.plane_from_calibration_marker(marker)
+                if marker_plane.get("ok"):
+                    plane_hint = marker_plane
+            except Exception:
+                marker_plane = None
+
         try:
             from box_object_detector import detect_box_object
 
             rgb_det = detect_box_object(frame.color_bgr)
         except Exception as exc:
+            if depth_box.get("ok"):
+                out = dict(depth_box)
+                out["selection"] = "depth_only_rgb_exception"
+                out["rgb_guided_error"] = repr(exc)
+                return out
             out = dict(depth_box)
             out["rgb_guided_error"] = repr(exc)
             return out
         if not rgb_det.get("ok"):
+            if depth_box.get("ok"):
+                out = dict(depth_box)
+                out["rgb_detection"] = rgb_det
+                out["selection"] = "depth_only_no_rgb_det"
+                return out
             out = dict(depth_box)
             out["rgb_detection"] = rgb_det
             return out
+
         guided = grasp6d.estimate_box_pose_rgb_guided(
             frame.depth_m,
             frame.intrinsics,
             rgb_det,
-            plane_hint=depth_box.get("plane") if isinstance(depth_box.get("plane"), dict) else None,
+            plane_hint=plane_hint,
         )
-        guided["depth_only_reason"] = depth_box.get("reason")
-        guided["depth_only_box"] = _public_box6d(depth_box)
-        return guided
+        guided_pack = grasp6d.box_dims_look_like_pack(guided)
+        depth_pack = grasp6d.box_dims_look_like_pack(depth_box)
+
+        if guided.get("ok") and guided_pack:
+            # Scarta RGB se il centro e' lontano km dal depth (outlier foglio/sfondo).
+            max_center_delta = float(os.environ.get("D1_GRASP6D_RGB_MAX_CENTER_DELTA_M", "0.05"))
+            if depth_box.get("ok") and isinstance(depth_box.get("center_camera_m"), list) and isinstance(
+                guided.get("center_camera_m"), list
+            ):
+                import numpy as np
+
+                delta = float(
+                    np.linalg.norm(
+                        np.asarray(guided["center_camera_m"][:3], dtype=float)
+                        - np.asarray(depth_box["center_camera_m"][:3], dtype=float)
+                    )
+                )
+                if delta > max_center_delta and depth_pack:
+                    out = dict(depth_box)
+                    out["selection"] = "depth_only_rgb_center_outlier"
+                    out["rgb_guided_rejected"] = {
+                        "reason": "center_delta_too_large",
+                        "delta_m": round(delta, 4),
+                        "max_delta_m": max_center_delta,
+                        "rgb_dimensions_m": guided.get("dimensions_m"),
+                    }
+                    out["rgb_detection"] = rgb_det
+                    out["depth_only_box"] = _public_box6d(depth_box)
+                    return out
+            if depth_box.get("ok"):
+                guided["depth_only_box"] = _public_box6d(depth_box)
+                guided["selection"] = "prefer_rgb_guided"
+            else:
+                guided["depth_only_reason"] = depth_box.get("reason")
+                guided["selection"] = "rgb_guided_fallback"
+            if isinstance(marker_plane, dict) and marker_plane.get("ok"):
+                guided["plane_source"] = "calibration_marker"
+            return guided
+
+        if depth_box.get("ok"):
+            # Path principale anti-sinistra: cuboide depth + centro dal grip RGB.
+            refined = grasp6d.refine_depth_box_center_with_rgb(
+                depth_box, rgb_det, frame.intrinsics
+            )
+            out = dict(refined)
+            out["rgb_detection"] = rgb_det
+            if refined.get("source") == "depth_box_rgb_center":
+                out["selection"] = "depth_dims_rgb_center"
+            elif guided.get("ok") and not guided_pack:
+                out["selection"] = "depth_only_rgb_dims_implausible"
+                out["rgb_guided_rejected"] = {
+                    "reason": "dims_not_pack_like",
+                    "dimensions_m": guided.get("dimensions_m"),
+                }
+            elif not guided.get("ok"):
+                out["selection"] = "depth_only_after_rgb_fail"
+                out["rgb_guided_failed"] = {"reason": guided.get("reason")}
+            else:
+                out["selection"] = "depth_only"
+            return out
+
+        # Nessun depth ok: accetta RGB solo se pack-like, altrimenti fallisce chiaro.
+        if guided.get("ok") and guided_pack:
+            guided["depth_only_reason"] = depth_box.get("reason")
+            guided["selection"] = "rgb_guided_fallback"
+            return guided
+        return {
+            "ok": False,
+            "reason": "no_pack_like_box",
+            "depth_only_reason": depth_box.get("reason"),
+            "rgb_guided_reason": guided.get("reason") if isinstance(guided, dict) else None,
+            "rgb_dimensions_m": (guided or {}).get("dimensions_m") if isinstance(guided, dict) else None,
+            "rgb_detection": rgb_det,
+        }
 
     def _capture_grasp6d_plan() -> dict[str, Any]:
         try:
@@ -4552,7 +4673,12 @@ def create_d1_jog_app() -> Flask:
             "resume_stage": "partial_approach" if resume_partial_approach else "pregrasp",
         }
 
-    def _execute_grasp6d_attempt(*, dry_run: bool = False, pregrasp_only: bool = False) -> dict[str, Any]:
+    def _execute_grasp6d_attempt(
+        *,
+        dry_run: bool = False,
+        pregrasp_only: bool = False,
+        trust_lift_for_cycle: bool = False,
+    ) -> dict[str, Any]:
         import numpy as np
 
         reusable = None if (dry_run or pregrasp_only) else _reusable_pregrasp_plan()
@@ -4603,22 +4729,22 @@ def create_d1_jog_app() -> Flask:
 
         open_deg = pick_preset.gripper_open_j6_deg()
         closed_empty_deg = pick_preset.gripper_close_j6_deg()
-        pregrasp_step_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_STEP_DEG", "1.0"))
-        pregrasp_delay_ms = int(os.environ.get("D1_GRASP6D_PREGRASP_DELAY_MS", "180"))
-        contact_step_deg = float(os.environ.get("D1_GRASP6D_CONTACT_STEP_DEG", "0.5"))
-        contact_delay_ms = int(os.environ.get("D1_GRASP6D_CONTACT_DELAY_MS", "250"))
-        lift_step_deg = float(os.environ.get("D1_GRASP6D_LIFT_STEP_DEG", "0.75"))
-        lift_delay_ms = int(os.environ.get("D1_GRASP6D_LIFT_DELAY_MS", "200"))
+        pregrasp_step_deg = float(os.environ.get("D1_GRASP6D_PREGRASP_STEP_DEG", "1.5"))
+        pregrasp_delay_ms = int(os.environ.get("D1_GRASP6D_PREGRASP_DELAY_MS", "120"))
+        contact_step_deg = float(os.environ.get("D1_GRASP6D_CONTACT_STEP_DEG", "0.75"))
+        contact_delay_ms = int(os.environ.get("D1_GRASP6D_CONTACT_DELAY_MS", "160"))
+        lift_step_deg = float(os.environ.get("D1_GRASP6D_LIFT_STEP_DEG", "1.25"))
+        lift_delay_ms = int(os.environ.get("D1_GRASP6D_LIFT_DELAY_MS", "140"))
         # La D456 e' eye-in-hand: quando il polso assume l'orientamento di presa
         # il box puo' uscire dal FOV. Stabilizziamo quindi il piano PRIMA di
         # muovere e lo congeliamo per pregrasp/grasp; ricatturare dal pregrasp
         # produce falsi cluster lontani e rende impossibile il realign.
-        view_count = 1 if reusable is not None else max(3, int(os.environ.get("D1_GRASP6D_VIEW_OBSERVATIONS", "5")))
+        view_count = 1 if reusable is not None else max(2, int(os.environ.get("D1_GRASP6D_VIEW_OBSERVATIONS", "2")))
         max_view_spread_m = float(os.environ.get("D1_GRASP6D_VIEW_MAX_SPREAD_M", "0.012"))
         min_view_inliers = (
             1
             if reusable is not None
-            else max(3, min(view_count, int(os.environ.get("D1_GRASP6D_VIEW_MIN_INLIERS", "4"))))
+            else max(2, min(view_count, int(os.environ.get("D1_GRASP6D_VIEW_MIN_INLIERS", "2"))))
         )
         observations: list[dict[str, Any]] = [initial]
         for _ in range(view_count - 1):
@@ -4787,7 +4913,7 @@ def create_d1_jog_app() -> Flask:
 
             grasp_T = np.asarray(selected["T_base_grasp"], dtype=float)
             lift_T = grasp_T.copy()
-            lift_T[2, 3] += float(os.environ.get("D1_GRASP6D_LIFT_M", "0.09"))
+            lift_T[2, 3] += float(os.environ.get("D1_GRASP6D_LIFT_M", "0.12"))
             lift_ik = grasp6d.ik_pose(lift_T, primary_seed=np.radians(np.asarray(closed_target[:6], dtype=float)))
             if not lift_ik.get("ok"):
                 step("lift", lift_ik)
@@ -4808,6 +4934,18 @@ def create_d1_jog_app() -> Flask:
 
             fb = service.read_servo_deg(fast=True)
             actual_j6 = float(fb["servo_deg"][6]) if fb.get("ok") and isinstance(fb.get("servo_deg"), list) else None
+            if trust_lift_for_cycle:
+                verify = {
+                    "ok": True,
+                    "trusted_physical_grasp": True,
+                    "actual_gripper_deg": actual_j6,
+                    "commanded_gripper_deg": close_deg,
+                    "closed_empty_deg": closed_empty_deg,
+                }
+                step("verify", verify)
+                run.update({"ok": True, "reason": None, "verification": verify, "finished_at": time.time()})
+                _save_grasp6d_run(run)
+                return run
             gripper_blocked = actual_j6 is not None and actual_j6 > close_deg + float(
                 os.environ.get("D1_GRASP6D_GRIPPER_BLOCK_DELTA_DEG", "2.5")
             )
@@ -4874,10 +5012,7 @@ def create_d1_jog_app() -> Flask:
 
     def _run_grasp_pick_drop_cycle(cycles: int) -> None:
         open_deg = pick_preset.gripper_open_j6_deg()
-        close_deg = pick_preset.gripper_close_j6_deg()
         scan_pose = list(_load_grasp_scan_pose()["servo_deg"])
-        release_profile = _load_grasp_release_pose()
-        release_pose = list(release_profile["servo_deg"])
         try:
             program_runner.clear_stop_request()
             _set_grasp_cycle_state(
@@ -4888,7 +5023,7 @@ def create_d1_jog_app() -> Flask:
                 successful_cycles=0,
                 failed_cycles=0,
                 reason=None,
-                release_pose_source=release_profile["source"],
+                release_pose_source="lift_pose",
                 history=[],
             )
             scan_pose[6] = open_deg
@@ -4899,28 +5034,47 @@ def create_d1_jog_app() -> Flask:
                 if grasp_cycle_stop.is_set():
                     raise InterruptedError("cycle_stopped_by_user")
                 _set_grasp_cycle_state(phase="detect_pick_lift", iteration=index + 1, reason=None)
-                picked = _execute_grasp6d_attempt(pregrasp_only=False)
+                picked = _execute_grasp6d_attempt(pregrasp_only=False, trust_lift_for_cycle=True)
                 if not picked.get("ok"):
                     raise RuntimeError(str(picked.get("reason") or "pick_failed"))
                 if grasp_cycle_stop.is_set():
                     raise InterruptedError("cycle_stopped_by_user")
 
-                _set_grasp_cycle_state(phase="goto_release", iteration=index + 1)
-                release_closed = service.clamp_servo_deg(release_pose)
-                release_closed[6] = close_deg
-                moved_release = program_runner.move_to_servo_deg_smooth(
-                    release_closed,
-                    pin_joints={6: close_deg},
-                    max_step_deg=float(os.environ.get("D1_GRASP6D_LIFT_STEP_DEG", "0.75")),
-                    min_delay_ms=int(os.environ.get("D1_GRASP6D_LIFT_DELAY_MS", "200")),
-                )
-                if not moved_release.get("ok"):
-                    raise RuntimeError(str(moved_release.get("reason") or "goto_release_failed"))
+                # Rilascio DALL'ALTO: apri alla quota di lift (non scendere a SCAN
+                # col pezzo in mano). Poi solo a pinza aperta torni a SCAN.
+                _set_grasp_cycle_state(phase="drop_from_high", iteration=index + 1)
+                feedback = service.read_servo_deg(fast=True)
+                current = feedback.get("servo_deg") if feedback.get("ok") else None
+                if not isinstance(current, list) or len(current) < 7:
+                    raise RuntimeError("drop_pose_feedback_unavailable")
+                held_gripper_deg = float(current[6])
+                high_pose = service.clamp_servo_deg(list(current[:7]))
+                high_pose[6] = held_gripper_deg
+                # Extra alzata opzionale sopra al lift gia' raggiunto.
+                extra_up_m = float(os.environ.get("D1_GRASP6D_DROP_EXTRA_UP_M", "0.08"))
+                if extra_up_m > 1e-4:
+                    import numpy as np
+
+                    q = np.radians(np.asarray(high_pose[:6], dtype=float))
+                    T = grasp6d.fk_grasp_tcp_transform(q)
+                    T_up = T.copy()
+                    T_up[2, 3] += extra_up_m
+                    up_ik = grasp6d.ik_pose(T_up, primary_seed=q)
+                    if up_ik.get("ok"):
+                        high_pose = service.clamp_servo_deg(list(up_ik["servo_deg"]))
+                        high_pose[6] = held_gripper_deg
+                        raised = program_runner.move_to_servo_deg_smooth(
+                            high_pose,
+                            pin_joints={6: held_gripper_deg},
+                            max_step_deg=1.25,
+                            min_delay_ms=140,
+                        )
+                        if not raised.get("ok"):
+                            raise RuntimeError(str(raised.get("reason") or "raise_before_drop_failed"))
                 if grasp_cycle_stop.is_set():
                     raise InterruptedError("cycle_stopped_by_user")
 
-                _set_grasp_cycle_state(phase="drop", iteration=index + 1)
-                release_open = list(release_closed)
+                release_open = list(high_pose)
                 release_open[6] = open_deg
                 opened = program_runner.move_to_servo_deg_smooth(
                     release_open,
@@ -4931,15 +5085,17 @@ def create_d1_jog_app() -> Flask:
                     raise RuntimeError(str(opened.get("reason") or "drop_open_failed"))
                 time.sleep(float(os.environ.get("D1_GRASP6D_DROP_SETTLE_S", "0.8")))
 
-                _set_grasp_cycle_state(phase="return_scan", iteration=index + 1)
+                _set_grasp_cycle_state(phase="return_scan_empty", iteration=index + 1)
+                scan_open = service.clamp_servo_deg(scan_pose)
+                scan_open[6] = open_deg
                 returned = program_runner.move_to_servo_deg_smooth(
-                    scan_pose,
+                    scan_open,
                     pin_joints={6: open_deg},
-                    max_step_deg=1.0,
-                    min_delay_ms=180,
+                    max_step_deg=1.5,
+                    min_delay_ms=120,
                 )
                 if not returned.get("ok"):
-                    raise RuntimeError(str(returned.get("reason") or "return_scan_failed"))
+                    raise RuntimeError(str(returned.get("reason") or "return_scan_empty_failed"))
                 with grasp_cycle_lock:
                     successful = int(grasp_cycle_state.get("successful_cycles") or 0) + 1
                 _set_grasp_cycle_state(successful_cycles=successful, phase="cycle_complete", iteration=index + 1)

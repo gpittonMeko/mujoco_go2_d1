@@ -62,3 +62,11 @@ data/lab_run_images/
 # H2 demo meme (derived from external MP3; see docs/H2_DEMO.md)
 data/audio/cyberpunk_meme.wav
 data/audio/pellegrino_tts.*
+
+# Lab session dumps (never commit — keep root clean for handoff)
+/grasp6d_*.json
+/grasp6d_*.jpg
+/wrist_scene.jpg
+/wrist_scene_current.jpg
+/front_view.jpg
+/handeye_physical_candidates.json

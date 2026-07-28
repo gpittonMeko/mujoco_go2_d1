@@ -49,9 +49,10 @@ _TUNING_DEFAULTS: dict[str, float] = {
     "min_box_height_floor_m": 0.008,
     "min_cluster_points": 35.0,
     "min_box_dim_m": 0.025,
-    "grasp_bias_base_x_m": 0.015,
-    "grasp_bias_base_y_m": -0.037,
-    "grasp_bias_base_z_m": -0.010,
+    "grasp_bias_base_x_m": 0.0,
+    "grasp_bias_base_y_m": 0.0,
+    # 0: niente tuffo finale. Il vecchio -10 mm faceva "lanciare" l'ultimo cm in basso.
+    "grasp_bias_base_z_m": 0.0,
 }
 _TUNING_LIMITS: dict[str, tuple[float, float]] = {
     "min_box_height_m": (0.006, 0.08),
@@ -170,11 +171,11 @@ def fk_tool_transform(q_rad: Iterable[float]) -> np.ndarray:
 
 
 def grasp_tcp_offset_m() -> np.ndarray:
-    """Centro fisico delle chele, misurato con calibrazione pivot a 5 pose."""
+    """Centro fisico chele: pivot più correzione locale dell'asse di chiusura."""
     return np.asarray(
         [
             float(os.environ.get("D1_GRASP6D_TCP_X_M", "0.10754")),
-            float(os.environ.get("D1_GRASP6D_TCP_Y_M", "0.00537")),
+            float(os.environ.get("D1_GRASP6D_TCP_Y_M", "0.01500")),
             float(os.environ.get("D1_GRASP6D_TCP_Z_M", "-0.01226")),
         ],
         dtype=float,
@@ -546,6 +547,140 @@ def estimate_box_pose(depth_m: np.ndarray, intrinsics: dict[str, Any]) -> dict[s
         "mask_shape_hw": [int(mask.shape[0]), int(mask.shape[1])],
         "components": components,
         "plane": {**plane, "normal": normal.tolist()},
+    }
+
+
+def refine_depth_box_center_with_rgb(
+    depth_box: dict[str, Any],
+    detection: dict[str, Any],
+    intrinsics: dict[str, Any],
+) -> dict[str, Any]:
+    """Sposta solo il centro XY del cuboide depth sul grip RGB, tenendo dims/assi depth.
+
+    Il cluster depth sul Tempo e' spesso laterale; il bbox blu in RGB e' piu'
+    affidabile per il centro. Non ricostruisce il cuboide (evita blob foglio).
+    """
+    if not depth_box.get("ok") or not detection.get("ok"):
+        return depth_box
+    plane = depth_box.get("plane") if isinstance(depth_box.get("plane"), dict) else None
+    dims = depth_box.get("dimensions_m")
+    center = depth_box.get("center_camera_m")
+    R = depth_box.get("rotation_camera")
+    if not plane or not plane.get("ok") or not isinstance(dims, (list, tuple)) or len(dims) < 3:
+        return depth_box
+    if not isinstance(center, (list, tuple)) or len(center) < 3 or not isinstance(R, (list, tuple)):
+        return depth_box
+    px = detection.get("grip_center_px") or detection.get("bbox_center_px")
+    if not isinstance(px, (list, tuple)) or len(px) < 2:
+        return depth_box
+    try:
+        u, v = float(px[0]), float(px[1])
+        height = float(dims[2])
+        normal = np.asarray(plane["normal"], dtype=float).reshape(3)
+        n = float(np.linalg.norm(normal))
+        if n < 1e-9:
+            return depth_box
+        normal = normal / n
+        d_plane = float(plane["d"])
+        ray = np.asarray(
+            [
+                (u - float(intrinsics["ppx"])) / float(intrinsics["fx"]),
+                (v - float(intrinsics["ppy"])) / float(intrinsics["fy"]),
+                1.0,
+            ],
+            dtype=float,
+        )
+        denom = float(np.dot(normal, ray))
+        if abs(denom) < 1e-9:
+            return depth_box
+        # Centro cuboide: altezza dal pavimento = h/2.
+        distance = float((0.5 * height - d_plane) / denom)
+        if not np.isfinite(distance) or distance <= 0.05:
+            return depth_box
+        new_center = ray * distance
+        old = np.asarray(center[:3], dtype=float)
+        delta = new_center - old
+        max_shift = float(os.environ.get("D1_GRASP6D_RGB_CENTER_MAX_SHIFT_M", "0.04"))
+        shift = float(np.linalg.norm(delta))
+        if shift > max_shift:
+            return {
+                **depth_box,
+                "rgb_center_refine_rejected": {
+                    "reason": "shift_too_large",
+                    "shift_m": round(shift, 4),
+                    "max_shift_m": max_shift,
+                },
+            }
+        out = dict(depth_box)
+        out["center_camera_m"] = new_center.tolist()
+        out["T_camera_box"] = _transform(np.asarray(R, dtype=float), new_center)
+        out["source"] = "depth_box_rgb_center"
+        out["rgb_center_shift_m"] = round(shift, 4)
+        out["rgb_center_delta_camera_m"] = [round(float(x), 4) for x in delta.tolist()]
+        out["rgb_detection"] = {
+            k: detection.get(k)
+            for k in ("ok", "label", "confidence", "grip_center_px", "bbox_center_px", "bbox_xyxy")
+            if k in detection
+        }
+        return out
+    except Exception as exc:
+        out = dict(depth_box)
+        out["rgb_center_refine_error"] = repr(exc)
+        return out
+
+
+def box_dims_look_like_pack(box: dict[str, Any] | None) -> bool:
+    """True se le dimensioni sembrano un fazzolettino/scatola piccola, non foglio/tavolo."""
+    if not isinstance(box, dict) or not box.get("ok"):
+        return False
+    dims = box.get("dimensions_m")
+    if not isinstance(dims, (list, tuple)) or len(dims) < 3:
+        return False
+    try:
+        a, b, h = float(dims[0]), float(dims[1]), float(dims[2])
+    except (TypeError, ValueError):
+        return False
+    short_xy, long_xy = sorted((abs(a), abs(b)))
+    max_short = float(os.environ.get("D1_GRASP6D_PACK_MAX_SHORT_M", "0.12"))
+    max_long = float(os.environ.get("D1_GRASP6D_PACK_MAX_LONG_M", "0.18"))
+    min_short = float(os.environ.get("D1_GRASP6D_PACK_MIN_SHORT_M", "0.025"))
+    min_long = float(os.environ.get("D1_GRASP6D_PACK_MIN_LONG_M", "0.05"))
+    min_h = float(os.environ.get("D1_GRASP6D_PACK_MIN_HEIGHT_M", "0.012"))
+    max_h = float(os.environ.get("D1_GRASP6D_PACK_MAX_HEIGHT_M", "0.08"))
+    return (
+        min_short <= short_xy <= max_short
+        and min_long <= long_xy <= max_long
+        and min_h <= abs(h) <= max_h
+    )
+
+
+def plane_from_calibration_marker(marker: dict[str, Any]) -> dict[str, Any]:
+    """Piano pavimento/target da AprilGrid/ArUco in frame camera (stessa convenzione RANSAC)."""
+    if not marker.get("ok"):
+        return {"ok": False, "reason": str(marker.get("reason") or "marker_unavailable")}
+    raw = marker.get("T_camera_target")
+    if not isinstance(raw, (list, tuple, np.ndarray)):
+        return {"ok": False, "reason": "marker_transform_missing"}
+    T = np.asarray(raw, dtype=float).reshape(4, 4)
+    normal = T[:3, 2].copy()
+    n = float(np.linalg.norm(normal))
+    if n < 1e-9:
+        return {"ok": False, "reason": "marker_normal_invalid"}
+    normal /= n
+    origin = T[:3, 3]
+    d = -float(np.dot(normal, origin))
+    # Convenzione: origine camera nel semispazio positivo (sopra il piano).
+    if d < 0.0:
+        normal *= -1.0
+        d = -d
+    return {
+        "ok": True,
+        "normal": normal,
+        "d": d,
+        "source": "calibration_marker",
+        "target_type": marker.get("target_type"),
+        "visible_marker_count": marker.get("visible_marker_count"),
+        "reprojection_rms_px": marker.get("reprojection_rms_px"),
     }
 
 
@@ -1859,6 +1994,11 @@ def plan_grasp(
         ],
         dtype=float,
     )
+    # Evita il tuffo sull'ultimo cm: env ha priorita' sul tuning persistito (spesso Z=-10mm).
+    if "D1_GRASP6D_FORCE_BIAS_Z_M" in os.environ:
+        grasp_bias[2] = float(os.environ["D1_GRASP6D_FORCE_BIAS_Z_M"])
+    # Arresta il contatto prima del centro lungo l'asse di approccio (no picchiata).
+    contact_stop_short_m = float(os.environ.get("D1_GRASP6D_CONTACT_STOP_SHORT_M", "0.0"))
     candidates: list[dict[str, Any]] = []
     rejected = {
         "width_over_aperture": 0,
@@ -1874,11 +2014,9 @@ def plan_grasp(
         closing = Rb[:, int(axis_index)]
         for sign in (1.0, -1.0):
             R_tool = _candidate_orientation(vertical, closing * sign)
-            # Il TCP pivot rappresenta il centro fisico della punta delle chele:
-            # per una presa laterale top-down deve raggiungere il centro in altezza
-            # del box. Il precedente +20% sommato al bias Z teneva la chiusura
-            # circa 25-30 mm troppo alta rispetto all'oggetto.
-            contact = T_base_box[:3, 3] + grasp_bias
+            # TCP al centro box + bias; stop_short ritira lungo l'asse approccio
+            # (R_tool[:,0]) cosi' l'ultimo cm non si lancia dentro l'oggetto/tavolo.
+            contact = T_base_box[:3, 3] + grasp_bias - R_tool[:, 0] * contact_stop_short_m
             grasp_T = _transform(R_tool, contact)
             pre_T = grasp_T.copy()
             pre_T[:3, 3] -= R_tool[:, 0] * pregrasp_m

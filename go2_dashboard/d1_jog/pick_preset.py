@@ -617,7 +617,7 @@ def scan_gripper_j6_deg(scan_servo_deg: list[float]) -> float:
 
 
 def gripper_open_j6_deg(scan_servo_deg: list[float] | None = None, **_kw: Any) -> float:
-    """J6 pinza aperta — esplicito in env (Gemini/D1: ~49.7°, non il valore scansione ~5°)."""
+    """J6 pinza quasi al massimo, con margine dal fine corsa a 90°."""
     explicit = _gripper_deg_from_env("D1_GRIPPER_OPEN_DEG")
     if explicit is not None:
         return explicit
@@ -627,7 +627,7 @@ def gripper_open_j6_deg(scan_servo_deg: list[float] | None = None, **_kw: Any) -
         if closed is not None and abs(scan_j - closed) > 2.0:
             return scan_j
         return 90.0 if scan_j < 45.0 else 0.0
-    return 49.7
+    return 85.0
 
 
 def gripper_close_j6_deg(scan_servo_deg: list[float] | None = None, **_kw: Any) -> float:
@@ -641,14 +641,26 @@ def gripper_close_j6_deg(scan_servo_deg: list[float] | None = None, **_kw: Any) 
 
 
 def gripper_grasp_j6_deg(closing_width_m: float) -> float:
-    """Chiusura proporzionale alla larghezza, con una piccola compressione."""
+    """Chiusura proporzionale alla larghezza, ma sempre abbastanza stretta da stringere.
+
+    Con larghezze ~5 cm la formula lineare lasciava J6 ~50° (quasi aperto) e la
+    pinza non stringeva il Tempo. Applichiamo un tetto verso la chiusura.
+    """
     open_deg = gripper_open_j6_deg()
     closed_deg = gripper_close_j6_deg()
+    forced = _gripper_deg_from_env("D1_GRASP6D_FORCE_GRIPPER_CLOSE_DEG")
+    if forced is not None:
+        return float(forced)
     max_aperture_m = max(1e-6, float(os.environ.get("D1_GRIPPER_MAX_APERTURE_M", "0.085")))
-    compression_m = max(0.0, float(os.environ.get("D1_GRASP6D_GRIP_COMPRESSION_M", "0.005")))
+    compression_m = max(0.0, float(os.environ.get("D1_GRASP6D_GRIP_COMPRESSION_M", "0.012")))
     target_aperture_m = max(0.0, min(max_aperture_m, float(closing_width_m) - compression_m))
     aperture_fraction = target_aperture_m / max_aperture_m
-    return float(closed_deg + (open_deg - closed_deg) * aperture_fraction)
+    raw = float(closed_deg + (open_deg - closed_deg) * aperture_fraction)
+    # Su D1: open~85, closed~5 → valori bassi = più chiuso. Non superare questo J6.
+    firm_max = float(os.environ.get("D1_GRASP6D_FIRM_CLOSE_MAX_DEG", "18"))
+    if open_deg > closed_deg:
+        return float(max(closed_deg, min(raw, firm_max)))
+    return float(min(closed_deg, max(raw, firm_max)))
 
 
 def grasp_servo_approach_from_scan(

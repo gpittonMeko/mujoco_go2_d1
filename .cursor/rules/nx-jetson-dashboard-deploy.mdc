@@ -8,14 +8,26 @@ alwaysApply: true
 
 L’utente si aspetta che **l’agente** esegua il deploy, non che riceva solo istruzioni.
 
-- **Sicurezza braccio D1 (obbligatoria):** è vietato eseguire qualunque deploy/restart sulla NX che possa toccare dashboard 5056, HOLD daemon o controllo D1 finché l’utente non scrive esplicitamente nel messaggio corrente che il braccio è in HOLD ed è sostenuto. “Fai deploy/redeploy” da solo non è una conferma di sicurezza sufficiente. Avvisa che durante il restart il braccio può perdere coppia/cadere e attendi la conferma; non lanciare il deploy nello stesso momento dell’avviso.
-- Dopo il deploy comunica esplicitamente che è terminato e verifica/reportizza `hold_active`.
+## Sicurezza braccio D1 (obbligatoria) — pipeline restart 5056 / HOLD
 
-- **Comando** (dalla root del repo, su PC con rete verso la Jetson):
+È vietato eseguire qualunque deploy/restart sulla NX che possa toccare dashboard **5056**, HOLD daemon o controllo D1 finché non è completata questa pipeline:
 
-  `python scripts/deploy_dashboard_to_nx.py`
+1. **Folded obbligatorio prima del restart:** l’agente deve comandare la posa **safe transit** usata dallo scan (`fold_before_rotate`), NON il funcode-7 `/api/joints/zero`.
+   - Comando: `POST http://192.168.123.18:5056/api/arm/true_zero` con body `{"op":"goto_zero"}` (usa `safe_zero_pose`: J1≈−90°, J2≈+90°, J0/gripper preservati).
+   - Riportare posa misurata dopo il movimento (attesi tipici: J1≈−90, J2≈90).
+2. **Conferma utente sul folded:** dopo il comando, **fermati** e attendi che l’utente dica esplicitamente nel messaggio corrente se il braccio è **davvero in folded** oppure no. Non lanciare il restart nello stesso turno del comando folded.
+3. Solo se l’utente conferma folded (o conferma alternativa esplicita tipo «braccio sostenuto e in HOLD») puoi procedere col restart (`GO2_D1_JOG_RESTART=1` + `GO2_D1_CONFIRM_ARM_SUPPORTED=1` via `scripts/deploy_d1_jog_to_nx.py`).
+4. «Fai deploy/redeploy» da solo **non** basta. Se il folded fallisce o l’utente dice che non è folded, non restartare: tieni HOLD e chiedi istruzioni.
+5. Dopo il deploy comunica esplicitamente che è terminato e verifica/reportizza `hold_active`.
 
-- **Quando:** dopo aver modificato `diagnostics_dashboard.py` o uno degli script copiati dal deploy (`REMOTE_PUSH_FILES` in quello script), oppure `deploy_dashboard_to_nx.py` stesso, **prima di considerare il task completato** lancia il deploy (se la rete/SSH verso `192.168.123.18` è raggiungibile). Se la rete non è disponibile, indica l’errore e che l’utente dovrà rilanciare il deploy in laboratorio.
+Nota: deploy **files-only** (senza restart Flask/hold) può procedere senza folded; il vincolo sopra vale per restart/pkill che interrompono il controllo braccio.
+
+## Comandi
+
+- Dashboard operator (5050, se applicabile): `python scripts/deploy_dashboard_to_nx.py`
+- Jog D1 / grasp 5056: `python scripts/deploy_d1_jog_to_nx.py` (preferito quando tocchi `go2_dashboard/d1_jog/**`)
+
+**Quando:** dopo aver modificato i file copiati dal deploy, **prima di considerare il task completato** lancia il deploy (se la rete/SSH verso `192.168.123.18` è raggiungibile). Se la rete non è disponibile, indica l’errore e che l’utente dovrà rilanciare il deploy in laboratorio.
 
 - **Verifica opzionale** dal PC: `python scripts/verify_dashboard_http.py http://192.168.123.18:5050`
 
