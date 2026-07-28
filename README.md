@@ -31,7 +31,7 @@ docs/             indice in docs/README.md
 
 [indice docs/](docs/README.md)
 
-**Passaggio di consegne (presa 6D D1):** [docs/HANDOFF_SANDY.md](docs/HANDOFF_SANDY.md) — porta **5056**, deploy `deploy_d1_jog_to_nx.py`, sicurezza folded + hold.
+**Handoff presa 6D (Sandy):** [docs/HANDOFF_SANDY.md](docs/HANDOFF_SANDY.md) — solo grasp, URL `http://192.168.123.18:5056/`. Se il collega non è sulla rete cane: `python scripts/proxy_d1_dashboard_lan.py` sul PC lab.
 
 ## Licenza
 

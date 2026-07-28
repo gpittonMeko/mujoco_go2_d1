@@ -6,8 +6,8 @@ Guide operative:
 
 | Documento | Contenuto |
 |-----------|-------------|
-| [HANDOFF_SANDY.md](HANDOFF_SANDY.md) | **Consegna colleghi** — presa 6D, 5056 vs 5050, deploy, env, sicurezza |
-| [D1_GRASP6D_NX.md](D1_GRASP6D_NX.md) | Flusso operativo curl / calib / preview / execute 6D |
+| [HANDOFF_SANDY.md](HANDOFF_SANDY.md) | **Solo presa 6D** per colleghi + come accedere alla UI 5056 |
+| [D1_GRASP6D_NX.md](D1_GRASP6D_NX.md) | Dettaglio tecnico curl (opzionale) |
 | [localDogTest_jetson.md](localDogTest_jetson.md) | Jetson/NX, dashboard (`scripts/serve_dashboard_modular.py`), deploy, presa |
 | [comandare_il_robot_per_studenti.md](comandare_il_robot_per_studenti.md) | LowCmd, laboratorio |
 | [d1_arm_protocol_feasibility.md](d1_arm_protocol_feasibility.md) | D1 DDS, drag-follow |
