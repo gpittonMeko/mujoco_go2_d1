@@ -2,13 +2,19 @@
 """Deploy dashboard D1 integrata sulla Jetson, porta 5056.
 
 SICUREZZA BRACCIO: di default copia SOLO i file (nessun restart).
-Un restart Flask/hold puo' far cedere il braccio: va fatto solo a freddo,
-con braccio sostenuto, e flag espliciti.
+Un restart Flask/hold puo' far cedere il braccio.
+
+Processo obbligatorio prima di GO2_D1_JOG_RESTART=1:
+  1) mandare il braccio in posa safe folded via
+     POST /api/arm/true_zero {"op":"goto_zero"} (safe_zero_pose / fold_before_rotate;
+     NON /api/joints/zero funcode-7);
+  2) conferma utente che e' davvero folded (+ sostenuto);
+  3) solo allora restart con i flag sotto.
 
 Uso files-only (sicuro):
   python scripts/deploy_d1_jog_to_nx.py
 
-Uso con restart (PERICOLOSO — sostieni il braccio):
+Uso con restart (PERICOLOSO — solo dopo folded confermato):
   set GO2_D1_JOG_RESTART=1
   set GO2_D1_CONFIRM_ARM_SUPPORTED=1
   python scripts/deploy_d1_jog_to_nx.py

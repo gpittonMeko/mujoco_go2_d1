@@ -167,6 +167,37 @@
     .auto-step-pill.soft { border-color:rgba(180,200,220,.4); background:rgba(80,100,120,.22); color:#d7e8f4; }
     .auto-step-pill b { display:block; margin-bottom:3px; color:inherit; }
     button.pulse-hint { animation: buttonPop .55s ease 0s 4; box-shadow:0 0 0 3px rgba(255,180,40,.55), 0 8px 22px rgba(200,120,20,.35) !important; }
+    .hero-cycle-card {
+      margin: 12px 0 16px;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      border: 2px solid rgba(20,180,90,.55);
+      background: linear-gradient(145deg, rgba(232,255,240,.96), rgba(180,245,210,.88) 55%, rgba(255,248,220,.9));
+      box-shadow: 0 14px 36px rgba(20,120,70,.22), inset 0 1px 0 rgba(255,255,255,.85);
+    }
+    .hero-cycle-card strong.hero-title { display:block; font-size:18px; letter-spacing:.02em; color:#0a5c32; margin-bottom:4px; }
+    .hero-cycle-card .hero-copy { margin:0 0 12px; color:#1f5a3a; font-size:13px; line-height:1.45; }
+    button.hero-cycle-btn {
+      flex: 1 1 280px;
+      min-height: 56px;
+      font-size: 17px;
+      letter-spacing: .02em;
+      padding: 14px 22px;
+      border-radius: 16px;
+      border: 2px solid rgba(255,255,255,.75);
+      background: linear-gradient(180deg, #3fe08a, #12964f);
+      box-shadow: 0 10px 28px rgba(18,140,70,.35), inset 0 1px 0 rgba(255,255,255,.55);
+      animation: heroPulse 2.4s ease-in-out infinite;
+    }
+    button.hero-cycle-btn:hover { filter: brightness(1.06); }
+    button.hero-cycle-btn:disabled { animation: none; }
+    @keyframes heroPulse {
+      0%, 100% { box-shadow: 0 10px 28px rgba(18,140,70,.35), 0 0 0 0 rgba(40,200,110,.35); }
+      50% { box-shadow: 0 12px 32px rgba(18,140,70,.42), 0 0 0 8px rgba(40,200,110,.12); }
+    }
+    .pick-essentials { margin-top: 10px; }
+    .secondary-tools { margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,.42); border: 1px solid rgba(25,130,175,.14); }
+    .secondary-tools summary { cursor: pointer; color: #315f75; font-weight: 700; }
     .auto-live-panel { margin-top:12px; padding:14px 16px; border-radius:18px; border:1px solid rgba(8,127,208,.35); background:linear-gradient(145deg,rgba(12,57,83,.94),rgba(18,90,122,.88)); color:#e8fbff; box-shadow:0 12px 28px rgba(8,70,110,.22); }
     .auto-live-panel.running { border-color:rgba(80,210,255,.65); box-shadow:0 0 0 2px rgba(80,210,255,.25), 0 12px 28px rgba(8,70,110,.28); }
     .auto-live-panel.done { border-color:rgba(91,243,154,.55); }
@@ -289,11 +320,11 @@
       </div>
 
       <div class="card teach-section" data-teach-section="grasp6d">
-        <h2 class="section-title">3. Flusso 6D · calibrazione e presa</h2>
-        <div class="sub">Target preferito: AprilGrid 36h11 (6×4, ID 288–311). Fallback: ArUco 4×4 ID0 60 mm. L’oggetto 6D si stima dalla depth, non dal marker sulla scatola.</div>
+        <h2 class="section-title">3. Presa 6D · dal cane</h2>
+        <div class="sub">Focus: SCAN → riconosci → grasp → rilascio. Lab AprilGrid first ID tipicamente 312 (6×4). Calibrazione hand-eye nel pannello avanzato.</div>
         <div class="mode-switch">
-          <button id="btnModePick" class="good active-mode" type="button">PRESA 6D · feedback grafico</button>
-          <button id="btnModeCalib" class="neutral" type="button">Calibrazione avanzata ▾</button>
+          <button id="btnModePick" class="good active-mode" type="button">PRESA 6D</button>
+          <button id="btnModeCalib" class="neutral" type="button">Calibrazione hand-eye ▾</button>
         </div>
         <div class="workflow-card">
           <div class="workflow-head"><strong>Prerequisiti presa 6D</strong><span id="workflowHint">Verifica automatica</span></div>
@@ -383,64 +414,76 @@
         </div>
 
         <div id="panelPickMode">
-          <div class="step-panel" id="pickPanelDetect">
-            <h3 class="pick-primary-title">1 · PRESA ADESSO · riconosci e valida</h3>
-            <p class="pick-primary-sub">Genera proposta, controlla il feedback 3D e verifica la stabilità prima di muovere.</p>
-            <p class="now-do" id="pickNowDo">Con hand-eye valida: rimetti il cuboide, poi riconosci e verifica stabilità prima del pregrasp.</p>
+          <div class="hero-cycle-card" id="heroGraspCycleCard">
+            <strong class="hero-title">CICLO DAL CANE · SCAN → GRASP → RILASCIO</strong>
+            <p class="hero-copy">
+              Un bottone: va alla SCAN salvata, riconosce l’oggetto, esegue la presa, rilascia dall’alto e torna in SCAN.
+              Area libera, HOLD attivo, mano pronta su STOP.
+            </p>
+            <div class="row" style="align-items:end">
+              <label>Cicli<input id="graspCycleCount" type="number" min="1" max="50" step="1" value="1"></label>
+              <button id="btnHeroGraspCycle" class="hero-cycle-btn" type="button">AVVIA CICLO SCAN → GRASP</button>
+              <button id="btnStopGraspCycle" class="hold-fixed" type="button">STOP CICLO + HOLD</button>
+            </div>
+            <div id="graspCycleState" class="rt-json" style="margin-top:10px;background:rgba(10,40,30,.82);color:#e8fff2">Ciclo fermo.</div>
+          </div>
+
+          <div class="step-panel pick-essentials" id="pickPanelDetect">
+            <h3 class="pick-primary-title">Strumenti essenziali</h3>
+            <p class="now-do" id="pickNowDo">Hand-eye ok → cuboide sul tavolo → riconosci (o lancia il ciclo verde sopra).</p>
             <div class="row" style="align-items:center">
               <span class="control-pill" id="graspScanPoseState">SCAN: verifica posizione…</span>
-              <button id="btnGotoGraspScan" class="warn" type="button">Vai alla SCAN salvata</button>
-              <button id="btnSaveGraspScan" class="neutral" type="button">Memorizza posa attuale come SCAN</button>
+              <button id="btnGotoGraspScan" class="warn" type="button">Vai alla SCAN</button>
+              <button id="btnSaveGraspScan" class="neutral" type="button">Salva SCAN attuale</button>
             </div>
             <div class="row">
-              <button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button>
-              <button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button>
-              <button id="btnDepthStart" type="button">Avvia scan 3D live</button>
-              <button id="btnDepthStop" class="neutral" type="button">Ferma live</button>
-              <button id="btnReleaseMonitor" class="danger" type="button">Release + 3D live</button>
-              <button id="btn6dPreview" class="neutral" type="button">Riconosci oggetto</button>
-              <button id="btn6dClusterProbe" class="neutral" type="button">Verifica stabilità cluster</button>
-              <button id="btn6dDebugGraphic" class="neutral" type="button">Debug grafico</button>
-            </div>
-            <div class="row">
-              <button id="btnGoLeftPose" class="neutral" type="button">Posa scan sinistra</button>
-              <button id="btnGoRightPose" class="neutral" type="button">Posa scan destra</button>
-              <button id="btnLeft6dDebug" type="button">Sinistra + debug</button>
-              <button id="btnRight6dDebug" type="button">Destra + debug</button>
-            </div>
-          </div>
-          <div class="step-panel" id="pickPanelExecute">
-            <h3 class="pick-primary-title">2 · ESEGUI SOLO SE VERDE</h3>
-            <p class="now-do" id="graspProposalBanner">NON ESEGUIRE · genera prima una proposta di presa valida.</p>
-            <div class="bias-editor">
-              <strong>OFFSET PRESA MEMORIZZATO</strong>
-              <div class="bias-editor-grid">
-                <label>X base · mm<input id="graspBiasXmm" type="number" min="-40" max="40" step="1" value="0"></label>
-                <label>Y base · mm<input id="graspBiasYmm" type="number" min="-40" max="40" step="1" value="0"></label>
-                <label>Z base · mm<input id="graspBiasZmm" type="number" min="-30" max="30" step="1" value="0"></label>
-              </div>
-              <label class="bias-confirm"><input id="graspBiasConfirmFlag" type="checkbox" checked> Prima di pregrasp/presa chiedimi di confermare esplicitamente questo offset.</label>
-              <div class="row">
-                <button id="btnSaveGraspBias" class="good" type="button">Memorizza offset e rigenera proposta</button>
-                <span id="graspBiasSavedState" class="control-pill">offset caricato: —</span>
-              </div>
-            </div>
-            <div class="row">
+              <button id="btn6dPreview" class="good" type="button">Riconosci oggetto</button>
+              <button id="btnEssentialsDebugRefresh" class="neutral" type="button">Aggiorna debug</button>
               <button id="btn6dPregrasp" class="warn" type="button" disabled>Prova pregrasp</button>
-              <button id="btn6dExecute" class="danger" type="button" disabled>Grasp 6D completo</button>
+              <button id="btn6dExecute" class="danger" type="button" disabled>Grasp singolo</button>
             </div>
-            <div class="bias-editor">
-              <strong>CICLO AUTOMATICO · SCAN → PRENDI → RILASCIA → RIPETI</strong>
-              <p class="pick-primary-sub">Il rilascio usa la posa salvata; finché non ne salvi una, usa la SCAN come fallback.</p>
-              <div class="row" style="align-items:end">
-                <label>Cicli<input id="graspCycleCount" type="number" min="1" max="50" step="1" value="3"></label>
-                <button id="btnSaveReleasePose" class="neutral" type="button">Memorizza posa attuale come RILASCIO</button>
-                <button id="btnStartGraspCycle" class="danger" type="button">Avvia ciclo pick/drop</button>
-                <button id="btnStopGraspCycle" class="hold-fixed" type="button">STOP CICLO + HOLD</button>
-              </div>
-              <div id="graspCycleState" class="rt-json" style="margin-top:8px">Ciclo fermo.</div>
-            </div>
+            <p class="now-do" id="graspProposalBanner" style="margin-top:10px">NON ESEGUIRE · genera prima una proposta di presa valida.</p>
           </div>
+
+          <div class="step-panel hide" id="pickPanelExecute" aria-hidden="true"></div>
+
+          <details class="secondary-tools">
+            <summary>Strumenti secondari (live 3D, pose SX/DX, offset, rilascio…)</summary>
+            <div class="ops-body">
+              <div class="row">
+                <button id="btnFixedRefresh6d" class="neutral" type="button">Aggiorna 6D / point cloud</button>
+                <button id="btnFixedStartDepth" class="neutral" type="button">Live 3D</button>
+                <button id="btnDepthStart" type="button">Avvia scan 3D live</button>
+                <button id="btnDepthStop" class="neutral" type="button">Ferma live</button>
+                <button id="btnReleaseMonitor" class="danger" type="button">Release + 3D live</button>
+                <button id="btn6dClusterProbe" class="neutral" type="button">Verifica stabilità cluster</button>
+                <button id="btn6dDebugGraphic" class="neutral" type="button">Debug grafico</button>
+              </div>
+              <div class="row">
+                <button id="btnGoLeftPose" class="neutral" type="button">Posa scan sinistra</button>
+                <button id="btnGoRightPose" class="neutral" type="button">Posa scan destra</button>
+                <button id="btnLeft6dDebug" type="button">Sinistra + debug</button>
+                <button id="btnRight6dDebug" type="button">Destra + debug</button>
+              </div>
+              <div class="bias-editor" style="margin-top:10px">
+                <strong>OFFSET PRESA MEMORIZZATO</strong>
+                <div class="bias-editor-grid">
+                  <label>X base · mm<input id="graspBiasXmm" type="number" min="-40" max="40" step="1" value="0"></label>
+                  <label>Y base · mm<input id="graspBiasYmm" type="number" min="-40" max="40" step="1" value="0"></label>
+                  <label>Z base · mm<input id="graspBiasZmm" type="number" min="-30" max="30" step="1" value="0"></label>
+                </div>
+                <label class="bias-confirm"><input id="graspBiasConfirmFlag" type="checkbox" checked> Prima di pregrasp/presa chiedimi di confermare esplicitamente questo offset.</label>
+                <div class="row">
+                  <button id="btnSaveGraspBias" class="good" type="button">Memorizza offset e rigenera proposta</button>
+                  <span id="graspBiasSavedState" class="control-pill">offset caricato: —</span>
+                </div>
+              </div>
+              <div class="row" style="margin-top:10px;align-items:end">
+                <button id="btnSaveReleasePose" class="neutral" type="button">Memorizza posa attuale come RILASCIO</button>
+                <button id="btnStartGraspCycle" class="danger" type="button">Avvia ciclo (alias)</button>
+              </div>
+            </div>
+          </details>
           <div class="mode-grid" id="pickKpiGrid">
             <div class="mode-kpi"><small>Oggetto 6D</small><strong id="grasp6dReason">—</strong></div>
             <div class="mode-kpi"><small>Centro camera XYZ</small><strong id="grasp6dCenter">—</strong></div>
@@ -1337,19 +1380,31 @@
       if (depthInFlight) return;
       depthInFlight = true;
       try {
-        const d = await api('/api/pick/grasp6d/debug?capture=1', 'GET', undefined, 120000);
-        const rgbd = d.rgbd || {};
-        q('rtDepth').textContent = 'depth: ' + (rgbd.depth_valid_fraction == null ? '—' : Number(rgbd.depth_valid_fraction).toFixed(3));
-        q('rt6dReason').textContent = '6d: ' + (d.reason || 'ok');
-        q('rtDepth').className = 'rt-badge ' + ((rgbd.depth_valid_fraction || 0) >= 0.20 ? 'good' : 'bad');
-        q('rt6dReason').className = 'rt-badge ' + (d.ok ? 'good' : 'bad');
-        apply6dPreviewKpis(d);
+        // Live debug e ciclo grasp condividono la stessa D456 (lock RealSense).
+        // Se il ciclo e' attivo, non catturare: altrimenti il ciclo resta in coda
+        // su wait_for_frames e la dashboard puo' andare in blocco.
         try {
-          apply6dLiveFeedback(await api('/api/pick/grasp6d/last_run', 'GET', undefined, 15000));
-        } catch (_) {}
-        q('rtDepthPreview').src = '/api/pick/grasp6d/debug.jpg?capture=0&t=' + Date.now();
+          const st = await api('/api/pick/grasp6d/cycle/status', 'GET', undefined, 2000);
+          if (st && st.running) {
+            setStatus('Live debug in pausa: ciclo SCAN/GRASP attivo (camera impegnata)', true);
+            return;
+          }
+        } catch (_) {
+          stopDepthMonitor();
+          if (q('btnPickDebugLive')) q('btnPickDebugLive').textContent = 'Live debug ON';
+          setStatus('Live debug OFF: API non risponde (evito altre catture che bloccano)', false);
+          return;
+        }
+        // Solo health sul buffer (~ms). Il debug 6D completo (~20s) satura la NX:
+        // non chiamarlo in loop. Preview = JPEG dal buffer stream (orbbec/last).
+        const rgbd = await api('/api/pick/rgbd/health', 'GET', undefined, 5000);
+        q('rtDepth').textContent = 'depth: ' + (rgbd.depth_valid_fraction == null ? '—' : Number(rgbd.depth_valid_fraction).toFixed(3));
+        q('rt6dReason').textContent = 'stream: ' + (rgbd.stream_ready ? 'ready' : (rgbd.reason || '…'));
+        q('rtDepth').className = 'rt-badge ' + ((rgbd.depth_valid_fraction || 0) >= 0.20 ? 'good' : 'bad');
+        q('rt6dReason').className = 'rt-badge ' + (rgbd.ok && rgbd.stream_ready ? 'good' : 'bad');
+        q('rtDepthPreview').src = '/api/orbbec/last.jpg?t=' + Date.now();
       } catch (e) {
-        q('rt6dReason').textContent = '6d: err';
+        q('rt6dReason').textContent = 'stream: err';
         q('rt6dReason').className = 'rt-badge bad';
       } finally {
         depthInFlight = false;
@@ -1485,18 +1540,24 @@
             ' · riusciti ' + Number(state.successful_cycles || 0) +
             (state.reason ? ' · ' + state.reason : '');
         }
-        const start = q('btnStartGraspCycle');
-        if (start) start.disabled = !!state.running;
+        ['btnStartGraspCycle', 'btnHeroGraspCycle'].forEach(function (id) {
+          const el = q(id);
+          if (el) el.disabled = !!state.running;
+        });
       } catch (_) {}
     }
 
     async function startGraspCycle() {
       const cycles = Math.max(1, Math.min(50, Number((q('graspCycleCount') || {}).value || 1)));
       const accepted = window.confirm(
-        'Avviare ' + cycles + ' cicli automatici SCAN → presa → rilascio → SCAN? ' +
-        'Area completamente libera e mano pronta su STOP CICLO + HOLD.'
+        'Avviare ' + cycles + ' cicli DAL CANE: SCAN → riconosci → presa → rilascio dall’alto → SCAN?\n' +
+        'Area libera, HOLD attivo, mano su STOP CICLO + HOLD.\n' +
+        '(Live debug viene spento automaticamente: usa la stessa camera del ciclo.)'
       );
       if (!accepted) return;
+      // Critico: Live debug ON tiene la D456 e puo' bloccare il ciclo / tutta la 5056.
+      stopDepthMonitor();
+      if (q('btnPickDebugLive')) q('btnPickDebugLive').textContent = 'Live debug ON';
       try {
         await api(
           '/api/pick/grasp6d/cycle/start',
@@ -2686,7 +2747,7 @@
     bindClick('btnModePick', () => setUiMode('pick'));
     bindClick('btnGotoPick', () => {
       setUiMode('pick');
-      const panel = q('pickPanelDetect');
+      const panel = q('heroGraspCycleCard') || q('pickPanelDetect');
       if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     bindClick('btnFixedRefresh6d', run6dDebug);
@@ -2772,6 +2833,8 @@
     bindClick('btnSaveGraspBias', saveGraspBiasFromInputs);
     bindClick('btnSaveReleasePose', saveReleasePose);
     bindClick('btnStartGraspCycle', startGraspCycle);
+    bindClick('btnHeroGraspCycle', startGraspCycle);
+    bindClick('btnEssentialsDebugRefresh', refreshPickDebugOnce);
     bindClick('btnStopGraspCycle', async () => {
       try {
         await api('/api/pick/grasp6d/cycle/stop', 'POST', {}, 30000);

@@ -720,17 +720,26 @@ def create_d1_jog_app() -> Flask:
         cache_s = max(0.2, float(os.environ.get("D1_CAMERA_SNAPSHOT_CACHE_S", "2.2")))
         if wrist_last_jpg is not None and time.monotonic() - wrist_last_at < cache_s:
             return wrist_last_jpg
-        # Durante una capture 6D librealsense deve essere l'unico owner della
-        # D456. La UI continua a mostrare l'ultimo frame invece di contenderla.
+        # Con sampler persistente librealsense possiede la D456: non aprire UVC.
+        # Servi il color dal buffer RGB-D (stesso stream del grasp).
+        try:
+            import cv2
+        except ImportError:
+            return wrist_last_jpg
         if wrist_rgbd.capture_active():
+            rgbd = wrist_rgbd.last_frame(max_age_s=2.5)
+            if rgbd is None:
+                return wrist_last_jpg
+            chroma = _frame_chroma_bgr(rgbd.color_bgr)
+            camera_diag["wrist"] = {"index": "rgbd_stream", "chroma": round(chroma, 3), "rgb_like": chroma >= 2.5}
+            ok_enc, buf = cv2.imencode(".jpg", rgbd.color_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok_enc and buf is not None:
+                wrist_last_jpg = buf.tobytes()
+                wrist_last_at = time.monotonic()
             return wrist_last_jpg
         if not wrist_rgbd.try_acquire_camera():
             return wrist_last_jpg
         try:
-            try:
-                import cv2
-            except ImportError:
-                return wrist_last_jpg
             idx = _resolve_realsense_rgb_index(role="wrist")
             frame = _read_rgb_frame(cv2, idx)
             if frame is None:
@@ -1294,7 +1303,15 @@ def create_d1_jog_app() -> Flask:
             return jsonify(out), code
         if op in {"goto", "goto_zero", "move", "transit"}:
             program_runner.clear_stop_request()
-            out = service.goto_true_zero_pose()
+            override = body.get("battery_override_confirm") == "OVERRIDE_LOW_BATTERY_FOR_PREGRASP"
+            if override:
+                motion_guard.begin_battery_override(reason="explicit_true_zero_low_battery")
+            try:
+                out = service.goto_true_zero_pose()
+            finally:
+                if override:
+                    motion_guard.end_battery_override()
+            out["battery_override_used"] = override
             code = 200 if out.get("ok") or out.get("skipped") else 502
             return jsonify(out), code
         return jsonify({"ok": False, "reason": "unsupported_true_zero_op", "op": op}), 400
@@ -2415,9 +2432,20 @@ def create_d1_jog_app() -> Flask:
         import numpy as np
 
         try:
-            frame = _capture_wrist_rgbd_with_retry() if capture_new else wrist_rgbd.last_frame()
-            if frame is None:
-                frame = _capture_wrist_rgbd_with_retry(median_frames=1)
+            # Live debug NON deve riaprire la D456: usa il buffer del sampler.
+            wrist_rgbd.ensure_stream()
+            if capture_new:
+                frame = wrist_rgbd.latest_or_capture(max_age_s=0.35, median_frames=1, wait_s=4.0)
+            else:
+                frame = wrist_rgbd.last_frame(max_age_s=2.5)
+                if frame is None:
+                    # Fail-fast: non fare oneshot che contende lo stream.
+                    return None, {
+                        "ok": False,
+                        "reason": "rgbd_buffer_empty",
+                        "detail": "sampler non ha ancora frame; riprova tra un attimo",
+                        "rgbd": wrist_rgbd.health(capture=False),
+                    }
         except Exception as exc:
             return None, {"ok": False, "reason": "wrist_rgbd_capture_failed", "detail": str(exc)}
 
@@ -4653,12 +4681,17 @@ def create_d1_jog_app() -> Flask:
         if max(errors) > tolerance_deg:
             return None
         frozen_bias = (frozen.get("plan") or {}).get("grasp_bias_base_m")
+        # Stesso bias effettivo di plan_grasp (tuning + FORCE_BIAS env).
         current_values = grasp6d.tuning_info()["values"]
         current_bias = [
             float(current_values["grasp_bias_base_x_m"]),
             float(current_values["grasp_bias_base_y_m"]),
             float(current_values["grasp_bias_base_z_m"]),
         ]
+        if "D1_GRASP6D_FORCE_BIAS_Y_M" in os.environ:
+            current_bias[1] = float(os.environ["D1_GRASP6D_FORCE_BIAS_Y_M"])
+        if "D1_GRASP6D_FORCE_BIAS_Z_M" in os.environ:
+            current_bias[2] = float(os.environ["D1_GRASP6D_FORCE_BIAS_Z_M"])
         if (
             not isinstance(frozen_bias, list)
             or len(frozen_bias) < 3
@@ -4678,10 +4711,13 @@ def create_d1_jog_app() -> Flask:
         dry_run: bool = False,
         pregrasp_only: bool = False,
         trust_lift_for_cycle: bool = False,
+        allow_reuse: bool = True,
     ) -> dict[str, Any]:
         import numpy as np
 
-        reusable = None if (dry_run or pregrasp_only) else _reusable_pregrasp_plan()
+        # Il ciclo DAL CANE deve sempre ripianificare: riusare un pregrasp vecchio
+        # ignorava FORCE_BIAS_Y (offset 2 cm a destra) e altri env aggiornati.
+        reusable = None if (dry_run or pregrasp_only or not allow_reuse) else _reusable_pregrasp_plan()
         run: dict[str, Any] = {
             "ok": False,
             "mode": "dry_run" if dry_run else ("pregrasp_only" if pregrasp_only else "grasp6d"),
@@ -5034,7 +5070,11 @@ def create_d1_jog_app() -> Flask:
                 if grasp_cycle_stop.is_set():
                     raise InterruptedError("cycle_stopped_by_user")
                 _set_grasp_cycle_state(phase="detect_pick_lift", iteration=index + 1, reason=None)
-                picked = _execute_grasp6d_attempt(pregrasp_only=False, trust_lift_for_cycle=True)
+                picked = _execute_grasp6d_attempt(
+                    pregrasp_only=False,
+                    trust_lift_for_cycle=True,
+                    allow_reuse=False,
+                )
                 if not picked.get("ok"):
                     raise RuntimeError(str(picked.get("reason") or "pick_failed"))
                 if grasp_cycle_stop.is_set():
@@ -5180,14 +5220,36 @@ def create_d1_jog_app() -> Flask:
         enabled = os.environ.get("D1_GRASP6D_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
         cal = grasp6d.load_calibration()
         cal.pop("T_tool_camera_np", None)
+        tuning = grasp6d.tuning_info()
+        eff_bias = [
+            float(tuning["values"]["grasp_bias_base_x_m"]),
+            float(tuning["values"]["grasp_bias_base_y_m"]),
+            float(tuning["values"]["grasp_bias_base_z_m"]),
+        ]
+        if "D1_GRASP6D_FORCE_BIAS_Y_M" in os.environ:
+            try:
+                eff_bias[1] = float(os.environ["D1_GRASP6D_FORCE_BIAS_Y_M"])
+            except ValueError:
+                pass
+        if "D1_GRASP6D_FORCE_BIAS_Z_M" in os.environ:
+            try:
+                eff_bias[2] = float(os.environ["D1_GRASP6D_FORCE_BIAS_Z_M"])
+            except ValueError:
+                pass
         out = {
             "ok": True,
             "enabled": enabled,
             "rgbd": wrist_rgbd.health(capture=False),
             "sample_count": len(grasp6d.list_handeye_samples()),
             "calibration": cal,
-            "tuning": grasp6d.tuning_info(),
+            "tuning": tuning,
             "scan_pose": _grasp_scan_pose_status(),
+            "effective_grasp_bias_base_m": eff_bias,
+            "force_bias_env": {
+                "D1_GRASP6D_FORCE_BIAS_Y_M": os.environ.get("D1_GRASP6D_FORCE_BIAS_Y_M"),
+                "D1_GRASP6D_FORCE_BIAS_Z_M": os.environ.get("D1_GRASP6D_FORCE_BIAS_Z_M"),
+                "D1_GRASP6D_TCP_Y_M": os.environ.get("D1_GRASP6D_TCP_Y_M"),
+            },
         }
         return jsonify(out)
 
@@ -5317,23 +5379,15 @@ def create_d1_jog_app() -> Flask:
 
     @app.route("/api/pick/grasp6d/debug", methods=["GET"])
     def pick_grasp6d_debug() -> Response:
+        # capture=1 → burst sul sampler continuo; capture=0 → buffer.
+        # Non usare capture_active() come busy: con stream persistente e' sempre True.
         capture_new = request.args.get("capture", "1") not in {"0", "false", "no"}
-        if capture_new and wrist_rgbd.capture_active():
-            return jsonify(
-                {
-                    "ok": False,
-                    "reason": "rgbd_capture_busy",
-                    "hint": "Attendi la cattura corrente o ferma Live debug, poi riprova.",
-                }
-            ), 409
         out_jpg, meta = _grasp6d_debug_jpeg(capture_new=capture_new)
         return jsonify(meta), (200 if meta.get("ok") else 422)
 
     @app.route("/api/pick/grasp6d/debug.jpg", methods=["GET"])
     def pick_grasp6d_debug_jpg() -> Response:
         capture_new = request.args.get("capture", "1") not in {"0", "false", "no"}
-        if capture_new and wrist_rgbd.capture_active():
-            return jsonify({"ok": False, "reason": "rgbd_capture_busy"}), 409
         out_jpg, meta = _grasp6d_debug_jpeg(capture_new=capture_new)
         if out_jpg is None:
             return jsonify(meta), 422
@@ -5661,4 +5715,9 @@ def create_d1_jog_app() -> Flask:
         startup_arm_stabilization.update({"ok": False, "reason": "daemon_start_failed"})
     else:
         startup_arm_stabilization.update({"ok": True, "skipped": True, "reason": "auto_enable_disabled"})
+    # Avvia subito il sampler D456: debug/ciclo pescano il buffer, non rubano lo stream.
+    try:
+        wrist_rgbd.ensure_stream()
+    except Exception:
+        pass
     return app

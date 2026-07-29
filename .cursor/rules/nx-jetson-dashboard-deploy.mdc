@@ -1,6 +1,6 @@
 ---
-description: Dopo modifiche alla dashboard o script copiati sulla Jetson, eseguire il deploy SSH sulla NX.
-globs: "**/diagnostics_dashboard.py,**/go2_dashboard/**/*.py,**/scripts/serve_dashboard_modular.py,**/deploy_dashboard_to_nx.py,**/box_grasp_planner.py,**/arm_kinematics_d1_template.py,**/go2_accompany.py,**/d1_drag_follow_experimental.py"
+description: Dopo modifiche alla dashboard o script copiati sulla Jetson, eseguire il deploy SSH sulla NX. Restart solo dopo fold safe.
+globs: "**/diagnostics_dashboard.py,**/go2_dashboard/**/*.py,**/scripts/serve_dashboard_modular.py,**/deploy_dashboard_to_nx.py,**/deploy_d1_jog_to_nx.py,**/box_grasp_planner.py,**/arm_kinematics_d1_template.py,**/go2_accompany.py,**/d1_drag_follow_experimental.py"
 alwaysApply: true
 ---
 
@@ -8,24 +8,28 @@ alwaysApply: true
 
 L’utente si aspetta che **l’agente** esegua il deploy, non che riceva solo istruzioni.
 
-## Sicurezza braccio D1 (obbligatoria) — pipeline restart 5056 / HOLD
+## Processo deploy con restart (5056 / HOLD / controllo D1)
 
-È vietato eseguire qualunque deploy/restart sulla NX che possa toccare dashboard **5056**, HOLD daemon o controllo D1 finché non è completata questa pipeline:
+**Regola fissa del laboratorio:** prima di ogni restart/pkill che tocchi la dashboard **5056**, HOLD daemon o controllo D1, l’agente deve mandare il braccio in **posa safe folded** (non basta “HOLD e sostenuto” da solo).
 
-1. **Folded obbligatorio prima del restart:** l’agente deve comandare la posa **safe transit** usata dallo scan (`fold_before_rotate`), NON il funcode-7 `/api/joints/zero`.
-   - Comando: `POST http://192.168.123.18:5056/api/arm/true_zero` con body `{"op":"goto_zero"}` (usa `safe_zero_pose`: J1≈−90°, J2≈+90°, J0/gripper preservati).
-   - Riportare posa misurata dopo il movimento (attesi tipici: J1≈−90, J2≈90).
-2. **Conferma utente sul folded:** dopo il comando, **fermati** e attendi che l’utente dica esplicitamente nel messaggio corrente se il braccio è **davvero in folded** oppure no. Non lanciare il restart nello stesso turno del comando folded.
-3. Solo se l’utente conferma folded (o conferma alternativa esplicita tipo «braccio sostenuto e in HOLD») puoi procedere col restart (`GO2_D1_JOG_RESTART=1` + `GO2_D1_CONFIRM_ARM_SUPPORTED=1` via `scripts/deploy_d1_jog_to_nx.py`).
-4. «Fai deploy/redeploy» da solo **non** basta. Se il folded fallisce o l’utente dice che non è folded, non restartare: tieni HOLD e chiedi istruzioni.
-5. Dopo il deploy comunica esplicitamente che è terminato e verifica/reportizza `hold_active`.
+Pipeline obbligatoria, in ordine:
+
+1. **Folded (agente lo comanda):** posa **safe transit** usata dallo scan (`fold_before_rotate`), NON il funcode-7 `/api/joints/zero`.
+   - `POST http://192.168.123.18:5056/api/arm/true_zero` body `{"op":"goto_zero"}` (usa `safe_zero_pose`: J1≈−90°, J2≈+90°, J0/gripper preservati).
+   - Se la 5056 è inchiodata e non accetta il fold, **non** restartare: tieni HOLD e chiedi istruzioni (fold via API ripristinata o intervento manuale).
+   - Dopo il movimento, riporta la posa misurata (attesi tipici: J1≈−90, J2≈90).
+2. **Conferma utente sul folded:** fermati e attendi nel messaggio corrente che l’utente confermi che il braccio è **davvero in folded** (o conferma equivalente esplicita tipo «folded + sostenuto»). Non lanciare il restart nello stesso turno del comando folded.
+3. **Solo allora** restart: `GO2_D1_JOG_RESTART=1` + `GO2_D1_CONFIRM_ARM_SUPPORTED=1` via `python scripts/deploy_d1_jog_to_nx.py`.
+4. «Fai deploy/redeploy» da solo **non** basta e **non** sostituisce il fold.
+5. Se il folded fallisce o l’utente dice che non è folded: non restartare; tieni HOLD e chiedi istruzioni.
+6. A deploy finito: comunica esplicitamente il completamento e verifica/reportizza `hold_active`.
 
 Nota: deploy **files-only** (senza restart Flask/hold) può procedere senza folded; il vincolo sopra vale per restart/pkill che interrompono il controllo braccio.
 
 ## Comandi
 
 - Dashboard operator (5050, se applicabile): `python scripts/deploy_dashboard_to_nx.py`
-- Jog D1 / grasp 5056: `python scripts/deploy_d1_jog_to_nx.py` (preferito quando tocchi `go2_dashboard/d1_jog/**`)
+- Jog D1 / grasp 5056: `python scripts/deploy_d1_jog_to_nx.py` (preferito quando tocchi `go2_dashboard/d1_jog/**` o `templates/d1_jog_dashboard.html`)
 
 **Quando:** dopo aver modificato i file copiati dal deploy, **prima di considerare il task completato** lancia il deploy (se la rete/SSH verso `192.168.123.18` è raggiungibile). Se la rete non è disponibile, indica l’errore e che l’utente dovrà rilanciare il deploy in laboratorio.
 
